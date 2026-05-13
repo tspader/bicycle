@@ -16,3 +16,5 @@ RUN apk add --no-cache \
       acl-dev acl-static \
       attr-dev attr-static \
       lz4-dev lz4-static
+
+RUN apk add --no-cache tcc

@@ -34,7 +34,8 @@ meson compile -C "$pacman_build" alpm_objlib
 
 cc -static -O2 -Wall -Wextra \
     -I "$PACMAN_SRC/lib/libalpm" \
-    "$here/main.c" \
+    -I include \
+    "$here/src/main.c" \
     "$pacman_build/libalpm_objlib.a" \
     $(pkg-config --static --libs libarchive openssl) \
     -pthread \

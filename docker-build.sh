@@ -6,6 +6,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 pacman_src=$(readlink -f "$here/.llm/reference/pacman")
 
+tcc -run -Iinclude $here/tools/build.c
+
 exec docker run --rm \
     --user "$(id -u):$(id -g)" \
     -v "$here:/work" \
