@@ -15,8 +15,8 @@ typedef struct {
   } build;
 } bc_paths_t;
 
-void bc_ps_run(sp_mem_t mem, sp_ps_config_t config) {
-  sp_ps_output_t output = sp_ps_run(mem, config);
+void bc_ps_run(sp_mem_t mem, sp_ps_config_cstr_t config) {
+  sp_ps_output_t output = sp_ps_run_cstr(mem, config);
   if (output.status.exit_code) {
     sp_os_print_err(output.err);
     sp_os_print_err(sp_str_lit("\n"));
@@ -55,34 +55,34 @@ s32 run(s32 num_args, const c8** args) {
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("pacman:"), sp_fmt_str(paths.pacman));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("build:"), sp_fmt_str(paths.build.dir));
 
-  bc_ps_run(mem, (sp_ps_config_t) {
-    .command = sp_str_lit("meson"),
+  bc_ps_run(mem, (sp_ps_config_cstr_t) {
+    .command = "meson",
     .args = {
-      sp_str_lit("setup"),
-      paths.build.pacman,
-      paths.pacman,
-      sp_str_lit("-Dbuildstatic=true"),
-      sp_str_lit("-Ddefault_library=static"),
-      sp_str_lit("-Ddoc=disabled"),
-      sp_str_lit("-Ddoxygen=disabled"),
-      sp_str_lit("-Di18n=false"),
-      sp_str_lit("-Dgpgme=disabled"),
-      sp_str_lit("-Dfile-seccomp=disabled"),
-      sp_str_lit("-Dcurl=disabled"),
+      "setup",
+      sp_str_to_cstr(mem, paths.build.pacman),
+      sp_str_to_cstr(mem, paths.pacman),
+      "-Dbuildstatic=true",
+      "-Ddefault_library=static",
+      "-Ddoc=disabled",
+      "-Ddoxygen=disabled",
+      "-Di18n=false",
+      "-Dgpgme=disabled",
+      "-Dfile-seccomp=disabled",
+      "-Dcurl=disabled",
     },
   });
 
-  bc_ps_run(mem, (sp_ps_config_t) {
-    .command = sp_str_lit("meson"),
+  bc_ps_run(mem, (sp_ps_config_cstr_t) {
+    .command = "meson",
     .args = {
-      sp_str_lit("compile"),
-      sp_str_lit("-C"),
-      paths.build.pacman,
-      sp_str_lit("alpm_objlib"),
+      "compile",
+      "-C",
+      sp_str_to_cstr(mem, paths.build.pacman),
+      "alpm_objlib",
     },
   });
 
-  sp_ps_config_cstr_t config = {
+  bc_ps_run(mem, (sp_ps_config_cstr_t) {
     .command = "cc",
     .args = {
       "-static",
@@ -103,29 +103,6 @@ s32 run(s32 num_args, const c8** args) {
       "-llzma",
       "-lssl",
       "-lcrypto",
-    }
-  }
-  bc_ps_run(mem, (sp_ps_config_t) {
-    .command = sp_str_lit("cc"),
-    .args = {
-      sp_str_lit("-static"),
-      sp_str_lit("-O2"),
-      sp_str_lit("-I"), paths.libalpm,
-      sp_str_lit("-I"), sp_str_lit("include"),
-      paths.main,
-      paths.build.objlib,
-      sp_str_lit("-pthread"),
-      sp_str_lit("-o"), paths.build.bin,
-      sp_str_lit("-larchive"),
-      sp_str_lit("-lacl"),
-      sp_str_lit("-lexpat"),
-      sp_str_lit("-lzstd"),
-      sp_str_lit("-llz4"),
-      sp_str_lit("-lbz2"),
-      sp_str_lit("-lz"),
-      sp_str_lit("-llzma"),
-      sp_str_lit("-lssl"),
-      sp_str_lit("-lcrypto"),
     },
   });
 

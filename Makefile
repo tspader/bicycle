@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -std=c99 -Iinclude -static
+CFLAGS ?= -std=c99 -Ivendor/include -static
 
 TOOL_DIR = build/tools
 
