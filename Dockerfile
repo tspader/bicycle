@@ -1,7 +1,8 @@
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk add --no-cache \
       build-base \
+      make \
       meson \
       samurai \
       pkgconf \
@@ -16,5 +17,3 @@ RUN apk add --no-cache \
       acl-dev acl-static \
       attr-dev attr-static \
       lz4-dev lz4-static
-
-RUN apk add --no-cache tcc

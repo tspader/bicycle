@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Run build.sh inside the alpm-poc container as the host user, so artifacts
-# under ./build are owned by you and not root.
+# Compile tools/*.c with cc inside the alpm-poc container, then run the
+# build driver. Artifacts under ./build are owned by the host user.
 
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 pacman_src=$(readlink -f "$here/.llm/reference/pacman")
-
-tcc -run -Iinclude $here/tools/build.c
 
 exec docker run --rm \
     --user "$(id -u):$(id -g)" \
     -v "$here:/work" \
     -v "$pacman_src:/pacman:ro" \
     -w /work \
-    alpm-poc ./build.sh "$@"
+    alpm-poc sh -c 'make -s tools && exec build/tools/build "$@"' -- "$@"

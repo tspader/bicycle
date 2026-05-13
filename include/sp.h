@@ -2876,7 +2876,6 @@ typedef struct {
 
 void sp_fmt_directive_register(const c8* name, sp_fmt_directive_t directive);
 
-sp_err_t sp_fmt_io(sp_io_writer_t* io, const c8* fmt, ...);
 sp_err_t sp_fmt_io_a(sp_io_writer_t* io, sp_mem_t mem, const c8* fmt, ...);
 SP_API sp_str_r  sp_fmt(sp_mem_t mem, const c8* fmt, ...);
 SP_API sp_err_t  sp_fmt_v(sp_io_writer_t* io, sp_mem_t mem, sp_str_t fmt, va_list args);
@@ -3638,7 +3637,6 @@ SP_IMP void     sp_win32_env_it_set_current(sp_os_env_it_t* it);
 #if defined(SP_FREESTANDING)
 SP_IMP void* sp_sys_get_tp(void);
 SP_IMP s32   sp_sys_set_tp(void* tp);
-SP_IMP void  sp_sys_exit(s32 code);
 SP_IMP void  sp_linux_env_it_set_current(sp_os_env_it_t* it);
 #endif
 #if defined(SP_FREESTANDING) || defined(SP_WASM_FREESTANDING)
@@ -6212,7 +6210,9 @@ s64 sp_sys_canonicalize_path(const c8* path, u32 len, c8* buf, u64 size) {
   c8 proc [64] = sp_zero;
   sp_io_mem_writer_t io = sp_zero;
   sp_io_mem_writer_from_buffer(&io, proc, 64);
-  sp_fmt_io(&io.base, "/proc/self/fd/{}", sp_fmt_int(fd));
+  sp_mem_arena_marker_t s = sp_mem_begin_scratch();
+  sp_fmt_io_a(&io.base, s.mem, "/proc/self/fd/{}", sp_fmt_int(fd));
+  sp_mem_end_scratch(s);
 
   s64 n = sp_syscall(SP_SYSCALL_NUM_READLINKAT, SP_AT_FDCWD, proc, buf, size);
   sp_sys_close(fd);
@@ -6930,16 +6930,6 @@ static sp_err_t sp_fmt_pull_int_arg(sp_fmt_arg_t a, s64* out) {
   }
   *out = (a.id == sp_fmt_id_s64) ? a.i : (s64)a.u;
   return SP_OK;
-}
-
-sp_err_t sp_fmt_io(sp_io_writer_t* io, const c8* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  sp_mem_arena_marker_t s = sp_mem_begin_scratch();
-  sp_err_t result = sp_fmt_v(io, s.mem, sp_str_view(fmt), args);
-  sp_mem_end_scratch(s);
-  va_end(args);
-  return result;
 }
 
 sp_err_t sp_fmt_io_a(sp_io_writer_t* io, sp_mem_t mem, const c8* fmt, ...) {
@@ -9258,8 +9248,10 @@ void sp_assert_f(sp_str_t file, sp_str_t line, sp_str_t func, sp_str_t expr, boo
 
   sp_io_file_writer_t io = sp_zero;
   sp_io_file_writer_from_fd(&io, sp_sys_stderr, SP_IO_CLOSE_MODE_NONE);
-  sp_fmt_io(
+  sp_mem_arena_marker_t s = sp_mem_begin_scratch();
+  sp_fmt_io_a(
     &io.base,
+    s.mem,
     "{.red} {}:{.gray}:{.yellow}{.yellow} {}",
     sp_fmt_cstr("assert"),
     sp_fmt_str(file),
@@ -9268,6 +9260,7 @@ void sp_assert_f(sp_str_t file, sp_str_t line, sp_str_t func, sp_str_t expr, boo
     sp_fmt_cstr("()"),
     sp_fmt_str(expr)
   );
+  sp_mem_end_scratch(s);
   sp_io_write_cstr(&io.base, "\n", SP_NULLPTR);
 
   sp_sys_assert(cond);
