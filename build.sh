@@ -40,7 +40,3 @@ cc -static -O2 -Wall -Wextra \
     $(pkg-config --static --libs libarchive openssl) \
     -pthread \
     -o "$OUT_DIR/alpm-poc"
-
-strip "$OUT_DIR/alpm-poc"
-file "$OUT_DIR/alpm-poc"
-ls -lh "$OUT_DIR/alpm-poc"
