@@ -32,6 +32,6 @@ exec virt-install \
   --disk path="$TARGET",bus=virtio,format=qcow2 \
   --network bridge="$BRIDGE",model=virtio \
   --osinfo archlinux \
-  --graphics none \
+  --graphics spice \
   --console pty,target_type=serial \
   --noautoconsole
