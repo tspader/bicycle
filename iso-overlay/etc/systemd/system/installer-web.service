@@ -1,0 +1,12 @@
+[Unit]
+Description=arch-installer web UI (bun + hono)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/web
+ExecStart=/usr/bin/bun run src/server.tsx
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

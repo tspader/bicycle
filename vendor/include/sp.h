@@ -472,7 +472,7 @@
 
 #define sp_try(expr) \
   do { \
-    sp_err_t _sp_result = (expr); \
+    s32 _sp_result = (s32)(expr); \
     if (_sp_result) return _sp_result; \
   } while (0)
 

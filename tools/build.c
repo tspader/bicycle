@@ -1,5 +1,5 @@
 #define SP_IMPLEMENTATION
-#define SP_PS_MAX_ARGS 32
+#define SP_PS_MAX_ARGS 64
 #include "sp.h"
 
 typedef struct {
@@ -7,10 +7,13 @@ typedef struct {
   sp_str_t pacman;
   sp_str_t libalpm;
   sp_str_t main;
+  sp_str_t vendor_include;
+  sp_str_t sqlite_src;
   struct {
     sp_str_t dir;
     sp_str_t pacman;
     sp_str_t objlib;
+    sp_str_t sqlite_obj;
     sp_str_t bin;
   } build;
 } bc_paths_t;
@@ -41,9 +44,12 @@ s32 run(s32 num_args, const c8** args) {
 
   paths.build.pacman = sp_fs_join_path(mem, paths.build.dir, sp_str_lit("pacman"));
   paths.build.objlib = sp_fs_join_path(mem, paths.build.pacman, sp_str_lit("libalpm_objlib.a"));
+  paths.build.sqlite_obj = sp_fs_join_path(mem, paths.build.dir, sp_str_lit("sqlite3.o"));
   paths.build.bin = sp_fs_join_path(mem, paths.build.dir, sp_str_lit("alpm-poc"));
   paths.libalpm = sp_fs_join_path(mem, paths.pacman, sp_str_lit("lib/libalpm"));
   paths.main = sp_fs_join_path(mem, paths.cwd, sp_str_lit("src/main.c"));
+  paths.vendor_include = sp_fs_join_path(mem, paths.cwd, sp_str_lit("vendor/include"));
+  paths.sqlite_src = sp_fs_join_path(mem, paths.cwd, sp_str_lit("vendor/src/sqlite3.c"));
 
   if (!sp_fs_is_target_dir(paths.pacman)) {
     sp_log_err("PACMAN_SRC={.red} is not a directory", sp_fmt_str(paths.pacman));
@@ -82,15 +88,38 @@ s32 run(s32 num_args, const c8** args) {
     },
   });
 
+  if (!sp_fs_is_target_file(paths.build.sqlite_obj)) {
+    sp_log("{:<12} {.cyan}", sp_fmt_cstr("sqlite:"), sp_fmt_str(paths.build.sqlite_obj));
+    bc_ps_run(mem, (sp_ps_config_cstr_t) {
+      .command = "cc",
+      .args = {
+        "-O2",
+        "-c",
+        "-DSQLITE_THREADSAFE=1",
+        "-DSQLITE_OMIT_LOAD_EXTENSION",
+        "-DSQLITE_DEFAULT_MEMSTATUS=0",
+        "-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1",
+        "-DSQLITE_LIKE_DOESNT_MATCH_BLOBS",
+        "-DSQLITE_OMIT_DEPRECATED",
+        "-DSQLITE_OMIT_SHARED_CACHE",
+        "-DSQLITE_OMIT_PROGRESS_CALLBACK",
+        "-I", sp_str_to_cstr(mem, paths.vendor_include),
+        sp_str_to_cstr(mem, paths.sqlite_src),
+        "-o", sp_str_to_cstr(mem, paths.build.sqlite_obj),
+      },
+    });
+  }
+
   bc_ps_run(mem, (sp_ps_config_cstr_t) {
     .command = "cc",
     .args = {
       "-static",
       "-O2",
       "-I", sp_str_to_cstr(mem, paths.libalpm),
-      "-I", "include",
+      "-I", sp_str_to_cstr(mem, paths.vendor_include),
       sp_str_to_cstr(mem, paths.main),
       sp_str_to_cstr(mem, paths.build.objlib),
+      sp_str_to_cstr(mem, paths.build.sqlite_obj),
       "-pthread",
       "-o", sp_str_to_cstr(mem, paths.build.bin),
       "-larchive",
