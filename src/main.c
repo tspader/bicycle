@@ -216,88 +216,88 @@ bc_file_meta_t* bc_fmeta_lookup(bc_t* bc, bc_file_key_t key) {
 // Queue helpers (mutex + cv around sp_ring_buffer)
 //
 
-void bc_work_queue_init(bc_t* bc) {
-  sp_mutex_init(&bc->work.hdr.mu, SP_MUTEX_PLAIN);
-  sp_cv_init(&bc->work.hdr.not_empty);
-  sp_cv_init(&bc->work.hdr.not_full);
-  bc->work.hdr.closed   = false;
-  bc->work.hdr.capacity = BC_QUEUE_CAPACITY;
-  sp_rb_init_cap(bc->mem, bc->work.rb, BC_QUEUE_CAPACITY);
+void bc_work_queue_init(sp_mem_t mem, bc_work_queue_t* queue) {
+  sp_mutex_init(&queue->hdr.mu, SP_MUTEX_PLAIN);
+  sp_cv_init(&queue->hdr.not_empty);
+  sp_cv_init(&queue->hdr.not_full);
+  queue->hdr.closed   = false;
+  queue->hdr.capacity = BC_QUEUE_CAPACITY;
+  sp_rb_init_cap(mem, queue->rb, BC_QUEUE_CAPACITY);
 }
 
-void bc_write_queue_init(bc_t* bc) {
-  sp_mutex_init(&bc->write.hdr.mu, SP_MUTEX_PLAIN);
-  sp_cv_init(&bc->write.hdr.not_empty);
-  sp_cv_init(&bc->write.hdr.not_full);
-  bc->write.hdr.closed   = false;
-  bc->write.hdr.capacity = BC_QUEUE_CAPACITY;
-  sp_rb_init_cap(bc->mem, bc->write.rb, BC_QUEUE_CAPACITY);
+void bc_write_queue_init(sp_mem_t mem, bc_write_queue_t* queue) {
+  sp_mutex_init(&queue->hdr.mu, SP_MUTEX_PLAIN);
+  sp_cv_init(&queue->hdr.not_empty);
+  sp_cv_init(&queue->hdr.not_full);
+  queue->hdr.closed   = false;
+  queue->hdr.capacity = BC_QUEUE_CAPACITY;
+  sp_rb_init_cap(mem, queue->rb, BC_QUEUE_CAPACITY);
 }
 
-void bc_work_q_push(bc_t* bc, const bc_work_t* item) {
-  sp_mutex_lock(&bc->work.hdr.mu);
-  while (sp_rb_size(bc->work.rb) >= bc->work.hdr.capacity) {
-    sp_cv_wait(&bc->work.hdr.not_full, &bc->work.hdr.mu);
+void bc_work_queue_push(bc_work_queue_t* queue, const bc_work_t* item) {
+  sp_mutex_lock(&queue->hdr.mu);
+  while (sp_rb_size(queue->rb) >= queue->hdr.capacity) {
+    sp_cv_wait(&queue->hdr.not_full, &queue->hdr.mu);
   }
-  sp_rb_push(bc->work.rb, *item);
-  sp_cv_notify_one(&bc->work.hdr.not_empty);
-  sp_mutex_unlock(&bc->work.hdr.mu);
+  sp_rb_push(queue->rb, *item);
+  sp_cv_notify_one(&queue->hdr.not_empty);
+  sp_mutex_unlock(&queue->hdr.mu);
 }
 
-bool bc_work_q_pop(bc_t* bc, bc_work_t* out) {
-  sp_mutex_lock(&bc->work.hdr.mu);
-  while (sp_rb_empty(bc->work.rb) && !bc->work.hdr.closed) {
-    sp_cv_wait(&bc->work.hdr.not_empty, &bc->work.hdr.mu);
+bool bc_work_queue_pop(bc_work_queue_t* queue, bc_work_t* out) {
+  sp_mutex_lock(&queue->hdr.mu);
+  while (sp_rb_empty(queue->rb) && !queue->hdr.closed) {
+    sp_cv_wait(&queue->hdr.not_empty, &queue->hdr.mu);
   }
-  if (sp_rb_empty(bc->work.rb)) {
-    sp_mutex_unlock(&bc->work.hdr.mu);
+  if (sp_rb_empty(queue->rb)) {
+    sp_mutex_unlock(&queue->hdr.mu);
     return false;
   }
-  *out = *sp_rb_peek(bc->work.rb);
-  sp_rb_pop(bc->work.rb);
-  sp_cv_notify_one(&bc->work.hdr.not_full);
-  sp_mutex_unlock(&bc->work.hdr.mu);
+  *out = *sp_rb_peek(queue->rb);
+  sp_rb_pop(queue->rb);
+  sp_cv_notify_one(&queue->hdr.not_full);
+  sp_mutex_unlock(&queue->hdr.mu);
   return true;
 }
 
-void bc_work_q_close(bc_t* bc) {
-  sp_mutex_lock(&bc->work.hdr.mu);
-  bc->work.hdr.closed = true;
-  sp_cv_notify_all(&bc->work.hdr.not_empty);
-  sp_mutex_unlock(&bc->work.hdr.mu);
+void bc_work_queue_close(bc_work_queue_t* queue) {
+  sp_mutex_lock(&queue->hdr.mu);
+  queue->hdr.closed = true;
+  sp_cv_notify_all(&queue->hdr.not_empty);
+  sp_mutex_unlock(&queue->hdr.mu);
 }
 
-void bc_write_q_push(bc_t* bc, const bc_write_t* item) {
-  sp_mutex_lock(&bc->write.hdr.mu);
-  while (sp_rb_size(bc->write.rb) >= bc->write.hdr.capacity) {
-    sp_cv_wait(&bc->write.hdr.not_full, &bc->write.hdr.mu);
+void bc_write_queue_push(bc_write_queue_t* queue, const bc_write_t* item) {
+  sp_mutex_lock(&queue->hdr.mu);
+  while (sp_rb_size(queue->rb) >= queue->hdr.capacity) {
+    sp_cv_wait(&queue->hdr.not_full, &queue->hdr.mu);
   }
-  sp_rb_push(bc->write.rb, *item);
-  sp_cv_notify_one(&bc->write.hdr.not_empty);
-  sp_mutex_unlock(&bc->write.hdr.mu);
+  sp_rb_push(queue->rb, *item);
+  sp_cv_notify_one(&queue->hdr.not_empty);
+  sp_mutex_unlock(&queue->hdr.mu);
 }
 
-bool bc_write_q_pop(bc_t* bc, bc_write_t* out) {
-  sp_mutex_lock(&bc->write.hdr.mu);
-  while (sp_rb_empty(bc->write.rb) && !bc->write.hdr.closed) {
-    sp_cv_wait(&bc->write.hdr.not_empty, &bc->write.hdr.mu);
+bool bc_write_queue_pop(bc_write_queue_t* queue, bc_write_t* out) {
+  sp_mutex_lock(&queue->hdr.mu);
+  while (sp_rb_empty(queue->rb) && !queue->hdr.closed) {
+    sp_cv_wait(&queue->hdr.not_empty, &queue->hdr.mu);
   }
-  if (sp_rb_empty(bc->write.rb)) {
-    sp_mutex_unlock(&bc->write.hdr.mu);
+  if (sp_rb_empty(queue->rb)) {
+    sp_mutex_unlock(&queue->hdr.mu);
     return false;
   }
-  *out = *sp_rb_peek(bc->write.rb);
-  sp_rb_pop(bc->write.rb);
-  sp_cv_notify_one(&bc->write.hdr.not_full);
-  sp_mutex_unlock(&bc->write.hdr.mu);
+  *out = *sp_rb_peek(queue->rb);
+  sp_rb_pop(queue->rb);
+  sp_cv_notify_one(&queue->hdr.not_full);
+  sp_mutex_unlock(&queue->hdr.mu);
   return true;
 }
 
-void bc_write_q_close(bc_t* bc) {
-  sp_mutex_lock(&bc->write.hdr.mu);
-  bc->write.hdr.closed = true;
-  sp_cv_notify_all(&bc->write.hdr.not_empty);
-  sp_mutex_unlock(&bc->write.hdr.mu);
+void bc_write_queue_close(bc_write_queue_t* queue) {
+  sp_mutex_lock(&queue->hdr.mu);
+  queue->hdr.closed = true;
+  sp_cv_notify_all(&queue->hdr.not_empty);
+  sp_mutex_unlock(&queue->hdr.mu);
 }
 
 //
@@ -310,7 +310,7 @@ s32 bc_worker_fn(void* userdata) {
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(w->arena);
 
   bc_work_t item;
-  while (bc_work_q_pop(bc, &item)) {
+  while (bc_work_queue_pop(&bc->work, &item)) {
     sp_str_t path_view = (sp_str_t){ .data = item.path, .len = item.len };
 
     sp_sys_stat_t st = sp_zero;
@@ -349,7 +349,7 @@ s32 bc_worker_fn(void* userdata) {
     // sha256 left as zero placeholder; hashing happens in a later step.
     out.path = sp_str_copy(arena_mem, path_view);
 
-    bc_write_q_push(bc, &out);
+    bc_write_queue_push(&bc->write, &out);
   }
   return BC_OK;
 }
@@ -358,20 +358,25 @@ s32 bc_worker_fn(void* userdata) {
 // Writer thread: batch upserts into file_metadata
 //
 
+#define bc_writer_try(expr) \
+  do { \
+    w->err = (expr);  \
+    if (w->err) return w->err; \
+  } while (0)
+
 s32 bc_writer_fn(void* userdata) {
   bc_writer_t* w = (bc_writer_t*)userdata;
   bc_t* bc = w->bc;
 
   sqlite3_stmt* upsert = SP_NULLPTR;
-  w->err = bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_file_metadata, -1, &upsert, SP_NULLPTR));
-  if (w->err) return w->err;
+  bc_writer_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_file_metadata, -1, &upsert, SP_NULLPTR)));
 
   u8 zero_hash [32] = sp_zero;
   bool in_tx = false;
   u32 in_batch = 0;
 
   bc_write_t item;
-  while (bc_write_q_pop(bc, &item)) {
+  while (bc_write_queue_pop(&bc->write, &item)) {
     if (!in_tx) {
       w->err = bc_sql_exec(bc->sql, "BEGIN;");
       if (w->err) break;
@@ -391,14 +396,12 @@ s32 bc_writer_fn(void* userdata) {
     sqlite3_bind_text (upsert,  9, item.path.data, (s32)item.path.len, SQLITE_STATIC);
     sqlite3_bind_int64(upsert, 10, (s64)bc->run_id);
 
-    w->err = bc_check_sql(bc->sql, sqlite3_step(upsert));
-    if (w->err) break;
+    bc_writer_try(bc_check_sql(bc->sql, sqlite3_step(upsert)));
     w->writes++;
     in_batch++;
 
     if (in_batch >= BC_WRITE_BATCH) {
-      w->err = bc_sql_exec(bc->sql, "COMMIT;");
-      if (w->err) break;
+      bc_writer_try(bc_sql_exec(bc->sql, "COMMIT;"));
       in_tx = false;
     }
   }
@@ -485,7 +488,7 @@ void bc_enqueue_owned_files(bc_t* bc) {
       if (item.len == 0) continue;
 
       bc->num_files++;
-      bc_work_q_push(bc, &item);
+      bc_work_queue_push(&bc->work, &item);
     }
   }
 }
@@ -519,33 +522,37 @@ s32 main(s32 num_args, const c8** args) {
   sp_try(bc_run_begin(&bc, sp_str_lit("scan")));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("run_id:"), sp_fmt_uint(bc.run_id));
 
-  bc_work_queue_init(&bc);
-  bc_write_queue_init(&bc);
+  bc_work_queue_init(mem, &bc.work);
+  bc_write_queue_init(mem, &bc.write);
 
   // Spawn workers. Each owns an arena it uses to permanently retain path
   // strings referenced by the writes it produces; arenas outlive the writer.
-  for (u32 i = 0; i < BC_NUM_WORKERS; i++) {
-    bc.workers[i].bc    = &bc;
-    bc.workers[i].id    = i;
-    bc.workers[i].arena = sp_mem_arena_new_ex(
+  sp_for(it, BC_NUM_WORKERS) {
+    bc.workers[it].bc    = &bc;
+    bc.workers[it].id    = it;
+    bc.workers[it].arena = sp_mem_arena_new_ex(
       mem, BC_WORKER_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT
     );
-    sp_thread_init(&bc.workers[i].thread, bc_worker_fn, &bc.workers[i]);
+    sp_thread_init(&bc.workers[it].thread, bc_worker_fn, &bc.workers[it]);
   }
 
   bc.writer.bc = &bc;
   sp_thread_init(&bc.writer.thread, bc_writer_fn, &bc.writer);
 
-  sp_tm_timer_t timer = sp_tm_start_timer();
+  u64 elapsed_ns = 0;
+  sp_tm_timer_t timer = sp_tm_start_timer(); {
+    bc_enqueue_owned_files(&bc);
+    bc_work_queue_close(&bc.work);
 
-  bc_enqueue_owned_files(&bc);
+    sp_for(it, BC_NUM_WORKERS) {
+      sp_thread_join(&bc.workers[it].thread);
+    }
+    bc_write_queue_close(&bc.write);
 
-  bc_work_q_close(&bc);
-  for (u32 i = 0; i < BC_NUM_WORKERS; i++) sp_thread_join(&bc.workers[i].thread);
-  bc_write_q_close(&bc);
-  sp_thread_join(&bc.writer.thread);
+    sp_thread_join(&bc.writer.thread);
 
-  u64 elapsed_ns = sp_tm_read_timer(&timer);
+    elapsed_ns = sp_tm_read_timer(&timer);
+  }
   sp_try(bc_run_end(&bc, elapsed_ns));
   sp_try(bc.writer.err);
 
@@ -564,7 +571,9 @@ s32 main(s32 num_args, const c8** args) {
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("writes:"),   sp_fmt_uint(bc.writer.writes));
   sp_log("{:<12} {.cyan} ns", sp_fmt_cstr("elapsed:"),  sp_fmt_uint(elapsed_ns));
 
-  for (u32 i = 0; i < BC_NUM_WORKERS; i++) sp_mem_arena_destroy(bc.workers[i].arena);
+  sp_for(it, BC_NUM_WORKERS) {
+    sp_mem_arena_destroy(bc.workers[it].arena);
+  }
 
   alpm_release(bc.alpm);
   sqlite3_close(bc.sql);
