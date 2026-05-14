@@ -237,6 +237,7 @@ struct bc_t {
   struct {
     u64 mtree;
     u64 files;
+    u64 strays;
     u64 total;
   } timings;
 };
@@ -909,6 +910,81 @@ void bc_enqueue_owned_files(bc_t* bc) {
 }
 
 //
+// Stray walk: every file under / that isn't in mtree and isn't ignored.
+// Lifted directly from aconfmgr's defaults plus our own cache file and the
+// pacman db dir (so we don't surface our own writes / pacman's working
+// state as strays).
+//
+
+static const c8* bc_stray_ignore_prefixes [] = {
+  "/dev",
+  "/home",
+  "/media",
+  "/mnt",
+  "/proc",
+  "/root",
+  "/run",
+  "/sys",
+  "/tmp",
+  "/var/cache",
+  "/var/lib/pacman",
+};
+
+static bool bc_path_is_ignored(sp_str_t path, sp_str_t cache_path) {
+  // Strip a single leading '/' if root joining produced a double slash so the
+  // ignore prefixes match. We compare normalized.
+  sp_str_t p = path;
+  while (p.len >= 2 && p.data[0] == '/' && p.data[1] == '/') {
+    p.data++;
+    p.len--;
+  }
+
+  sp_for(i, sp_carr_len(bc_stray_ignore_prefixes)) {
+    sp_str_t pref = sp_cstr_as_str(bc_stray_ignore_prefixes[i]);
+    if (sp_str_starts_with(p, pref)) {
+      // Anchor at a path boundary so "/run" doesn't also ignore "/runtime".
+      if (p.len == pref.len || p.data[pref.len] == '/') return true;
+    }
+  }
+  if (cache_path.len && sp_str_equal(p, cache_path)) return true;
+  return false;
+}
+
+// Stray walk emits findings on the main thread. The writer is still running,
+// so we just push items into the same write queue the workers were using.
+void bc_walk_strays(bc_t* bc) {
+  sp_mem_arena_t* arena = sp_mem_arena_new_ex(bc->mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
+  sp_mem_t arena_mem = sp_mem_arena_as_allocator(arena);
+
+  u64 visited = 0;
+  u64 strays  = 0;
+
+  sp_fs_for_recursive(arena_mem, bc->paths.root, it) {
+    sp_str_t path = it.entry.path;
+    if (bc_path_is_ignored(path, bc->paths.cache)) continue;
+    visited++;
+
+    u64 idx;
+    if (sp_str_ht_get_ex(bc->mtree.ht, path, idx)) continue;
+
+    bc_write_t out = sp_zero;
+    out.kind            = BC_WRITE_FINDING;
+    out.finding.kind    = BC_FINDING_STRAY;
+    out.finding.path    = sp_str_copy(arena_mem, path);
+    out.finding.created_at = (s64)sp_tm_now_epoch().s;
+    bc_queue_push(&bc->write, out);
+    strays++;
+  }
+
+  sp_log("{:<12} {.cyan} visited, {.cyan} strays",
+    sp_fmt_cstr("strays:"),
+    sp_fmt_uint(visited),
+    sp_fmt_uint(strays));
+
+  sp_mem_arena_destroy(arena);
+}
+
+//
 // Findings report
 //
 
@@ -1032,13 +1108,19 @@ s32 main(s32 num_args, const c8** args) {
     sp_for(it, BC_NUM_WORKERS) {
       sp_thread_join(&bc.workers[it].thread);
     }
-    bc_queue_close(&bc.write);
-
-    sp_thread_join(&bc.writer.thread);
-
     bc.timings.files = sp_tm_read_timer(&files_timer);
   }
-  bc.timings.total = bc.timings.mtree + bc.timings.files;
+
+  // Stray walk runs on the main thread, sharing the writer with the worker
+  // phase: nothing else is producing into &bc.write right now.
+  sp_tm_timer_t strays_timer = sp_tm_start_timer(); {
+    bc_walk_strays(&bc);
+    bc.timings.strays = sp_tm_read_timer(&strays_timer);
+  }
+
+  bc_queue_close(&bc.write);
+  sp_thread_join(&bc.writer.thread);
+  bc.timings.total = bc.timings.mtree + bc.timings.files + bc.timings.strays;
   sp_try(bc_run_end(&bc, bc.timings.total));
   sp_try(bc.writer.err);
 
@@ -1059,9 +1141,10 @@ s32 main(s32 num_args, const c8** args) {
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("findings:"), sp_fmt_uint(findings));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("errors:"),   sp_fmt_uint(errors));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("writes:"),   sp_fmt_uint(bc.writer.writes));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_mtree:"), sp_fmt_uint(bc.timings.mtree));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_files:"), sp_fmt_uint(bc.timings.files));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_total:"), sp_fmt_uint(bc.timings.total));
+  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_mtree:"),  sp_fmt_uint(bc.timings.mtree));
+  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_files:"),  sp_fmt_uint(bc.timings.files));
+  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_strays:"), sp_fmt_uint(bc.timings.strays));
+  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_total:"),  sp_fmt_uint(bc.timings.total));
 
   bc_print_findings_for_run(&bc);
 
