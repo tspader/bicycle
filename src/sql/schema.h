@@ -37,4 +37,13 @@ static const char* bc_db_schema =
   "  action     TEXT    NOT NULL,"
   "  db_mtime   INTEGER,"
   "  elapsed    REAL"
-  ");";
+  ");"
+  "CREATE TABLE IF NOT EXISTS findings ("
+  "  run_id     INTEGER NOT NULL,"
+  "  kind       INTEGER NOT NULL,"
+  "  path       TEXT    NOT NULL,"
+  "  pkg        TEXT,"
+  "  detail     TEXT,"
+  "  created_at INTEGER NOT NULL"
+  ");"
+  "CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id);";

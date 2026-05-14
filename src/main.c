@@ -5,6 +5,10 @@
 #include <alpm_list.h>
 #include <archive.h>
 #include <archive_entry.h>
+#include <openssl/evp.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "sqlite3.h"
 
 #include "sql/schema.h"
@@ -12,6 +16,7 @@
 #include "sql/file_metadata.h"
 #include "sql/mtree.h"
 #include "sql/meta_run.h"
+#include "sql/findings.h"
 
 #define bc_alpm_for(it, list) for (alpm_list_t* it = list; it; it = alpm_list_next(it))
 
@@ -66,8 +71,17 @@ typedef sp_str_ht(bc_mtree_entry_t) bc_mtree_ht_t;
 typedef sp_str_t bc_work_t;
 
 typedef enum {
-  BC_WRITE_FILE = 1,
+  BC_WRITE_FILE    = 1,
+  BC_WRITE_FINDING = 2,
 } bc_write_kind_t;
+
+typedef enum {
+  BC_FINDING_MODIFIED_META    = 1,
+  BC_FINDING_MODIFIED_CONTENT = 2,
+  BC_FINDING_MISSING          = 3,
+  BC_FINDING_UNTRACKED        = 4,
+  BC_FINDING_STRAY            = 5,
+} bc_finding_kind_t;
 
 typedef struct {
   bc_file_key_t  key;
@@ -76,9 +90,18 @@ typedef struct {
 } bc_write_file_t;
 
 typedef struct {
+  bc_finding_kind_t kind;
+  sp_str_t          path;
+  sp_str_t          pkg;     // {0,0} if unknown
+  sp_str_t          detail;  // {0,0} if none
+  s64               created_at;
+} bc_write_finding_t;
+
+typedef struct {
   bc_write_kind_t kind;
   union {
-    bc_write_file_t file;
+    bc_write_file_t    file;
+    bc_write_finding_t finding;
   };
 } bc_write_t;
 
@@ -103,13 +126,18 @@ typedef struct {
   sp_rb_init_cap((mem), (q)->rb, (cap));           \
 } while (0)
 
+// Pushes silently drop when the queue is closed. The consumer closes its own
+// queue on fatal error to unblock producers; the dropped items are gone
+// anyway because the consumer is exiting.
 #define bc_queue_push(q, item) do {                                  \
   sp_mutex_lock(&(q)->mu);                                           \
-  while (sp_rb_size((q)->rb) >= sp_rb_capacity((q)->rb)) {           \
+  while (sp_rb_size((q)->rb) >= sp_rb_capacity((q)->rb) && !(q)->closed) { \
     sp_cv_wait(&(q)->not_full, &(q)->mu);                            \
   }                                                                  \
-  sp_rb_push((q)->rb, (item));                                       \
-  sp_cv_notify_one(&(q)->not_empty);                                 \
+  if (!(q)->closed) {                                                \
+    sp_rb_push((q)->rb, (item));                                     \
+    sp_cv_notify_one(&(q)->not_empty);                               \
+  }                                                                  \
   sp_mutex_unlock(&(q)->mu);                                         \
 } while (0)
 
@@ -135,6 +163,7 @@ typedef struct {
   sp_mutex_lock(&(q)->mu);                                           \
   (q)->closed = true;                                                \
   sp_cv_notify_all(&(q)->not_empty);                                 \
+  sp_cv_notify_all(&(q)->not_full);                                  \
   sp_mutex_unlock(&(q)->mu);                                         \
 } while (0)
 
@@ -149,14 +178,20 @@ typedef struct {
 
 typedef struct bc_t bc_t;
 
+#define BC_HASH_BUF_SIZE (1u * 1024u * 1024u)
+
 typedef struct {
   bc_t*           bc;
   u32             id;
   sp_thread_t     thread;
   sp_mem_arena_t* arena;
+  EVP_MD_CTX*     md_ctx;
+  u8*             hash_buf;     // BC_HASH_BUF_SIZE
   u64             hits;
   u64             misses;
+  u64             hashed;
   u64             errors;
+  u64             findings;
 } bc_worker_t;
 
 typedef struct {
@@ -298,8 +333,136 @@ bc_err_t bc_fmeta_load(bc_t* bc) {
 }
 
 //
-// Worker thread: pop path, lstat, compare against the cache, emit a write on miss.
+// Worker thread: stat each path, compare to mtree (2b), hash on cache miss
+// for regular files (2c), and push file_metadata writes plus any findings.
 //
+
+// libc lstat gives us uid/gid (which sp_sys_stat_t omits). Inputs/outputs are
+// the only things this helper needs to live in a thread-local buffer; the
+// fields used after this returns come from the local struct stat.
+static bool bc_worker_lstat(bc_worker_t* w, sp_str_t path, struct stat* out) {
+  c8 buf [SP_PATH_MAX];
+  if (path.len >= SP_PATH_MAX) { w->errors++; return false; }
+  sp_mem_copy(buf, path.data, path.len);
+  buf[path.len] = '\0';
+  return lstat(buf, out) == 0;
+}
+
+// readlink into a freshly arena-allocated sp_str_t; returns {0,0} on failure.
+static sp_str_t bc_worker_readlink(sp_mem_t arena_mem, sp_str_t path) {
+  c8 cpath [SP_PATH_MAX];
+  if (path.len >= SP_PATH_MAX) return (sp_str_t)sp_zero;
+  sp_mem_copy(cpath, path.data, path.len);
+  cpath[path.len] = '\0';
+
+  c8 tgt [SP_PATH_MAX];
+  ssize_t n = readlink(cpath, tgt, sizeof(tgt));
+  if (n < 0) return (sp_str_t)sp_zero;
+  // readlink filling the buffer means the real target was truncated; treat
+  // it as failure rather than silently comparing a truncated string.
+  if ((u64)n >= sizeof(tgt)) return (sp_str_t)sp_zero;
+  return sp_str_copy(arena_mem, (sp_str_t){ .data = tgt, .len = (u32)n });
+}
+
+// Stream-hash a regular file. On success writes 32 bytes into out and returns
+// true. Reuses the worker's MD context and 1 MiB read buffer.
+static bool bc_worker_hash_file(bc_worker_t* w, sp_str_t path, u8 out [32]) {
+  c8 cpath [SP_PATH_MAX];
+  if (path.len >= SP_PATH_MAX) return false;
+  sp_mem_copy(cpath, path.data, path.len);
+  cpath[path.len] = '\0';
+
+  s32 fd = open(cpath, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return false;
+
+  if (!EVP_DigestInit_ex(w->md_ctx, EVP_sha256(), SP_NULLPTR)) { close(fd); return false; }
+  for (;;) {
+    ssize_t n = read(fd, w->hash_buf, BC_HASH_BUF_SIZE);
+    if (n == 0) break;
+    if (n < 0) { close(fd); return false; }
+    if (!EVP_DigestUpdate(w->md_ctx, w->hash_buf, (size_t)n)) { close(fd); return false; }
+  }
+  close(fd);
+
+  u32 outlen = 0;
+  if (!EVP_DigestFinal_ex(w->md_ctx, out, &outlen) || outlen != 32) return false;
+  w->hashed++;
+  return true;
+}
+
+// Callers must own `path` (typically from work-queue arena), and `pkg`/`detail`
+// must already live in storage that outlives the writer — in practice, the
+// worker arena. The writer binds these with SQLITE_STATIC.
+static void bc_worker_emit_finding(bc_worker_t* w, sp_mem_t arena_mem,
+                                   bc_finding_kind_t kind, sp_str_t path,
+                                   sp_str_t pkg, sp_str_t detail) {
+  bc_write_t out = sp_zero;
+  out.kind            = BC_WRITE_FINDING;
+  out.finding.kind    = kind;
+  // path comes from the producer-side work arena; everything else is already
+  // worker-arena (or empty). Copy path so it ends up in the worker arena and
+  // survives even if the work arena is torn down before the writer drains.
+  out.finding.path    = sp_str_copy(arena_mem, path);
+  out.finding.pkg     = pkg;
+  out.finding.detail  = detail;
+  out.finding.created_at = (s64)sp_tm_now_epoch().s;
+  bc_queue_push(&w->bc->write, out);
+  w->findings++;
+}
+
+// Compare on-disk stat against an mtree entry. Returns a comma-joined detail
+// string of mismatched fields, allocated in arena_mem, or {0,0} if everything
+// matches.
+static sp_str_t bc_worker_compare_meta(sp_mem_t arena_mem, sp_str_t path,
+                                       const struct stat* st,
+                                       const bc_mtree_entry_t* e) {
+  sp_str_t parts [8];
+  u32 n = 0;
+
+  // mtree.kind vs lstat kind
+  sp_fs_kind_t actual_kind;
+  if      (S_ISREG(st->st_mode))  actual_kind = SP_FS_KIND_FILE;
+  else if (S_ISDIR(st->st_mode))  actual_kind = SP_FS_KIND_DIR;
+  else if (S_ISLNK(st->st_mode))  actual_kind = SP_FS_KIND_SYMLINK;
+  else                            actual_kind = SP_FS_KIND_NONE;
+
+  if (actual_kind != e->kind) {
+    // When kinds disagree, every other field comparison is noise — emit just
+    // the kind delta and let the operator look at the file.
+    parts[n++] = sp_fmt(arena_mem, "kind={} expected={}",
+                        sp_fmt_int(actual_kind), sp_fmt_int(e->kind)).value;
+    return sp_str_join_n(arena_mem, parts, n, sp_str_lit(", "));
+  }
+  if ((s32)(st->st_mode & 07777) != e->mode) {
+    parts[n++] = sp_fmt(arena_mem, "mode={} expected={}",
+                        sp_fmt_int((s32)(st->st_mode & 07777)),
+                        sp_fmt_int(e->mode)).value;
+  }
+  if ((s32)st->st_uid != e->uid) {
+    parts[n++] = sp_fmt(arena_mem, "uid={} expected={}",
+                        sp_fmt_int((s32)st->st_uid), sp_fmt_int(e->uid)).value;
+  }
+  if ((s32)st->st_gid != e->gid) {
+    parts[n++] = sp_fmt(arena_mem, "gid={} expected={}",
+                        sp_fmt_int((s32)st->st_gid), sp_fmt_int(e->gid)).value;
+  }
+  // mtree size is only meaningful for regular files; pacman doesn't track
+  // sizes on directories or symlinks.
+  if (actual_kind == SP_FS_KIND_FILE && e->kind == SP_FS_KIND_FILE && st->st_size != e->size) {
+    parts[n++] = sp_fmt(arena_mem, "size={} expected={}",
+                        sp_fmt_int((s64)st->st_size), sp_fmt_int(e->size)).value;
+  }
+  if (actual_kind == SP_FS_KIND_SYMLINK && e->kind == SP_FS_KIND_SYMLINK && e->target.len) {
+    sp_str_t actual_target = bc_worker_readlink(arena_mem, path);
+    if (!sp_str_equal(actual_target, e->target)) {
+      parts[n++] = sp_fmt(arena_mem, "target={.q} expected={.q}",
+                          sp_fmt_str(actual_target), sp_fmt_str(e->target)).value;
+    }
+  }
+
+  if (n == 0) return (sp_str_t)sp_zero;
+  return sp_str_join_n(arena_mem, parts, n, sp_str_lit(", "));
+}
 
 s32 bc_worker_fn(void* userdata) {
   bc_worker_t* w = (bc_worker_t*)userdata;
@@ -308,36 +471,75 @@ s32 bc_worker_fn(void* userdata) {
 
   bc_work_t path;
   while (bc_queue_pop(&bc->work.queue, &path)) {
-    sp_sys_stat_t st = sp_zero;
-    if (sp_sys_lstat_s(path, &st) != 0) {
-      w->errors++;
+    struct stat st;
+    if (!bc_worker_lstat(w, path, &st)) {
+      // alpm thinks this path is owned, but lstat failed. Look up the mtree
+      // entry so we can name the owning pkg in the finding.
+      u64 idx;
+      bc_mtree_entry_t* e = sp_str_ht_get_ex(bc->mtree.ht, path, idx);
+      sp_str_t pkg = e ? e->pkg : (sp_str_t)sp_zero;
+      bc_worker_emit_finding(w, arena_mem, BC_FINDING_MISSING, path, pkg, sp_str_lit("lstat failed"));
       continue;
     }
-    if (st.kind != SP_FS_KIND_FILE) continue;
 
-    bc_file_key_t key = { .dev = st.device, .ino = st.id };
-    u64 idx;
-    bc_file_meta_t* hit = sp_ht_get_ex(bc->files, key, idx);
+    // 2b: compare every owned file against its mtree entry, regardless of
+    // whether the inode cache will hit. This catches mode/uid/gid drift even
+    // when content hasn't changed.
+    u64 mt_idx;
+    bc_mtree_entry_t* mt = sp_str_ht_get_ex(bc->mtree.ht, path, mt_idx);
+    if (mt) {
+      sp_str_t detail = bc_worker_compare_meta(arena_mem, path, &st, mt);
+      if (detail.len) {
+        bc_worker_emit_finding(w, arena_mem, BC_FINDING_MODIFIED_META, path, mt->pkg, detail);
+      }
+    } else {
+      // alpm-owned, but no mtree entry. Usually the mtree skip-list (.PKGINFO
+      // etc.); occasionally a real anomaly.
+      bc_worker_emit_finding(w, arena_mem, BC_FINDING_UNTRACKED, path,
+                             (sp_str_t)sp_zero, sp_str_lit("no mtree entry"));
+    }
+
+    // The rest of the loop only deals with regular files: directory and
+    // symlink content/inode cache aren't useful here.
+    if (!S_ISREG(st.st_mode)) continue;
+
+    bc_file_key_t key = { .dev = (u64)st.st_dev, .ino = (u64)st.st_ino };
+    u64 cache_idx;
+    bc_file_meta_t* hit = sp_ht_get_ex(bc->files, key, cache_idx);
     if (hit
-        && hit->mtime_sec  == st.mtime.tv_sec
-        && hit->mtime_nsec == st.mtime.tv_nsec
-        && hit->ctime_sec  == st.btime.tv_sec
-        && hit->ctime_nsec == st.btime.tv_nsec
-        && hit->size       == st.size) {
+        && hit->mtime_sec  == (s64)st.st_mtim.tv_sec
+        && hit->mtime_nsec == (s64)st.st_mtim.tv_nsec
+        && hit->ctime_sec  == (s64)st.st_ctim.tv_sec
+        && hit->ctime_nsec == (s64)st.st_ctim.tv_nsec
+        && hit->size       == (s64)st.st_size) {
       w->hits++;
       continue;
     }
     w->misses++;
 
+    // 2c: cache miss → hash the file. The inode cache only kicks in once we
+    // store this row, so even files we have no expected hash for get hashed
+    // (and the result short-circuits the next run).
+    u8 hash [32] = sp_zero;
+    if (!bc_worker_hash_file(w, path, hash)) {
+      w->errors++;
+      continue;
+    }
+    if (mt && mt->have_hash && sp_sys_memcmp(hash, mt->sha256, 32) != 0) {
+      bc_worker_emit_finding(w, arena_mem, BC_FINDING_MODIFIED_CONTENT, path,
+                             mt->pkg, sp_str_lit("sha256 mismatch"));
+    }
+
     bc_write_t out = sp_zero;
     out.kind                 = BC_WRITE_FILE;
     out.file.key             = key;
-    out.file.meta.mtime_sec  = st.mtime.tv_sec;
-    out.file.meta.mtime_nsec = st.mtime.tv_nsec;
-    out.file.meta.ctime_sec  = st.btime.tv_sec;
-    out.file.meta.ctime_nsec = st.btime.tv_nsec;
-    out.file.meta.size       = st.size;
-    out.file.path = sp_str_copy(arena_mem, path);
+    out.file.meta.mtime_sec  = (s64)st.st_mtim.tv_sec;
+    out.file.meta.mtime_nsec = (s64)st.st_mtim.tv_nsec;
+    out.file.meta.ctime_sec  = (s64)st.st_ctim.tv_sec;
+    out.file.meta.ctime_nsec = (s64)st.st_ctim.tv_nsec;
+    out.file.meta.size       = (s64)st.st_size;
+    sp_mem_copy(out.file.meta.sha256, hash, 32);
+    out.file.path            = sp_str_copy(arena_mem, path);
 
     bc_queue_push(&bc->write, out);
   }
@@ -353,12 +555,13 @@ s32 bc_worker_fn(void* userdata) {
 s32 bc_writer_fn(void* userdata) {
   bc_writer_t* w = (bc_writer_t*)userdata;
 
-  sqlite3_stmt* upsert = SP_NULLPTR;
+  sqlite3_stmt* upsert  = SP_NULLPTR;
+  sqlite3_stmt* finsert = SP_NULLPTR;
   bool in_tx = false;
   u32  in_batch = 0;
-  u8   zero_hash [32] = sp_zero;
 
-  bc_writer_try(bc_check_sql(w->sql, sqlite3_prepare_v2(w->sql, bc_db_upsert_file_metadata, -1, &upsert, SP_NULLPTR)));
+  bc_writer_try(bc_check_sql(w->sql, sqlite3_prepare_v2(w->sql, bc_db_upsert_file_metadata, -1, &upsert,  SP_NULLPTR)));
+  bc_writer_try(bc_check_sql(w->sql, sqlite3_prepare_v2(w->sql, bc_db_insert_finding,        -1, &finsert, SP_NULLPTR)));
 
   bc_write_t item;
   while (bc_queue_pop(&w->bc->write, &item)) {
@@ -368,22 +571,39 @@ s32 bc_writer_fn(void* userdata) {
       in_batch = 0;
     }
 
-    sqlite3_reset(upsert);
-    sqlite3_bind_int64(upsert,  1, (s64)item.file.key.dev);
-    sqlite3_bind_int64(upsert,  2, (s64)item.file.key.ino);
-    sqlite3_bind_int64(upsert,  3, item.file.meta.mtime_sec);
-    sqlite3_bind_int64(upsert,  4, item.file.meta.mtime_nsec);
-    sqlite3_bind_int64(upsert,  5, item.file.meta.ctime_sec);
-    sqlite3_bind_int64(upsert,  6, item.file.meta.ctime_nsec);
-    sqlite3_bind_int64(upsert,  7, item.file.meta.size);
-    sqlite3_bind_blob (upsert,  8, zero_hash, 32, SQLITE_STATIC);
-    sqlite3_bind_text (upsert,  9, item.file.path.data, (s32)item.file.path.len, SQLITE_STATIC);
-    sqlite3_bind_int64(upsert, 10, (s64)w->bc->run_id);
+    switch (item.kind) {
+      case BC_WRITE_FILE: {
+        sqlite3_reset(upsert);
+        sqlite3_bind_int64(upsert,  1, (s64)item.file.key.dev);
+        sqlite3_bind_int64(upsert,  2, (s64)item.file.key.ino);
+        sqlite3_bind_int64(upsert,  3, item.file.meta.mtime_sec);
+        sqlite3_bind_int64(upsert,  4, item.file.meta.mtime_nsec);
+        sqlite3_bind_int64(upsert,  5, item.file.meta.ctime_sec);
+        sqlite3_bind_int64(upsert,  6, item.file.meta.ctime_nsec);
+        sqlite3_bind_int64(upsert,  7, item.file.meta.size);
+        sqlite3_bind_blob (upsert,  8, item.file.meta.sha256, 32, SQLITE_STATIC);
+        sqlite3_bind_text (upsert,  9, item.file.path.data, (s32)item.file.path.len, SQLITE_STATIC);
+        sqlite3_bind_int64(upsert, 10, (s64)w->bc->run_id);
+        bc_writer_try(bc_check_sql(w->sql, sqlite3_step(upsert)));
+        break;
+      }
+      case BC_WRITE_FINDING: {
+        sqlite3_reset(finsert);
+        sqlite3_bind_int64(finsert, 1, (s64)w->bc->run_id);
+        sqlite3_bind_int  (finsert, 2, (s32)item.finding.kind);
+        sqlite3_bind_text (finsert, 3, item.finding.path.data, (s32)item.finding.path.len, SQLITE_STATIC);
+        if (item.finding.pkg.len) sqlite3_bind_text(finsert, 4, item.finding.pkg.data, (s32)item.finding.pkg.len, SQLITE_STATIC);
+        else                      sqlite3_bind_null(finsert, 4);
+        if (item.finding.detail.len) sqlite3_bind_text(finsert, 5, item.finding.detail.data, (s32)item.finding.detail.len, SQLITE_STATIC);
+        else                         sqlite3_bind_null(finsert, 5);
+        sqlite3_bind_int64(finsert, 6, item.finding.created_at);
+        bc_writer_try(bc_check_sql(w->sql, sqlite3_step(finsert)));
+        break;
+      }
+    }
 
-    bc_writer_try(bc_check_sql(w->sql, sqlite3_step(upsert)));
     w->writes++;
     in_batch++;
-
     if (in_batch >= BC_WRITE_BATCH) {
       bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
       in_tx = false;
@@ -398,6 +618,11 @@ s32 bc_writer_fn(void* userdata) {
 done:
   if (in_tx) bc_sql_exec(w->sql, "ROLLBACK;");
   sqlite3_finalize(upsert);
+  sqlite3_finalize(finsert);
+  // On error we must close the write queue ourselves so any worker still
+  // blocked in bc_queue_push (write queue full, writer dead) wakes up and
+  // drops its item instead of deadlocking the join below.
+  if (w->err) bc_queue_close(&w->bc->write);
   return w->err;
 }
 
@@ -683,6 +908,60 @@ void bc_enqueue_owned_files(bc_t* bc) {
   }
 }
 
+//
+// Findings report
+//
+
+sp_str_t bc_finding_kind_label(bc_finding_kind_t k) {
+  switch (k) {
+    case BC_FINDING_MODIFIED_META:    return sp_str_lit("modified-meta");
+    case BC_FINDING_MODIFIED_CONTENT: return sp_str_lit("modified-content");
+    case BC_FINDING_MISSING:          return sp_str_lit("missing");
+    case BC_FINDING_UNTRACKED:        return sp_str_lit("untracked");
+    case BC_FINDING_STRAY:            return sp_str_lit("stray");
+  }
+  return sp_str_lit("?");
+}
+
+void bc_print_findings_for_run(bc_t* bc) {
+  sqlite3_stmt* stmt = SP_NULLPTR;
+  if (bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_findings_for_run, -1, &stmt, SP_NULLPTR))) return;
+  sqlite3_bind_int64(stmt, 1, (s64)bc->run_id);
+
+  s32 rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    bc_finding_kind_t kind = (bc_finding_kind_t)sqlite3_column_int(stmt, 0);
+    sp_str_t path = {
+      .data = (const c8*)sqlite3_column_text(stmt, 1),
+      .len  = (u32)sqlite3_column_bytes(stmt, 1),
+    };
+    sp_str_t pkg = sp_zero;
+    if (sqlite3_column_type(stmt, 2) != SQLITE_NULL) {
+      pkg.data = (const c8*)sqlite3_column_text (stmt, 2);
+      pkg.len  = (u32)      sqlite3_column_bytes(stmt, 2);
+    }
+    sp_str_t detail = sp_zero;
+    if (sqlite3_column_type(stmt, 3) != SQLITE_NULL) {
+      detail.data = (const c8*)sqlite3_column_text (stmt, 3);
+      detail.len  = (u32)      sqlite3_column_bytes(stmt, 3);
+    }
+
+    if (detail.len) {
+      sp_log("{.yellow} {} {.cyan} {}",
+        sp_fmt_str(bc_finding_kind_label(kind)),
+        sp_fmt_str(path),
+        sp_fmt_str(pkg.len ? pkg : sp_str_lit("-")),
+        sp_fmt_str(detail));
+    } else {
+      sp_log("{.yellow} {} {.cyan}",
+        sp_fmt_str(bc_finding_kind_label(kind)),
+        sp_fmt_str(path),
+        sp_fmt_str(pkg.len ? pkg : sp_str_lit("-")));
+    }
+  }
+  sqlite3_finalize(stmt);
+}
+
 s32 main(s32 num_args, const c8** args) {
   (void)num_args; (void)args;
   sp_mem_t mem = sp_mem_os_new();
@@ -737,6 +1016,8 @@ s32 main(s32 num_args, const c8** args) {
     bc.workers[it].arena = sp_mem_arena_new_ex(
       mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT
     );
+    bc.workers[it].md_ctx   = EVP_MD_CTX_new();
+    bc.workers[it].hash_buf = sp_mem_allocator_alloc(mem, BC_HASH_BUF_SIZE);
     sp_thread_init(&bc.workers[it].thread, bc_worker_fn, &bc.workers[it]);
   }
 
@@ -761,24 +1042,31 @@ s32 main(s32 num_args, const c8** args) {
   sp_try(bc_run_end(&bc, bc.timings.total));
   sp_try(bc.writer.err);
 
-  u64 hits = 0, misses = 0, errors = 0;
+  u64 hits = 0, misses = 0, hashed = 0, errors = 0, findings = 0;
   for (u32 i = 0; i < BC_NUM_WORKERS; i++) {
-    hits   += bc.workers[i].hits;
-    misses += bc.workers[i].misses;
-    errors += bc.workers[i].errors;
+    hits     += bc.workers[i].hits;
+    misses   += bc.workers[i].misses;
+    hashed   += bc.workers[i].hashed;
+    errors   += bc.workers[i].errors;
+    findings += bc.workers[i].findings;
   }
 
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("packages:"), sp_fmt_uint(bc.num_packages));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("files:"),    sp_fmt_uint(bc.num_files));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("hits:"),     sp_fmt_uint(hits));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("misses:"),   sp_fmt_uint(misses));
+  sp_log("{:<12} {.cyan}", sp_fmt_cstr("hashed:"),   sp_fmt_uint(hashed));
+  sp_log("{:<12} {.cyan}", sp_fmt_cstr("findings:"), sp_fmt_uint(findings));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("errors:"),   sp_fmt_uint(errors));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("writes:"),   sp_fmt_uint(bc.writer.writes));
   sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_mtree:"), sp_fmt_uint(bc.timings.mtree));
   sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_files:"), sp_fmt_uint(bc.timings.files));
   sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_total:"), sp_fmt_uint(bc.timings.total));
 
+  bc_print_findings_for_run(&bc);
+
   sp_for(it, BC_NUM_WORKERS) {
+    EVP_MD_CTX_free(bc.workers[it].md_ctx);
     sp_mem_arena_destroy(bc.workers[it].arena);
   }
   sp_mem_arena_destroy(bc.work.arena);
