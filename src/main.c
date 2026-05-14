@@ -16,7 +16,7 @@
 #define bc_alpm_for(it, list) for (alpm_list_t* it = list; it; it = alpm_list_next(it))
 
 #define BC_NUM_WORKERS       8
-#define BC_WORKER_BLOCK_SIZE (4u * 1024u * 1024u)
+#define BC_ARENA_BLOCK_SIZE  (4u * 1024u * 1024u)
 #define BC_QUEUE_CAPACITY    4096u
 #define BC_WRITE_BATCH       1024u
 
@@ -44,8 +44,8 @@ typedef struct {
 typedef sp_ht(bc_file_key_t, bc_file_meta_t) bc_fmeta_ht_t;
 
 typedef struct {
-  sp_str_t pkg;          // pointer into pkg-name arena, valid for whole run
-  sp_str_t path;         // absolute, in mtree arena
+  sp_str_t pkg;
+  sp_str_t path;
   sp_fs_kind_t kind;
   s64      size;
   s32      mode;
@@ -54,15 +54,16 @@ typedef struct {
   s64      mtime;
   u8       sha256 [32];
   bool     have_hash;
-  sp_str_t target;       // symlink target if any, else {0,0}
+  sp_str_t target;
 } bc_mtree_entry_t;
 
 typedef sp_str_ht(bc_mtree_entry_t) bc_mtree_ht_t;
 
-typedef struct {
-  c8  path [SP_PATH_MAX];
-  u32 len;
-} bc_work_t;
+// Work items are just borrowed string slices into bc->work.arena. The arena
+// is a plain bump allocator owned by bc_t, populated by the producer before
+// workers spawn (well, concurrently with their consumption) and torn down
+// only after every worker has joined.
+typedef sp_str_t bc_work_t;
 
 typedef enum {
   BC_WRITE_FILE = 1,
@@ -81,23 +82,64 @@ typedef struct {
   };
 } bc_write_t;
 
-typedef struct {
-  sp_mutex_t mu;
-  sp_cv_t    not_empty;
-  sp_cv_t    not_full;
-  bool       closed;
-  u32        capacity;
-} bc_queue_hdr_t;
+//
+// Generic blocking queue: mutex + cv around an sp_rb of T. Capacity lives on
+// the ring buffer, so there's only one source of truth.
+//
 
-typedef struct {
-  bc_queue_hdr_t hdr;
-  sp_rb(bc_work_t) rb;
-} bc_work_queue_t;
+#define bc_queue(T) struct { \
+  sp_mutex_t mu;             \
+  sp_cv_t    not_empty;      \
+  sp_cv_t    not_full;       \
+  bool       closed;         \
+  sp_rb(T)   rb;             \
+}
 
-typedef struct {
-  bc_queue_hdr_t hdr;
-  sp_rb(bc_write_t) rb;
-} bc_write_queue_t;
+#define bc_queue_init(mem, q, cap) do {            \
+  sp_mutex_init(&(q)->mu, SP_MUTEX_PLAIN);         \
+  sp_cv_init(&(q)->not_empty);                     \
+  sp_cv_init(&(q)->not_full);                      \
+  (q)->closed = false;                             \
+  sp_rb_init_cap((mem), (q)->rb, (cap));           \
+} while (0)
+
+#define bc_queue_push(q, item) do {                                  \
+  sp_mutex_lock(&(q)->mu);                                           \
+  while (sp_rb_size((q)->rb) >= sp_rb_capacity((q)->rb)) {           \
+    sp_cv_wait(&(q)->not_full, &(q)->mu);                            \
+  }                                                                  \
+  sp_rb_push((q)->rb, (item));                                       \
+  sp_cv_notify_one(&(q)->not_empty);                                 \
+  sp_mutex_unlock(&(q)->mu);                                         \
+} while (0)
+
+// true if an item was popped into *out; false if the queue is closed and
+// drained.
+#define bc_queue_pop(q, out) __extension__ ({                        \
+  bool _ok = false;                                                  \
+  sp_mutex_lock(&(q)->mu);                                           \
+  while (sp_rb_empty((q)->rb) && !(q)->closed) {                     \
+    sp_cv_wait(&(q)->not_empty, &(q)->mu);                           \
+  }                                                                  \
+  if (!sp_rb_empty((q)->rb)) {                                       \
+    *(out) = *sp_rb_peek((q)->rb);                                   \
+    sp_rb_pop((q)->rb);                                              \
+    sp_cv_notify_one(&(q)->not_full);                                \
+    _ok = true;                                                      \
+  }                                                                  \
+  sp_mutex_unlock(&(q)->mu);                                         \
+  _ok;                                                               \
+})
+
+#define bc_queue_close(q) do {                                       \
+  sp_mutex_lock(&(q)->mu);                                           \
+  (q)->closed = true;                                                \
+  sp_cv_notify_all(&(q)->not_empty);                                 \
+  sp_mutex_unlock(&(q)->mu);                                         \
+} while (0)
+
+typedef bc_queue(bc_work_t)  bc_work_queue_t;
+typedef bc_queue(bc_write_t) bc_write_queue_t;
 
 typedef struct {
   sp_str_t root;
@@ -119,6 +161,7 @@ typedef struct {
 
 typedef struct {
   bc_t*       bc;
+  sqlite3*    sql;
   sp_thread_t thread;
   u64         writes;
   bc_err_t    err;
@@ -133,29 +176,33 @@ struct bc_t {
   u64 num_files;
   u64 run_id;
 
-  struct {
-    bc_fmeta_ht_t ht;
-    sp_mutex_t mutex;
-  } files;
+  // Loaded once from the db on startup and read-only for the rest of the run.
+  // Workers read via sp_ht_get_ex, which doesn't touch the table's tmp slots,
+  // so no locking is needed.
+  bc_fmeta_ht_t files;
 
   struct {
-    bc_mtree_ht_t   ht;          // keyed by absolute path
-    sp_mem_arena_t* arena;       // backs pkg names, paths, targets
-    u64             decoded;     // packages decoded this run
-    u64             cached;      // packages loaded from db without decode
-    u64             entries;     // total entries in ht
+    bc_mtree_ht_t   ht;
+    sp_mem_arena_t* arena;
+    u64             decoded;
+    u64             cached;
+    u64             entries;
   } mtree;
 
-  bc_work_queue_t   work;
-  bc_write_queue_t  write;
+  struct {
+    bc_work_queue_t queue;
+    sp_mem_arena_t* arena;  // bump arena backing every work item's path
+  } work;
 
-  bc_worker_t       workers [BC_NUM_WORKERS];
-  bc_writer_t       writer;
+  bc_write_queue_t write;
+
+  bc_worker_t workers [BC_NUM_WORKERS];
+  bc_writer_t writer;
 
   struct {
-    u64 mtree;   // ns spent in bc_mtree_load
-    u64 files;   // ns spent in the file-metadata phase
-    u64 total;   // ns wall clock for both
+    u64 mtree;
+    u64 files;
+    u64 total;
   } timings;
 };
 
@@ -182,26 +229,31 @@ bc_err_t bc_sql_exec(sqlite3* sql, const c8* statement) {
   return BC_OK;
 }
 
+bc_err_t bc_db_open_conn(sp_str_t path, sqlite3** out) {
+  sp_mem_arena_marker_t scratch = sp_mem_begin_scratch();
+  c8* cpath = sp_str_to_cstr(sp_mem_arena_as_allocator(sp_mem_get_scratch_arena()), path);
+  s32 rc = sqlite3_open(cpath, out);
+  sp_mem_end_scratch(scratch);
+  sp_try(bc_check_sql(*out, rc));
+  sp_try(bc_sql_exec(*out, bc_db_pragmas));
+  return BC_OK;
+}
+
 bc_err_t bc_db_open(bc_t* bc) {
-  c8 buf [SP_PATH_MAX] = sp_zero;
-  sp_cstr_copy_to_n(bc->paths.cache.data, bc->paths.cache.len, buf, SP_PATH_MAX);
-
-  s32 rc = sqlite3_open(buf, &bc->sql);
-  sp_try(bc_check_sql(bc->sql, rc));
-
-  sp_try(bc_sql_exec(bc->sql, bc_db_pragmas));
+  sp_try(bc_db_open_conn(bc->paths.cache, &bc->sql));
   sp_try(bc_sql_exec(bc->sql, bc_db_schema));
   return BC_OK;
 }
 
 bc_err_t bc_alpm_open(bc_t* bc) {
-  c8 root [SP_PATH_MAX] = sp_zero;
-  c8 db [SP_PATH_MAX] = sp_zero;
-  sp_cstr_copy_to_n(bc->paths.root.data, bc->paths.root.len, root, SP_PATH_MAX);
-  sp_cstr_copy_to_n(bc->paths.db.data, bc->paths.db.len, db, SP_PATH_MAX);
+  sp_mem_arena_marker_t scratch = sp_mem_begin_scratch();
+  sp_mem_t scratch_mem = sp_mem_arena_as_allocator(sp_mem_get_scratch_arena());
+  c8* root = sp_str_to_cstr(scratch_mem, bc->paths.root);
+  c8* db   = sp_str_to_cstr(scratch_mem, bc->paths.db);
 
   alpm_errno_t err = 0;
   bc->alpm = alpm_initialize(root, db, &err);
+  sp_mem_end_scratch(scratch);
   if (err || !bc->alpm) {
     sp_log_err("alpm_initialize failed: {} ({})", sp_fmt_cstr(alpm_strerror(err)), sp_fmt_int(err));
     return BC_ERR;
@@ -234,7 +286,7 @@ bc_err_t bc_fmeta_load(bc_t* bc) {
     if (blob && blob_len == 32) {
       sp_mem_copy(m.sha256, blob, 32);
     }
-    sp_ht_insert(bc->files.ht, k, m);
+    sp_ht_insert(bc->files, k, m);
     loaded++;
   }
   bc_err_t err = bc_check_sql(bc->sql, rc);
@@ -245,103 +297,8 @@ bc_err_t bc_fmeta_load(bc_t* bc) {
   return BC_OK;
 }
 
-bc_file_meta_t* bc_fmeta_lookup(bc_t* bc, bc_file_key_t key) {
-  sp_mutex_lock(&bc->files.mutex);
-  bc_file_meta_t* v = sp_ht_getp(bc->files.ht, key);
-  sp_mutex_unlock(&bc->files.mutex);
-  return v;
-}
-
 //
-// Queue helpers (mutex + cv around sp_ring_buffer)
-//
-
-void bc_work_queue_init(sp_mem_t mem, bc_work_queue_t* queue) {
-  sp_mutex_init(&queue->hdr.mu, SP_MUTEX_PLAIN);
-  sp_cv_init(&queue->hdr.not_empty);
-  sp_cv_init(&queue->hdr.not_full);
-  queue->hdr.closed   = false;
-  queue->hdr.capacity = BC_QUEUE_CAPACITY;
-  sp_rb_init_cap(mem, queue->rb, BC_QUEUE_CAPACITY);
-}
-
-void bc_write_queue_init(sp_mem_t mem, bc_write_queue_t* queue) {
-  sp_mutex_init(&queue->hdr.mu, SP_MUTEX_PLAIN);
-  sp_cv_init(&queue->hdr.not_empty);
-  sp_cv_init(&queue->hdr.not_full);
-  queue->hdr.closed   = false;
-  queue->hdr.capacity = BC_QUEUE_CAPACITY;
-  sp_rb_init_cap(mem, queue->rb, BC_QUEUE_CAPACITY);
-}
-
-void bc_work_queue_push(bc_work_queue_t* queue, const bc_work_t* item) {
-  sp_mutex_lock(&queue->hdr.mu);
-  while (sp_rb_size(queue->rb) >= queue->hdr.capacity) {
-    sp_cv_wait(&queue->hdr.not_full, &queue->hdr.mu);
-  }
-  sp_rb_push(queue->rb, *item);
-  sp_cv_notify_one(&queue->hdr.not_empty);
-  sp_mutex_unlock(&queue->hdr.mu);
-}
-
-bool bc_work_queue_pop(bc_work_queue_t* queue, bc_work_t* out) {
-  sp_mutex_lock(&queue->hdr.mu);
-  while (sp_rb_empty(queue->rb) && !queue->hdr.closed) {
-    sp_cv_wait(&queue->hdr.not_empty, &queue->hdr.mu);
-  }
-  if (sp_rb_empty(queue->rb)) {
-    sp_mutex_unlock(&queue->hdr.mu);
-    return false;
-  }
-  *out = *sp_rb_peek(queue->rb);
-  sp_rb_pop(queue->rb);
-  sp_cv_notify_one(&queue->hdr.not_full);
-  sp_mutex_unlock(&queue->hdr.mu);
-  return true;
-}
-
-void bc_work_queue_close(bc_work_queue_t* queue) {
-  sp_mutex_lock(&queue->hdr.mu);
-  queue->hdr.closed = true;
-  sp_cv_notify_all(&queue->hdr.not_empty);
-  sp_mutex_unlock(&queue->hdr.mu);
-}
-
-void bc_write_queue_push(bc_write_queue_t* queue, const bc_write_t* item) {
-  sp_mutex_lock(&queue->hdr.mu);
-  while (sp_rb_size(queue->rb) >= queue->hdr.capacity) {
-    sp_cv_wait(&queue->hdr.not_full, &queue->hdr.mu);
-  }
-  sp_rb_push(queue->rb, *item);
-  sp_cv_notify_one(&queue->hdr.not_empty);
-  sp_mutex_unlock(&queue->hdr.mu);
-}
-
-bool bc_write_queue_pop(bc_write_queue_t* queue, bc_write_t* out) {
-  sp_mutex_lock(&queue->hdr.mu);
-  while (sp_rb_empty(queue->rb) && !queue->hdr.closed) {
-    sp_cv_wait(&queue->hdr.not_empty, &queue->hdr.mu);
-  }
-  if (sp_rb_empty(queue->rb)) {
-    sp_mutex_unlock(&queue->hdr.mu);
-    return false;
-  }
-  *out = *sp_rb_peek(queue->rb);
-  sp_rb_pop(queue->rb);
-  sp_cv_notify_one(&queue->hdr.not_full);
-  sp_mutex_unlock(&queue->hdr.mu);
-  return true;
-}
-
-void bc_write_queue_close(bc_write_queue_t* queue) {
-  sp_mutex_lock(&queue->hdr.mu);
-  queue->hdr.closed = true;
-  sp_cv_notify_all(&queue->hdr.not_empty);
-  sp_mutex_unlock(&queue->hdr.mu);
-}
-
-//
-// Worker thread: pop path, lstat, compare against cache, emit metadata write on miss
+// Worker thread: pop path, lstat, compare against the cache, emit a write on miss.
 //
 
 s32 bc_worker_fn(void* userdata) {
@@ -349,24 +306,18 @@ s32 bc_worker_fn(void* userdata) {
   bc_t* bc = w->bc;
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(w->arena);
 
-  bc_work_t item;
-  while (bc_work_queue_pop(&bc->work, &item)) {
-    sp_str_t path_view = (sp_str_t){ .data = item.path, .len = item.len };
-
+  bc_work_t path;
+  while (bc_queue_pop(&bc->work.queue, &path)) {
     sp_sys_stat_t st = sp_zero;
-    if (sp_sys_lstat_s(path_view, &st) != 0) {
+    if (sp_sys_lstat_s(path, &st) != 0) {
       w->errors++;
       continue;
     }
-
-    if (st.kind != SP_FS_KIND_FILE) {
-      // Only regular files participate in the file_metadata cache for now;
-      // directories and symlinks are handled later via mtree comparison.
-      continue;
-    }
+    if (st.kind != SP_FS_KIND_FILE) continue;
 
     bc_file_key_t key = { .dev = st.device, .ino = st.id };
-    bc_file_meta_t* hit = bc_fmeta_lookup(bc, key);
+    u64 idx;
+    bc_file_meta_t* hit = sp_ht_get_ex(bc->files, key, idx);
     if (hit
         && hit->mtime_sec  == st.mtime.tv_sec
         && hit->mtime_nsec == st.mtime.tv_nsec
@@ -386,40 +337,33 @@ s32 bc_worker_fn(void* userdata) {
     out.file.meta.ctime_sec  = st.btime.tv_sec;
     out.file.meta.ctime_nsec = st.btime.tv_nsec;
     out.file.meta.size       = st.size;
-    // sha256 left as zero placeholder; hashing happens in a later step.
-    out.file.path = sp_str_copy(arena_mem, path_view);
+    out.file.path = sp_str_copy(arena_mem, path);
 
-    bc_write_queue_push(&bc->write, &out);
+    bc_queue_push(&bc->write, out);
   }
   return BC_OK;
 }
 
 //
-// Writer thread: batch upserts into file_metadata
+// Writer thread: batch upserts into file_metadata on its own sqlite connection.
 //
 
-#define bc_writer_try(expr) \
-  do { \
-    w->err = (expr);  \
-    if (w->err) return w->err; \
-  } while (0)
+#define bc_writer_try(expr) sp_try_goto((expr), w->err, done)
 
 s32 bc_writer_fn(void* userdata) {
   bc_writer_t* w = (bc_writer_t*)userdata;
-  bc_t* bc = w->bc;
 
   sqlite3_stmt* upsert = SP_NULLPTR;
-  bc_writer_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_file_metadata, -1, &upsert, SP_NULLPTR)));
-
-  u8 zero_hash [32] = sp_zero;
   bool in_tx = false;
-  u32 in_batch = 0;
+  u32  in_batch = 0;
+  u8   zero_hash [32] = sp_zero;
+
+  bc_writer_try(bc_check_sql(w->sql, sqlite3_prepare_v2(w->sql, bc_db_upsert_file_metadata, -1, &upsert, SP_NULLPTR)));
 
   bc_write_t item;
-  while (bc_write_queue_pop(&bc->write, &item)) {
+  while (bc_queue_pop(&w->bc->write, &item)) {
     if (!in_tx) {
-      w->err = bc_sql_exec(bc->sql, "BEGIN;");
-      if (w->err) break;
+      bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
       in_tx = true;
       in_batch = 0;
     }
@@ -434,21 +378,25 @@ s32 bc_writer_fn(void* userdata) {
     sqlite3_bind_int64(upsert,  7, item.file.meta.size);
     sqlite3_bind_blob (upsert,  8, zero_hash, 32, SQLITE_STATIC);
     sqlite3_bind_text (upsert,  9, item.file.path.data, (s32)item.file.path.len, SQLITE_STATIC);
-    sqlite3_bind_int64(upsert, 10, (s64)bc->run_id);
+    sqlite3_bind_int64(upsert, 10, (s64)w->bc->run_id);
 
-    bc_writer_try(bc_check_sql(bc->sql, sqlite3_step(upsert)));
+    bc_writer_try(bc_check_sql(w->sql, sqlite3_step(upsert)));
     w->writes++;
     in_batch++;
 
     if (in_batch >= BC_WRITE_BATCH) {
-      bc_writer_try(bc_sql_exec(bc->sql, "COMMIT;"));
+      bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
       in_tx = false;
     }
   }
 
-  if (!w->err && in_tx) w->err = bc_sql_exec(bc->sql, "COMMIT;");
-  else if (w->err && in_tx) bc_sql_exec(bc->sql, "ROLLBACK;");
+  if (in_tx) {
+    bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
+    in_tx = false;
+  }
 
+done:
+  if (in_tx) bc_sql_exec(w->sql, "ROLLBACK;");
   sqlite3_finalize(upsert);
   return w->err;
 }
@@ -490,14 +438,6 @@ bc_err_t bc_run_end(bc_t* bc, u64 elapsed_ns) {
 // Mtree cache (decode-or-load per installed package)
 //
 
-// Turn a pkg-relative mtree path ("./usr/bin/ls", ".BUILDINFO", etc.) into an
-// absolute path rooted at bc->paths.root. Allocates into mem.
-sp_str_t bc_mtree_to_abs(sp_mem_t mem, sp_str_t root, sp_str_t rel) {
-  if (sp_str_starts_with(rel, sp_str_lit("./"))) rel = sp_str_sub(rel, 2, (s32)rel.len - 2);
-  while (root.len > 0 && root.data[root.len - 1] == '/') root.len--;
-  return sp_fmt(mem, "{}/{}", sp_fmt_str(root), sp_fmt_str(rel)).value;
-}
-
 sp_fs_kind_t bc_mtree_kind_from_archive(s32 ft) {
   if (ft == AE_IFREG) return SP_FS_KIND_FILE;
   if (ft == AE_IFDIR) return SP_FS_KIND_DIR;
@@ -505,15 +445,14 @@ sp_fs_kind_t bc_mtree_kind_from_archive(s32 ft) {
   return SP_FS_KIND_NONE;
 }
 
-// On-disk mtime of /var/lib/pacman/local/<pkg>-<version>/mtree.
 bc_err_t bc_mtree_disk_mtime(bc_t* bc, sp_str_t local_dir, s64* out_mtime) {
+  (void)bc;
   sp_sys_stat_t st = sp_zero;
   if (sp_sys_lstat_s(local_dir, &st) != 0) return BC_ERR;
   *out_mtime = st.mtime.tv_sec;
   return BC_OK;
 }
 
-// Load already-cached entries for pkg from the db into bc->mtree.ht.
 bc_err_t bc_mtree_load_entries(bc_t* bc, sp_str_t pkg) {
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(bc->mtree.arena);
 
@@ -560,40 +499,41 @@ bc_err_t bc_mtree_load_entries(bc_t* bc, sp_str_t pkg) {
   return err;
 }
 
-// Decode the mtree at mtree_path, populating bc->mtree.ht and writing the
-// pkg's rows back to the db in a single transaction.
 bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mtime, sp_str_t mtree_path) {
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(bc->mtree.arena);
+  bc_err_t err = BC_OK;
+  bool in_tx = false;
 
-  c8 mtree_path_c [SP_PATH_MAX] = sp_zero;
-  sp_cstr_copy_to_n(mtree_path.data, mtree_path.len, mtree_path_c, SP_PATH_MAX);
+  sp_mem_arena_marker_t scratch = sp_mem_begin_scratch();
+  c8* mtree_path_c = sp_str_to_cstr(sp_mem_arena_as_allocator(sp_mem_get_scratch_arena()), mtree_path);
 
   struct archive* a = archive_read_new();
   archive_read_support_filter_gzip(a);
   archive_read_support_format_mtree(a);
-  if (archive_read_open_filename(a, mtree_path_c, 8192) != ARCHIVE_OK) {
-    sp_log_err("archive_read_open_filename {.red}: {}", sp_fmt_str(mtree_path), sp_fmt_cstr(archive_error_string(a)));
-    archive_read_free(a);
-    return BC_ERR;
-  }
-
   sqlite3_stmt* del_entries = SP_NULLPTR;
   sqlite3_stmt* ins_entry   = SP_NULLPTR;
   sqlite3_stmt* ups_mtree   = SP_NULLPTR;
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_delete_mtree_entries, -1, &del_entries, SP_NULLPTR)));
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_mtree_entry,   -1, &ins_entry,   SP_NULLPTR)));
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_mtree,         -1, &ups_mtree,   SP_NULLPTR)));
 
-  sp_try(bc_sql_exec(bc->sql, "BEGIN;"));
+  if (archive_read_open_filename(a, mtree_path_c, 8192) != ARCHIVE_OK) {
+    sp_log_err("archive_read_open_filename {.red}: {}", sp_fmt_str(mtree_path), sp_fmt_cstr(archive_error_string(a)));
+    err = BC_ERR;
+    goto done;
+  }
 
-  // mtrees row first (FK target), then wipe stale entries, then insert new.
+  sp_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_delete_mtree_entries, -1, &del_entries, SP_NULLPTR)), err, done);
+  sp_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_mtree_entry,   -1, &ins_entry,   SP_NULLPTR)), err, done);
+  sp_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_mtree,         -1, &ups_mtree,   SP_NULLPTR)), err, done);
+
+  sp_try_goto(bc_sql_exec(bc->sql, "BEGIN;"), err, done);
+  in_tx = true;
+
   sqlite3_bind_text (ups_mtree, 1, pkg.data,     (s32)pkg.len,     SQLITE_STATIC);
   sqlite3_bind_text (ups_mtree, 2, version.data, (s32)version.len, SQLITE_STATIC);
   sqlite3_bind_int64(ups_mtree, 3, mtree_mtime);
-  sp_try(bc_check_sql(bc->sql, sqlite3_step(ups_mtree)));
+  sp_try_goto(bc_check_sql(bc->sql, sqlite3_step(ups_mtree)), err, done);
 
   sqlite3_bind_text(del_entries, 1, pkg.data, (s32)pkg.len, SQLITE_STATIC);
-  sp_try(bc_check_sql(bc->sql, sqlite3_step(del_entries)));
+  sp_try_goto(bc_check_sql(bc->sql, sqlite3_step(del_entries)), err, done);
 
   struct archive_entry* ae = SP_NULLPTR;
   s32 ar;
@@ -605,7 +545,7 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
 
     bc_mtree_entry_t e = sp_zero;
     e.pkg   = pkg;
-    e.path  = bc_mtree_to_abs(arena_mem, bc->paths.root, rel);
+    e.path  = sp_fs_join_path(arena_mem, bc->paths.root, sp_str_strip_left(rel, sp_str_lit("./")));
     e.kind  = bc_mtree_kind_from_archive((s32)archive_entry_filetype(ae));
     e.size  = (s64)archive_entry_size(ae);
     e.mode  = (s32)(archive_entry_mode(ae) & 07777);
@@ -639,32 +579,33 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
     else             sqlite3_bind_null(ins_entry, 9);
     if (e.target.len) sqlite3_bind_text(ins_entry, 10, e.target.data, (s32)e.target.len, SQLITE_STATIC);
     else              sqlite3_bind_null(ins_entry, 10);
-    sp_try(bc_check_sql(bc->sql, sqlite3_step(ins_entry)));
+    sp_try_goto(bc_check_sql(bc->sql, sqlite3_step(ins_entry)), err, done);
   }
   if (ar != ARCHIVE_EOF) {
     sp_log_err("mtree decode {.red}: {}", sp_fmt_str(mtree_path), sp_fmt_cstr(archive_error_string(a)));
-    bc_sql_exec(bc->sql, "ROLLBACK;");
-    archive_read_free(a);
-    sqlite3_finalize(del_entries);
-    sqlite3_finalize(ins_entry);
-    sqlite3_finalize(ups_mtree);
-    return BC_ERR;
+    err = BC_ERR;
+    goto done;
   }
 
-  sp_try(bc_sql_exec(bc->sql, "COMMIT;"));
+  sp_try_goto(bc_sql_exec(bc->sql, "COMMIT;"), err, done);
+  in_tx = false;
 
+done:
+  if (in_tx) bc_sql_exec(bc->sql, "ROLLBACK;");
+  if (del_entries) sqlite3_finalize(del_entries);
+  if (ins_entry)   sqlite3_finalize(ins_entry);
+  if (ups_mtree)   sqlite3_finalize(ups_mtree);
   archive_read_free(a);
-  sqlite3_finalize(del_entries);
-  sqlite3_finalize(ins_entry);
-  sqlite3_finalize(ups_mtree);
-  return BC_OK;
+  sp_mem_end_scratch(scratch);
+  return err;
 }
 
 bc_err_t bc_mtree_load(bc_t* bc) {
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(bc->mtree.arena);
 
   sqlite3_stmt* sel = SP_NULLPTR;
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_mtree, -1, &sel, SP_NULLPTR)));
+  bc_err_t err = bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_mtree, -1, &sel, SP_NULLPTR));
+  if (err) goto done;
 
   alpm_db_t* local = alpm_get_localdb(bc->alpm);
   alpm_list_t* cache = alpm_db_get_pkgcache(local);
@@ -674,8 +615,8 @@ bc_err_t bc_mtree_load(bc_t* bc) {
     sp_str_t pkg     = sp_str_copy(arena_mem, sp_cstr_as_str(alpm_pkg_get_name(pkg_h)));
     sp_str_t version = sp_str_copy(arena_mem, sp_cstr_as_str(alpm_pkg_get_version(pkg_h)));
 
-    sp_str_t local_dir = sp_fmt(arena_mem, "{}/local/{}-{}", sp_fmt_str(bc->paths.db), sp_fmt_str(pkg), sp_fmt_str(version)).value;
-    sp_str_t mtree_path = sp_fmt(arena_mem, "{}/mtree", sp_fmt_str(local_dir)).value;
+    sp_str_t local_dir  = sp_fs_join_path(arena_mem, bc->paths.db, sp_fmt(arena_mem, "local/{}-{}", sp_fmt_str(pkg), sp_fmt_str(version)).value);
+    sp_str_t mtree_path = sp_fs_join_path(arena_mem, local_dir, sp_str_lit("mtree"));
 
     s64 disk_mtime = 0;
     if (bc_mtree_disk_mtime(bc, mtree_path, &disk_mtime) != BC_OK) continue;
@@ -692,26 +633,32 @@ bc_err_t bc_mtree_load(bc_t* bc) {
       s64 db_mtime = sqlite3_column_int64(sel, 1);
       hit = (db_mtime == disk_mtime) && sp_str_equal(db_version, version);
     } else {
-      sp_try(bc_check_sql(bc->sql, rc));
+      err = bc_check_sql(bc->sql, rc);
+      if (err) goto done;
     }
 
     if (hit) {
-      sp_try(bc_mtree_load_entries(bc, pkg));
+      err = bc_mtree_load_entries(bc, pkg);
+      if (err) goto done;
       bc->mtree.cached++;
     } else {
-      sp_try(bc_mtree_decode(bc, pkg, version, disk_mtime, mtree_path));
+      err = bc_mtree_decode(bc, pkg, version, disk_mtime, mtree_path);
+      if (err) goto done;
       bc->mtree.decoded++;
     }
   }
+
+done:
   sqlite3_finalize(sel);
-  return BC_OK;
+  return err;
 }
 
 //
-// Producer: walk every libalpm-owned file, enqueue into the work queue
+// Producer: walk every libalpm-owned file, enqueue into the work queue.
 //
 
 void bc_enqueue_owned_files(bc_t* bc) {
+  sp_mem_t arena_mem = sp_mem_arena_as_allocator(bc->work.arena);
   alpm_db_t* local = alpm_get_localdb(bc->alpm);
   alpm_list_t* cache = alpm_db_get_pkgcache(local);
   bc->num_packages = alpm_list_count(cache);
@@ -724,37 +671,20 @@ void bc_enqueue_owned_files(bc_t* bc) {
       const c8* name = files->files[i].name;
       if (!name) continue;
 
-      bc_work_t item = sp_zero;
-      u32 root_len = bc->paths.root.len;
-      u32 name_len = (u32)sp_cstr_len(name);
-
-      // Compose absolute path: root + name. alpm gives names relative to root,
-      // without a leading slash. Strip a duplicate slash if root ends with one.
-      u32 ri = root_len;
-      while (ri > 0 && bc->paths.root.data[ri - 1] == '/') ri--;
-      if (ri > SP_PATH_MAX) ri = SP_PATH_MAX;
-      sp_mem_copy(item.path, bc->paths.root.data, ri);
-      u32 cursor = ri;
-      if (cursor < SP_PATH_MAX) item.path[cursor++] = '/';
-      u32 to_copy = name_len;
-      if (cursor + to_copy > SP_PATH_MAX) to_copy = SP_PATH_MAX - cursor;
-      sp_mem_copy(item.path + cursor, name, to_copy);
-      cursor += to_copy;
-      item.len = cursor;
-
-      // alpm directory entries end with '/'. Drop the trailing slash;
-      // lstat() doesn't want it, and our cache only tracks regular files
-      // anyway (worker filters by st.kind).
-      while (item.len > 0 && item.path[item.len - 1] == '/') item.len--;
-      if (item.len == 0) continue;
+      sp_str_t name_view = sp_cstr_as_str(name);
+      sp_str_t abs = sp_fs_join_path(arena_mem, bc->paths.root, name_view);
+      // alpm directory entries end with '/'; sp_fs_join_path already strips
+      // them, so abs is clean.
+      if (sp_str_empty(abs)) continue;
 
       bc->num_files++;
-      bc_work_queue_push(&bc->work, &item);
+      bc_queue_push(&bc->work.queue, abs);
     }
   }
 }
 
 s32 main(s32 num_args, const c8** args) {
+  (void)num_args; (void)args;
   sp_mem_t mem = sp_mem_os_new();
 
   bc_t bc = sp_zero;
@@ -775,18 +705,15 @@ s32 main(s32 num_args, const c8** args) {
   sp_try(bc_db_open(&bc));
   sp_try(bc_alpm_open(&bc));
 
-  // In-memory file metadata cache, loaded from SQLite once. Immutable for the run.
-  sp_mutex_init(&bc.files.mutex, SP_MUTEX_PLAIN);
-  sp_ht_init(mem, bc.files.ht);
+  // In-memory file metadata cache, loaded once. Workers read concurrently
+  // via sp_ht_get_ex (no shared tmp state), so no mutex.
+  sp_ht_init(mem, bc.files);
   sp_try(bc_fmeta_load(&bc));
 
   sp_try(bc_run_begin(&bc, sp_str_lit("scan")));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("run_id:"), sp_fmt_uint(bc.run_id));
 
-  // Mtree cache: either load from db or decode-and-cache, per installed pkg.
-  // Done synchronously before workers start so the in-memory ht is fully
-  // populated when the file walk needs it.
-  bc.mtree.arena = sp_mem_arena_new_ex(mem, BC_WORKER_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
+  bc.mtree.arena = sp_mem_arena_new_ex(mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
   sp_str_ht_init(sp_mem_arena_as_allocator(bc.mtree.arena), bc.mtree.ht);
   sp_tm_timer_t mtree_timer = sp_tm_start_timer();
   sp_try(bc_mtree_load(&bc));
@@ -797,31 +724,34 @@ s32 main(s32 num_args, const c8** args) {
     sp_fmt_uint(bc.mtree.cached),
     sp_fmt_uint(bc.mtree.entries));
 
-  bc_work_queue_init(mem, &bc.work);
-  bc_write_queue_init(mem, &bc.write);
+  // Producer-side arena: the main thread bump-allocates every work item's
+  // path into here. Workers borrow those slices for the duration of
+  // processing; the arena outlives every worker.
+  bc.work.arena = sp_mem_arena_new_ex(mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
+  bc_queue_init(mem, &bc.work.queue, BC_QUEUE_CAPACITY);
+  bc_queue_init(mem, &bc.write,      BC_QUEUE_CAPACITY);
 
-  // Spawn workers. Each owns an arena it uses to permanently retain path
-  // strings referenced by the writes it produces; arenas outlive the writer.
   sp_for(it, BC_NUM_WORKERS) {
     bc.workers[it].bc    = &bc;
     bc.workers[it].id    = it;
     bc.workers[it].arena = sp_mem_arena_new_ex(
-      mem, BC_WORKER_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT
+      mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT
     );
     sp_thread_init(&bc.workers[it].thread, bc_worker_fn, &bc.workers[it]);
   }
 
   bc.writer.bc = &bc;
+  sp_try(bc_db_open_conn(bc.paths.cache, &bc.writer.sql));
   sp_thread_init(&bc.writer.thread, bc_writer_fn, &bc.writer);
 
   sp_tm_timer_t files_timer = sp_tm_start_timer(); {
     bc_enqueue_owned_files(&bc);
-    bc_work_queue_close(&bc.work);
+    bc_queue_close(&bc.work.queue);
 
     sp_for(it, BC_NUM_WORKERS) {
       sp_thread_join(&bc.workers[it].thread);
     }
-    bc_write_queue_close(&bc.write);
+    bc_queue_close(&bc.write);
 
     sp_thread_join(&bc.writer.thread);
 
@@ -851,9 +781,10 @@ s32 main(s32 num_args, const c8** args) {
   sp_for(it, BC_NUM_WORKERS) {
     sp_mem_arena_destroy(bc.workers[it].arena);
   }
-
+  sp_mem_arena_destroy(bc.work.arena);
   sp_mem_arena_destroy(bc.mtree.arena);
   alpm_release(bc.alpm);
+  sqlite3_close(bc.writer.sql);
   sqlite3_close(bc.sql);
   return BC_OK;
 }
