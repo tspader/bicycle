@@ -50,9 +50,9 @@ const char* bc_db_schema =
   "CREATE TABLE IF NOT EXISTS findings ("
   "  run_id     INTEGER NOT NULL,"
   "  kind       INTEGER NOT NULL,"
+  "  detail     TEXT    NOT NULL,"
   "  path       TEXT    NOT NULL,"
   "  pkg        TEXT,"
-  "  detail     TEXT,"
   "  created_at INTEGER NOT NULL"
   ");"
   "CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id);";
@@ -76,11 +76,14 @@ const char* bc_db_upsert_file_metadata =
   "  last_seen_run = excluded.last_seen_run;";
 
 const char* bc_db_insert_finding =
-  "INSERT INTO findings (run_id, kind, path, pkg, detail, created_at) "
+  "INSERT INTO findings (run_id, kind, detail, path, pkg, created_at) "
   "VALUES (?, ?, ?, ?, ?, ?);";
 
 const char* bc_db_select_findings_for_run =
-  "SELECT kind, path, pkg, detail FROM findings WHERE run_id = ? ORDER BY rowid;";
+  "SELECT kind, detail, path, pkg FROM findings WHERE run_id = ? ORDER BY rowid;";
+
+const char* bc_db_prune_file_metadata =
+  "DELETE FROM file_metadata WHERE last_seen_run < ?;";
 
 const char* bc_db_insert_meta_run =
   "INSERT INTO meta_run (started_at, action, db_mtime) VALUES (?, ?, ?);";

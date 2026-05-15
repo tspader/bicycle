@@ -1,4 +1,5 @@
 #include "walk.h"
+#include "bc.h"
 #include "queue.h"
 
 static const c8* bc_stray_ignore_prefixes [] = {
@@ -35,11 +36,10 @@ SP_PRIVATE void bc_tui_send_stray_progress(sp_prompt_ctx_t* prompt, u64 seen, sp
 }
 
 void bc_walk_strays(bc_t* bc) {
-  sp_mem_arena_t* arena = sp_mem_arena_new_ex(bc->mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
-  sp_mem_t mem = sp_mem_arena_as_allocator(arena);
+  sp_mem_arena_marker_t s = sp_mem_begin_scratch();
 
   u64 seen = 0;
-  sp_fs_for_recursive(mem, bc->paths.root, it) {
+  sp_fs_for_recursive(s.mem, bc->paths.root, it) {
     if (sp_atomic_s32_get(&bc->cancel)) {
       break;
     }
@@ -57,14 +57,15 @@ void bc_walk_strays(bc_t* bc) {
       bc_write_t out = sp_zero;
       out.kind = BC_WRITE_FINDING;
       out.finding.kind = BC_FINDING_STRAY;
-      out.finding.path = sp_str_copy(mem, it.entry.path);
+      out.finding.detail = BC_FINDING_DETAIL_NONE;
+      out.finding.path = sp_str_copy(bc->mem, it.entry.path);
       out.finding.created_at = (s64)sp_tm_now_epoch().s;
       bc_queue_push(&bc->write, out);
       bc->num_strays++;
     }
   }
 
-  sp_mem_arena_destroy(arena);
+  sp_mem_end_scratch(s);
 }
 
 s32 bc_strays_driver_fn(void* userdata) {

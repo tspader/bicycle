@@ -6,6 +6,7 @@ extern const char* bc_db_schema;
 
 extern const char* bc_db_select_file_metadata;
 extern const char* bc_db_upsert_file_metadata;
+extern const char* bc_db_prune_file_metadata;
 
 extern const char* bc_db_insert_finding;
 extern const char* bc_db_select_findings_for_run;

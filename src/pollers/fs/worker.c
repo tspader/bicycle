@@ -48,10 +48,11 @@ SP_PRIVATE bool bc_worker_hash_file(bc_worker_t* w, sp_str_t path, u8 out [32]) 
   return true;
 }
 
-SP_PRIVATE void bc_worker_emit_finding(bc_worker_t* w, sp_mem_t mem, bc_finding_kind_t kind, sp_str_t path, sp_str_t pkg) {
+SP_PRIVATE void bc_worker_emit_finding(bc_worker_t* w, sp_mem_t mem, bc_finding_kind_t kind, bc_finding_detail_t detail, sp_str_t path, sp_str_t pkg) {
   bc_write_t out = sp_zero;
   out.kind = BC_WRITE_FINDING;
   out.finding.kind = kind;
+  out.finding.detail = detail;
   out.finding.path = sp_str_copy(mem, path);
   out.finding.pkg = pkg;
   out.finding.created_at = (s64)sp_tm_now_epoch().s;
@@ -59,56 +60,33 @@ SP_PRIVATE void bc_worker_emit_finding(bc_worker_t* w, sp_mem_t mem, bc_finding_
   w->findings++;
 }
 
-// Compare on-disk stat against an mtree entry. Returns a comma-joined detail
-// string of mismatched fields, allocated in arena_mem, or {0,0} if everything
-// matches.
-SP_PRIVATE sp_str_t bc_worker_compare_meta(sp_mem_t arena_mem, sp_str_t path,
-                                           const struct stat* st,
-                                           const bc_mtree_entry_t* e) {
-  sp_str_t parts [8];
-  u32 n = 0;
-
+SP_PRIVATE bool bc_worker_meta_matches(sp_mem_t arena_mem, sp_str_t path,
+                                       const struct stat* st,
+                                       const bc_mtree_entry_t* e,
+                                       bc_finding_detail_t* out_detail) {
   sp_fs_kind_t actual_kind;
   if      (S_ISREG(st->st_mode))  actual_kind = SP_FS_KIND_FILE;
   else if (S_ISDIR(st->st_mode))  actual_kind = SP_FS_KIND_DIR;
   else if (S_ISLNK(st->st_mode))  actual_kind = SP_FS_KIND_SYMLINK;
   else                            actual_kind = SP_FS_KIND_NONE;
 
-  if (actual_kind != e->kind) {
-    // When kinds disagree, every other field comparison is noise — emit just
-    // the kind delta and let the operator look at the file.
-    parts[n++] = sp_fmt(arena_mem, "kind={} expected={}",
-                        sp_fmt_int(actual_kind), sp_fmt_int(e->kind)).value;
-    return sp_str_join_n(arena_mem, parts, n, sp_str_lit(", "));
-  }
-  if ((s32)(st->st_mode & 07777) != e->mode) {
-    parts[n++] = sp_fmt(arena_mem, "mode={} expected={}",
-                        sp_fmt_int((s32)(st->st_mode & 07777)),
-                        sp_fmt_int(e->mode)).value;
-  }
-  if ((s32)st->st_uid != e->uid) {
-    parts[n++] = sp_fmt(arena_mem, "uid={} expected={}",
-                        sp_fmt_int((s32)st->st_uid), sp_fmt_int(e->uid)).value;
-  }
-  if ((s32)st->st_gid != e->gid) {
-    parts[n++] = sp_fmt(arena_mem, "gid={} expected={}",
-                        sp_fmt_int((s32)st->st_gid), sp_fmt_int(e->gid)).value;
-  }
+  if (actual_kind != e->kind)                { *out_detail = BC_FINDING_DETAIL_KIND;   return false; }
+  if ((s32)(st->st_mode & 07777) != e->mode) { *out_detail = BC_FINDING_DETAIL_MODE;   return false; }
+  if ((s32)st->st_uid != e->uid)             { *out_detail = BC_FINDING_DETAIL_UID;    return false; }
+  if ((s32)st->st_gid != e->gid)             { *out_detail = BC_FINDING_DETAIL_GID;    return false; }
   // pacman only tracks size on regular files.
-  if (actual_kind == SP_FS_KIND_FILE && e->kind == SP_FS_KIND_FILE && st->st_size != e->size) {
-    parts[n++] = sp_fmt(arena_mem, "size={} expected={}",
-                        sp_fmt_int((s64)st->st_size), sp_fmt_int(e->size)).value;
+  if (actual_kind == SP_FS_KIND_FILE && st->st_size != e->size) {
+    *out_detail = BC_FINDING_DETAIL_SIZE;
+    return false;
   }
-  if (actual_kind == SP_FS_KIND_SYMLINK && e->kind == SP_FS_KIND_SYMLINK && e->target.len) {
+  if (actual_kind == SP_FS_KIND_SYMLINK && e->target.len) {
     sp_str_t actual_target = bc_worker_readlink(arena_mem, path);
     if (!sp_str_equal(actual_target, e->target)) {
-      parts[n++] = sp_fmt(arena_mem, "target={.q} expected={.q}",
-                          sp_fmt_str(actual_target), sp_fmt_str(e->target)).value;
+      *out_detail = BC_FINDING_DETAIL_TARGET;
+      return false;
     }
   }
-
-  if (n == 0) return (sp_str_t)sp_zero;
-  return sp_str_join_n(arena_mem, parts, n, sp_str_lit(", "));
+  return true;
 }
 
 s32 bc_worker_fn(void* userdata) {
@@ -135,7 +113,7 @@ s32 bc_worker_fn(void* userdata) {
       u64 idx;
       bc_mtree_entry_t* e = sp_str_ht_get_ex(bc->mtree.ht, path, idx);
       sp_str_t pkg = e ? e->pkg : (sp_str_t)sp_zero;
-      bc_worker_emit_finding(w, arena_mem, BC_FINDING_MISSING, path, pkg);
+      bc_worker_emit_finding(w, arena_mem, BC_FINDING_MISSING, BC_FINDING_DETAIL_NONE, path, pkg);
       continue;
     }
 
@@ -145,12 +123,12 @@ s32 bc_worker_fn(void* userdata) {
     u64 mt_idx;
     bc_mtree_entry_t* mt = sp_str_ht_get_ex(bc->mtree.ht, path, mt_idx);
     if (mt) {
-      sp_str_t detail = bc_worker_compare_meta(arena_mem, path, &st, mt);
-      if (detail.len) {
-        bc_worker_emit_finding(w, arena_mem, BC_FINDING_MODIFIED_META, path, mt->pkg);
+      bc_finding_detail_t detail = BC_FINDING_DETAIL_NONE;
+      if (!bc_worker_meta_matches(arena_mem, path, &st, mt, &detail)) {
+        bc_worker_emit_finding(w, arena_mem, BC_FINDING_MODIFIED_META, detail, path, mt->pkg);
       }
     } else {
-      bc_worker_emit_finding(w, arena_mem, BC_FINDING_UNTRACKED, path, sp_zero_s(sp_str_t));
+      bc_worker_emit_finding(w, arena_mem, BC_FINDING_UNTRACKED, BC_FINDING_DETAIL_NONE, path, sp_zero_s(sp_str_t));
     }
 
     // Directories and symlinks have no content cache; skip.
@@ -179,7 +157,7 @@ s32 bc_worker_fn(void* userdata) {
       continue;
     }
     if (mt && mt->have_hash && sp_sys_memcmp(hash, mt->sha256, 32) != 0) {
-      bc_worker_emit_finding(w, arena_mem, BC_FINDING_MODIFIED_CONTENT, path, mt->pkg);
+      bc_worker_emit_finding(w, arena_mem, BC_FINDING_MODIFIED_CONTENT, BC_FINDING_DETAIL_NONE, path, mt->pkg);
     }
 
     bc_write_t out = sp_zero;

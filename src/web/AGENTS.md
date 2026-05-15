@@ -1,0 +1,3 @@
+- Never comment your code. Code with comments will be rejected.
+- Never handroll validation; use Zod.
+- Prefer to use TypeScript for scripts and utilities, not Bash

@@ -101,6 +101,16 @@ typedef enum {
   BC_FINDING_STRAY            = 5,
 } bc_finding_kind_t;
 
+typedef enum {
+  BC_FINDING_DETAIL_NONE   = 0,
+  BC_FINDING_DETAIL_KIND   = 1,
+  BC_FINDING_DETAIL_MODE   = 2,
+  BC_FINDING_DETAIL_UID    = 3,
+  BC_FINDING_DETAIL_GID    = 4,
+  BC_FINDING_DETAIL_SIZE   = 5,
+  BC_FINDING_DETAIL_TARGET = 6,
+} bc_finding_detail_t;
+
 typedef struct {
   bc_file_key_t  key;
   bc_file_meta_t meta;
@@ -108,10 +118,10 @@ typedef struct {
 } bc_write_file_t;
 
 typedef struct {
-  bc_finding_kind_t kind;
+  bc_finding_kind_t   kind;
+  bc_finding_detail_t detail;
   sp_str_t path;
   sp_str_t pkg;
-  sp_str_t detail;
   s64 created_at;
 } bc_write_finding_t;
 
