@@ -1,11 +1,11 @@
 [Unit]
-Description=Bicycle installer web UI
+Description=arch-installer web UI
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=/root/web
-ExecStart=/usr/bin/bun run src/server.tsx
+ExecStart=/usr/local/bin/bicycle
+Environment=PORT=80
 Restart=on-failure
 
 [Install]
