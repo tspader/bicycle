@@ -765,6 +765,66 @@ sp_app_config_t  sp_prompt_app(sp_prompt_ctx_t* ctx, sp_prompt_widget_t widget);
 #endif
 
 
+/////////////
+// CONTEXT //
+/////////////
+// @context
+typedef struct {
+  u32 codepoint;
+  sp_prompt_style_t style;
+} sp_prompt_cell_t;
+
+typedef struct {
+  u32 cols;
+  u32 rows;
+  sp_prompt_cell_t* cells;
+} sp_prompt_frame_t;
+
+struct sp_prompt_ctx_t {
+  void* user_data;
+  u32 cols;
+  u32 rows;
+  u32 cursor_row;
+  u32 cursor_col;
+  u32 prompt_height;
+  sp_prompt_widget_t widget;
+  sp_atomic_s32_t state;
+  sp_prompt_value_t value;
+  struct {
+    sp_prompt_event_t events[SP_PROMPT_PRIMED_EVENT_CAP];
+    u32 count;
+    u32 index;
+  } primed;
+  sp_io_writer_t* writer;
+  sp_prompt_cell_t* framebuffer;
+  sp_da(sp_prompt_frame_t) frames;
+  struct {
+    struct { sp_sys_fd_t in; sp_sys_fd_t out; } fds;
+    sp_tty_mode_t cache;
+    bool raw;
+  } terminal;
+  sp_mem_arena_t* arena;
+  sp_mem_t mem;
+  struct {
+    sp_prompt_event_data_t value;
+    bool dirty;
+  } progress;
+  struct {
+    sp_str_t value;
+    bool dirty;
+  } status;
+  struct {
+    sp_mutex_t lock;
+    sp_mem_arena_t* arena;
+  } channel;
+  struct {
+    sp_sys_fd_t read;
+    sp_sys_fd_t write;
+    sp_atomic_s32_t pending;
+  } wake;
+};
+
+
 #if defined(SP_PROMPT_IMPLEMENTATION)
 
 typedef struct {
@@ -829,65 +889,6 @@ sp_prompt_widget_t sp_prompt_intro_widget(sp_prompt_ctx_t* ctx, sp_prompt_intro_
 sp_prompt_widget_t sp_prompt_outro_widget(sp_prompt_ctx_t* ctx, sp_prompt_outro_t config);
 sp_prompt_widget_t sp_prompt_note_widget(sp_prompt_ctx_t* ctx, sp_prompt_note_t config);
 sp_prompt_widget_t sp_prompt_message_widget(sp_prompt_ctx_t* ctx, sp_prompt_message_t config);
-
-/////////////
-// CONTEXT //
-/////////////
-// @context
-typedef struct {
-  u32 codepoint;
-  sp_prompt_style_t style;
-} sp_prompt_cell_t;
-
-typedef struct {
-  u32 cols;
-  u32 rows;
-  sp_prompt_cell_t* cells;
-} sp_prompt_frame_t;
-
-struct sp_prompt_ctx_t {
-  void* user_data;
-  u32 cols;
-  u32 rows;
-  u32 cursor_row;
-  u32 cursor_col;
-  u32 prompt_height;
-  sp_prompt_widget_t widget;
-  sp_atomic_s32_t state;
-  sp_prompt_value_t value;
-  struct {
-    sp_prompt_event_t events[SP_PROMPT_PRIMED_EVENT_CAP];
-    u32 count;
-    u32 index;
-  } primed;
-  sp_io_writer_t* writer;
-  sp_prompt_cell_t* framebuffer;
-  sp_da(sp_prompt_frame_t) frames;
-  struct {
-    struct { sp_sys_fd_t in; sp_sys_fd_t out; } fds;
-    sp_tty_mode_t cache;
-    bool raw;
-  } terminal;
-  sp_mem_arena_t* arena;
-  sp_mem_t mem;
-  struct {
-    sp_prompt_event_data_t value;
-    bool dirty;
-  } progress;
-  struct {
-    sp_str_t value;
-    bool dirty;
-  } status;
-  struct {
-    sp_mutex_t lock;
-    sp_mem_arena_t* arena;
-  } channel;
-  struct {
-    sp_sys_fd_t read;
-    sp_sys_fd_t write;
-    sp_atomic_s32_t pending;
-  } wake;
-};
 
 #define SP_PROMPT_WAKE_NOT_PENDING 0
 #define SP_PROMPT_WAKE_PENDING 1
