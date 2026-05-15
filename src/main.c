@@ -1,5 +1,6 @@
 #define SP_IMPLEMENTATION
 #include "sp.h"
+#include "sp_prompt.h"
 
 #include <alpm.h>
 #include <alpm_list.h>
@@ -209,6 +210,8 @@ struct bc_t {
   bc_paths_t paths;
   u64 num_packages;
   u64 num_files;
+  u64 num_visited;
+  u64 num_strays;
   u64 run_id;
 
   // Loaded once from the db on startup and read-only for the rest of the run.
@@ -234,6 +237,10 @@ struct bc_t {
   bc_worker_t workers [BC_NUM_WORKERS];
   bc_writer_t writer;
 
+  sp_prompt_ctx_t* prompt;
+  sp_atomic_s32_t  files_scanned;
+  sp_atomic_s32_t  cancel;
+
   struct {
     u64 mtree;
     u64 files;
@@ -241,6 +248,117 @@ struct bc_t {
     u64 total;
   } timings;
 };
+
+typedef struct {
+  bc_t*           bc;
+  const c8*       prompt;
+  sp_str_t        done_label;
+  u32             frame_index;
+  u64             count;
+  sp_str_t        status;
+  s32             (*driver_fn)(void*);
+  sp_thread_t     driver;
+  bool            driver_started;
+} bc_scan_widget_t;
+
+static const u32 bc_scan_frames [] = {
+  0x280B, 0x2819, 0x281A, 0x281E, 0x2816, 0x2826, 0x2834, 0x2832, 0x2833, 0x2813
+};
+
+static void bc_scan_on_event(sp_prompt_ctx_t* ctx, sp_prompt_event_t event) {
+  bc_scan_widget_t* w = (bc_scan_widget_t*)ctx->user_data;
+  switch (event.kind) {
+    case SP_PROMPT_EVENT_INIT: {
+      w->frame_index = 0;
+      if (!w->driver_started) {
+        w->driver_started = true;
+        sp_thread_init(&w->driver, w->driver_fn, w->bc);
+      }
+      break;
+    }
+    case SP_PROMPT_EVENT_PROGRESS: {
+      w->count = event.progress.data.u;
+      break;
+    }
+    case SP_PROMPT_EVENT_STATUS: {
+      w->status = event.status.value;
+      break;
+    }
+    case SP_PROMPT_EVENT_CTRL_C:
+    case SP_PROMPT_EVENT_ESCAPE: {
+      sp_atomic_s32_set(&w->bc->cancel, 1);
+      bc_queue_close(&w->bc->work.queue);
+      sp_prompt_set_state(ctx, SP_PROMPT_STATE_CANCEL);
+      break;
+    }
+    case SP_PROMPT_EVENT_ENTER:
+    case SP_PROMPT_EVENT_NONE:
+    case SP_PROMPT_EVENT_INPUT:
+    case SP_PROMPT_EVENT_UP:
+    case SP_PROMPT_EVENT_DOWN:
+    case SP_PROMPT_EVENT_LEFT:
+    case SP_PROMPT_EVENT_RIGHT:
+    case SP_PROMPT_EVENT_TAB:
+    case SP_PROMPT_EVENT_BACKSPACE:
+    case SP_PROMPT_EVENT_ABORT: {
+      break;
+    }
+  }
+}
+
+static void bc_scan_on_update(sp_prompt_ctx_t* ctx) {
+  bc_scan_widget_t* w = (bc_scan_widget_t*)ctx->user_data;
+  w->frame_index = (w->frame_index + 1) % sp_carr_len(bc_scan_frames);
+}
+
+static void bc_scan_render(sp_prompt_ctx_t* ctx) {
+  bc_scan_widget_t* w = (bc_scan_widget_t*)ctx->user_data;
+  sp_mem_arena_marker_t s = sp_mem_begin_scratch();
+
+  if (ctx->state == SP_PROMPT_STATE_SUBMIT) {
+    sp_prompt_line(ctx, sp_fmt(s.mem, "✔  {} {}",
+      sp_fmt_str(w->done_label),
+      sp_fmt_uint(w->count)).value);
+  } else if (ctx->state == SP_PROMPT_STATE_CANCEL) {
+    sp_prompt_line(ctx, sp_fmt(s.mem, "✖  cancelled at {}",
+      sp_fmt_uint(w->count)).value);
+  } else {
+    sp_str_t glyph = sp_prompt_repeat(ctx, bc_scan_frames[w->frame_index], 1);
+    sp_prompt_line(ctx, sp_fmt(s.mem, "{}  {} {}",
+      sp_fmt_str(glyph),
+      sp_fmt_cstr(w->prompt),
+      sp_fmt_uint(w->count)).value);
+    if (!sp_str_empty(w->status)) {
+      sp_prompt_line(ctx, sp_fmt(s.mem, "   {}", sp_fmt_str(w->status)).value);
+    } else {
+      sp_prompt_line(ctx, sp_str_lit(""));
+    }
+  }
+
+  sp_mem_end_scratch(s);
+}
+
+static bc_scan_widget_t* bc_scan_widget_new(sp_prompt_ctx_t* ctx, bc_t* bc, const c8* prompt, sp_str_t done_label, s32 (*driver_fn)(void*)) {
+  bc_scan_widget_t* w = sp_mem_arena_alloc_type(ctx->arena, bc_scan_widget_t);
+  *w = (bc_scan_widget_t) {
+    .bc         = bc,
+    .prompt     = prompt,
+    .done_label = done_label,
+    .status     = sp_str_lit(""),
+    .driver_fn  = driver_fn,
+  };
+  return w;
+}
+
+static sp_prompt_widget_t bc_scan_widget_as_prompt(bc_scan_widget_t* w) {
+  return (sp_prompt_widget_t) {
+    .user_data = w,
+    .on_event  = bc_scan_on_event,
+    .on_update = bc_scan_on_update,
+    .render    = bc_scan_render,
+    .fps       = 12,
+  };
+}
 
 //
 // SQLite error helpers
@@ -471,7 +589,16 @@ s32 bc_worker_fn(void* userdata) {
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(w->arena);
 
   bc_work_t path;
+  u32 local_processed = 0;
   while (bc_queue_pop(&bc->work.queue, &path)) {
+    if (sp_atomic_s32_get(&bc->cancel)) break;
+    s32 scanned = sp_atomic_s32_add(&bc->files_scanned, 1) + 1;
+    if (bc->prompt) {
+      sp_prompt_send_progress_u64(bc->prompt, (u64)scanned);
+      if ((local_processed++ & 0xFF) == 0) {
+        sp_prompt_send_status_str(bc->prompt, path);
+      }
+    }
     struct stat st;
     if (!bc_worker_lstat(w, path, &st)) {
       // alpm thinks this path is owned, but lstat failed. Look up the mtree
@@ -890,6 +1017,7 @@ void bc_enqueue_owned_files(bc_t* bc) {
   bc->num_packages = alpm_list_count(cache);
 
   bc_alpm_for(it, cache) {
+    if (sp_atomic_s32_get(&bc->cancel)) return;
     alpm_pkg_t* pkg = it->data;
     alpm_filelist_t* files = alpm_pkg_get_files(pkg);
     if (!files) continue;
@@ -950,38 +1078,62 @@ static bool bc_path_is_ignored(sp_str_t path, sp_str_t cache_path) {
   return false;
 }
 
-// Stray walk emits findings on the main thread. The writer is still running,
-// so we just push items into the same write queue the workers were using.
+void bc_tui_send_stray_progress(sp_prompt_ctx_t* prompt, u64 seen, sp_str_t path) {
+  if (!prompt) return;
+  if (seen % 1024) return;
+  sp_prompt_send_progress_u64(prompt, seen);
+  sp_prompt_send_status_str(prompt, path);
+}
+
 void bc_walk_strays(bc_t* bc) {
   sp_mem_arena_t* arena = sp_mem_arena_new_ex(bc->mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
-  sp_mem_t arena_mem = sp_mem_arena_as_allocator(arena);
+  sp_mem_t mem = sp_mem_arena_as_allocator(arena);
 
-  u64 visited = 0;
-  u64 strays  = 0;
+  u64 seen = 0;
+  sp_fs_for_recursive(mem, bc->paths.root, it) {
+    if (sp_atomic_s32_get(&bc->cancel)) {
+      break;
+    }
 
-  sp_fs_for_recursive(arena_mem, bc->paths.root, it) {
-    sp_str_t path = it.entry.path;
-    if (bc_path_is_ignored(path, bc->paths.cache)) continue;
-    visited++;
+    bc_tui_send_stray_progress(bc->prompt, ++seen, it.entry.path);
 
-    u64 idx;
-    if (sp_str_ht_get_ex(bc->mtree.ht, path, idx)) continue;
+    if (!bc_path_is_ignored(it.entry.path, bc->paths.cache)) {
+      bc->num_visited++;
 
-    bc_write_t out = sp_zero;
-    out.kind            = BC_WRITE_FINDING;
-    out.finding.kind    = BC_FINDING_STRAY;
-    out.finding.path    = sp_str_copy(arena_mem, path);
-    out.finding.created_at = (s64)sp_tm_now_epoch().s;
-    bc_queue_push(&bc->write, out);
-    strays++;
+      u64 idx;
+      if (sp_str_ht_get_ex(bc->mtree.ht, it.entry.path, idx)) {
+        continue;
+      }
+
+      bc_write_t out = sp_zero;
+      out.kind = BC_WRITE_FINDING;
+      out.finding.kind = BC_FINDING_STRAY;
+      out.finding.path = sp_str_copy(mem, it.entry.path);
+      out.finding.created_at = (s64)sp_tm_now_epoch().s;
+      bc_queue_push(&bc->write, out);
+      bc->num_strays++;
+    }
   }
 
-  sp_log("{:<12} {.cyan} visited, {.cyan} strays",
-    sp_fmt_cstr("strays:"),
-    sp_fmt_uint(visited),
-    sp_fmt_uint(strays));
-
   sp_mem_arena_destroy(arena);
+}
+
+s32 bc_files_driver_fn(void* userdata) {
+  bc_t* bc = (bc_t*)userdata;
+  bc_enqueue_owned_files(bc);
+  bc_queue_close(&bc->work.queue);
+  sp_for(it, BC_NUM_WORKERS) {
+    sp_thread_join(&bc->workers[it].thread);
+  }
+  if (bc->prompt) sp_prompt_complete(bc->prompt);
+  return 0;
+}
+
+s32 bc_strays_driver_fn(void* userdata) {
+  bc_t* bc = (bc_t*)userdata;
+  bc_walk_strays(bc);
+  if (bc->prompt) sp_prompt_complete(bc->prompt);
+  return 0;
 }
 
 //
@@ -1101,22 +1253,32 @@ s32 main(s32 num_args, const c8** args) {
   sp_try(bc_db_open_conn(bc.paths.cache, &bc.writer.sql));
   sp_thread_init(&bc.writer.thread, bc_writer_fn, &bc.writer);
 
-  sp_tm_timer_t files_timer = sp_tm_start_timer(); {
-    bc_enqueue_owned_files(&bc);
-    bc_queue_close(&bc.work.queue);
+  bc.prompt = sp_prompt_begin(mem);
 
-    sp_for(it, BC_NUM_WORKERS) {
-      sp_thread_join(&bc.workers[it].thread);
+  sp_tm_timer_t files_timer = sp_tm_start_timer(); {
+    if (bc.prompt) {
+      bc_scan_widget_t* w = bc_scan_widget_new(bc.prompt, &bc, "Scanning owned files...", sp_str_lit("Owned files scanned:"), bc_files_driver_fn);
+      sp_prompt_run(bc.prompt, bc_scan_widget_as_prompt(w));
+      if (w->driver_started) sp_thread_join(&w->driver);
+    } else {
+      bc_files_driver_fn(&bc);
     }
     bc.timings.files = sp_tm_read_timer(&files_timer);
   }
 
-  // Stray walk runs on the main thread, sharing the writer with the worker
-  // phase: nothing else is producing into &bc.write right now.
-  sp_tm_timer_t strays_timer = sp_tm_start_timer(); {
-    bc_walk_strays(&bc);
-    bc.timings.strays = sp_tm_read_timer(&strays_timer);
+  sp_tm_timer_t strays_timer = sp_tm_start_timer();
+  if (!sp_atomic_s32_get(&bc.cancel)) {
+    if (bc.prompt) {
+      bc_scan_widget_t* w = bc_scan_widget_new(bc.prompt, &bc, "Walking strays...", sp_str_lit("Entries scanned:"), bc_strays_driver_fn);
+      sp_prompt_run(bc.prompt, bc_scan_widget_as_prompt(w));
+      if (w->driver_started) sp_thread_join(&w->driver);
+    } else {
+      bc_walk_strays(&bc);
+    }
   }
+  bc.timings.strays = sp_tm_read_timer(&strays_timer);
+
+  if (bc.prompt) sp_prompt_end(bc.prompt);
 
   bc_queue_close(&bc.write);
   sp_thread_join(&bc.writer.thread);
@@ -1135,6 +1297,10 @@ s32 main(s32 num_args, const c8** args) {
 
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("packages:"), sp_fmt_uint(bc.num_packages));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("files:"),    sp_fmt_uint(bc.num_files));
+  sp_log("{:<12} {.cyan} visited, {.cyan} strays",
+    sp_fmt_cstr("strays:"),
+    sp_fmt_uint(bc.num_visited),
+    sp_fmt_uint(bc.num_strays));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("hits:"),     sp_fmt_uint(hits));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("misses:"),   sp_fmt_uint(misses));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("hashed:"),   sp_fmt_uint(hashed));
@@ -1146,7 +1312,7 @@ s32 main(s32 num_args, const c8** args) {
   sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_strays:"), sp_fmt_uint(bc.timings.strays));
   sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_total:"),  sp_fmt_uint(bc.timings.total));
 
-  bc_print_findings_for_run(&bc);
+  //bc_print_findings_for_run(&bc);
 
   sp_for(it, BC_NUM_WORKERS) {
     EVP_MD_CTX_free(bc.workers[it].md_ctx);
