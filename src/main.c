@@ -94,10 +94,10 @@ typedef struct {
 
 typedef struct {
   bc_finding_kind_t kind;
-  sp_str_t          path;
-  sp_str_t          pkg;     // {0,0} if unknown
-  sp_str_t          detail;  // {0,0} if none
-  s64               created_at;
+  sp_str_t path;
+  sp_str_t pkg;
+  sp_str_t detail;
+  s64 created_at;
 } bc_write_finding_t;
 
 typedef struct {
@@ -144,8 +144,7 @@ typedef struct {
   sp_mutex_unlock(&(q)->mu);                                         \
 } while (0)
 
-// true if an item was popped into *out; false if the queue is closed and
-// drained.
+// Returns true if an item was popped, false if the queue was closed
 #define bc_queue_pop(q, out) __extension__ ({                        \
   bool _ok = false;                                                  \
   sp_mutex_lock(&(q)->mu);                                           \
@@ -390,6 +389,24 @@ bc_err_t bc_sql_exec(sqlite3* sql, const c8* statement) {
     return BC_ERR_SQLITE_EXEC;
   }
   return BC_OK;
+}
+
+bc_err_t bc_sql_prepare(sqlite3* sql, const c8* source, s32 len, sqlite3_stmt** s) {
+  s32 rc = sqlite3_prepare_v2(sql, source, -1, s, SP_NULLPTR);
+  return bc_check_sql(sql, rc);
+}
+
+bc_err_t bc_sql_step(sqlite3* sql, sqlite3_stmt* s) {
+  s32 rc = sqlite3_step(s);
+  return bc_check_sql(sql, rc);
+}
+
+void bc_sql_bind_u64(sqlite3_stmt* s, s32 slot, u64 value) {
+  sqlite3_bind_int64(s, slot, (s64)value);
+}
+
+void bc_sql_bind_str(sqlite3_stmt* s, s32 slot, sp_str_t str) {
+  sqlite3_bind_text(s, slot, str.data, str.len, SQLITE_STATIC);
 }
 
 bc_err_t bc_db_open_conn(sp_str_t path, sqlite3** out) {
@@ -677,58 +694,57 @@ s32 bc_worker_fn(void* userdata) {
   return BC_OK;
 }
 
-//
-// Writer thread: batch upserts into file_metadata on its own sqlite connection.
-//
-
 #define bc_writer_try(expr) bc_try_goto((expr), w->err, done)
 
 s32 bc_writer_fn(void* userdata) {
   bc_writer_t* w = (bc_writer_t*)userdata;
+  bc_t* bc = w->bc;
 
-  sqlite3_stmt* upsert  = SP_NULLPTR;
-  sqlite3_stmt* finsert = SP_NULLPTR;
-  bool in_tx = false;
-  u32  in_batch = 0;
+  struct {
+    sqlite3_stmt* file;
+    sqlite3_stmt* finding;
+  } s = sp_zero;
+  u32 in_batch = 0;
 
-  bc_writer_try(bc_check_sql(w->sql, sqlite3_prepare_v2(w->sql, bc_db_upsert_file_metadata, -1, &upsert,  SP_NULLPTR)));
-  bc_writer_try(bc_check_sql(w->sql, sqlite3_prepare_v2(w->sql, bc_db_insert_finding,        -1, &finsert, SP_NULLPTR)));
+  bc_writer_try(bc_sql_prepare(w->sql, bc_db_upsert_file_metadata, -1, &s.file));
+  bc_writer_try(bc_sql_prepare(w->sql, bc_db_insert_finding, -1, &s.finding));
+  bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
 
   bc_write_t item;
   while (bc_queue_pop(&w->bc->write, &item)) {
-    if (!in_tx) {
-      bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
-      in_tx = true;
-      in_batch = 0;
-    }
-
     switch (item.kind) {
       case BC_WRITE_FILE: {
-        sqlite3_reset(upsert);
-        sqlite3_bind_int64(upsert,  1, (s64)item.file.key.dev);
-        sqlite3_bind_int64(upsert,  2, (s64)item.file.key.ino);
-        sqlite3_bind_int64(upsert,  3, item.file.meta.mtime_sec);
-        sqlite3_bind_int64(upsert,  4, item.file.meta.mtime_nsec);
-        sqlite3_bind_int64(upsert,  5, item.file.meta.ctime_sec);
-        sqlite3_bind_int64(upsert,  6, item.file.meta.ctime_nsec);
-        sqlite3_bind_int64(upsert,  7, item.file.meta.size);
-        sqlite3_bind_blob (upsert,  8, item.file.meta.sha256, 32, SQLITE_STATIC);
-        sqlite3_bind_text (upsert,  9, item.file.path.data, (s32)item.file.path.len, SQLITE_STATIC);
-        sqlite3_bind_int64(upsert, 10, (s64)w->bc->run_id);
-        bc_writer_try(bc_check_sql(w->sql, sqlite3_step(upsert)));
+        sqlite3_reset(s.file);
+        bc_sql_bind_u64(s.file, 1, item.file.key.dev);
+        bc_sql_bind_u64(s.file, 2, item.file.key.ino);
+        sqlite3_bind_int64(s.file, 3, item.file.meta.mtime_sec);
+        sqlite3_bind_int64(s.file, 4, item.file.meta.mtime_nsec);
+        sqlite3_bind_int64(s.file, 5, item.file.meta.ctime_sec);
+        sqlite3_bind_int64(s.file, 6, item.file.meta.ctime_nsec);
+        sqlite3_bind_int64(s.file, 7, item.file.meta.size);
+        sqlite3_bind_blob(s.file, 8, item.file.meta.sha256, 32, SQLITE_STATIC);
+        bc_sql_bind_str(s.file, 9, item.file.path);
+        bc_sql_bind_u64(s.file, 10, bc->run_id);
+        bc_writer_try(bc_sql_step(w->sql, s.file));
         break;
       }
       case BC_WRITE_FINDING: {
-        sqlite3_reset(finsert);
-        sqlite3_bind_int64(finsert, 1, (s64)w->bc->run_id);
-        sqlite3_bind_int  (finsert, 2, (s32)item.finding.kind);
-        sqlite3_bind_text (finsert, 3, item.finding.path.data, (s32)item.finding.path.len, SQLITE_STATIC);
-        if (item.finding.pkg.len) sqlite3_bind_text(finsert, 4, item.finding.pkg.data, (s32)item.finding.pkg.len, SQLITE_STATIC);
-        else                      sqlite3_bind_null(finsert, 4);
-        if (item.finding.detail.len) sqlite3_bind_text(finsert, 5, item.finding.detail.data, (s32)item.finding.detail.len, SQLITE_STATIC);
-        else                         sqlite3_bind_null(finsert, 5);
-        sqlite3_bind_int64(finsert, 6, item.finding.created_at);
-        bc_writer_try(bc_check_sql(w->sql, sqlite3_step(finsert)));
+        sqlite3_reset(s.finding);
+        bc_sql_bind_u64(s.finding, 1, bc->run_id);
+        sqlite3_bind_int(s.finding, 2, item.finding.kind);
+        bc_sql_bind_str(s.finding, 3, item.finding.path);
+        if (!sp_str_empty(item.finding.pkg)) {
+          bc_sql_bind_str(s.finding, 4, item.finding.pkg);
+        } else {
+          sqlite3_bind_null(s.finding, 4);
+        }
+        if (item.finding.detail.len) {
+          bc_sql_bind_str(s.finding, 5, item.finding.detail);
+        } else {
+          sqlite3_bind_null(s.finding, 5);
+        }
+        sqlite3_bind_int64(s.finding, 6, item.finding.created_at);
+        bc_writer_try(bc_sql_step(w->sql, s.finding));
         break;
       }
     }
@@ -737,23 +753,23 @@ s32 bc_writer_fn(void* userdata) {
     in_batch++;
     if (in_batch >= BC_WRITE_BATCH) {
       bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
-      in_tx = false;
+      bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
+      in_batch = 0;
     }
   }
 
-  if (in_tx) {
-    bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
-    in_tx = false;
-  }
+  bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
 
 done:
-  if (in_tx) bc_sql_exec(w->sql, "ROLLBACK;");
-  sqlite3_finalize(upsert);
-  sqlite3_finalize(finsert);
-  // On error we must close the write queue ourselves so any worker still
-  // blocked in bc_queue_push (write queue full, writer dead) wakes up and
-  // drops its item instead of deadlocking the join below.
-  if (w->err) bc_queue_close(&w->bc->write);
+  sqlite3_finalize(s.file);
+  sqlite3_finalize(s.finding);
+
+  if (w->err) {
+    bc_sql_exec(w->sql, "ROLLBACK;");
+    // Unblock anyone waiting to push work to the queue
+    bc_queue_close(&w->bc->write);
+  }
+
   return w->err;
 }
 
@@ -762,15 +778,15 @@ done:
 //
 
 bc_err_t bc_run_begin(bc_t* bc, sp_str_t action) {
-  sqlite3_stmt* stmt = SP_NULLPTR;
-  bc_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_meta_run, -1, &stmt, SP_NULLPTR)));
+  sqlite3_stmt* s = SP_NULLPTR;
+  bc_try(bc_sql_prepare(bc->sql, bc_db_insert_meta_run, -1, &s));
 
   sp_tm_epoch_t now = sp_tm_now_epoch();
-  sqlite3_bind_int64(stmt, 1, (s64)now.s);
-  sqlite3_bind_text (stmt, 2, action.data, (s32)action.len, SQLITE_STATIC);
-  sqlite3_bind_null (stmt, 3);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  bc_sql_bind_u64(s, 1, now.s);
+  bc_sql_bind_str(s, 2, action);
+  sqlite3_bind_null(s, 3);
+  sqlite3_step(s);
+  sqlite3_finalize(s);
   bc_try(bc_check_sql_e(bc->sql));
 
   bc->run_id = (u64)sqlite3_last_insert_rowid(bc->sql);
@@ -778,12 +794,12 @@ bc_err_t bc_run_begin(bc_t* bc, sp_str_t action) {
 }
 
 bc_err_t bc_run_end(bc_t* bc, u64 elapsed_ns) {
-  sqlite3_stmt* stmt = SP_NULLPTR;
-  bc_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_update_meta_run_elapsed, -1, &stmt, SP_NULLPTR)));
+  sqlite3_stmt* s = SP_NULLPTR;
+  bc_try(bc_sql_prepare(bc->sql, bc_db_update_meta_run_elapsed, -1, &s));
 
-  sqlite3_bind_double(stmt, 1, (f64)elapsed_ns);
-  sqlite3_bind_int64 (stmt, 2, (s64)bc->run_id);
-  sqlite3_finalize(stmt);
+  sqlite3_bind_double(s, 1, (f64)elapsed_ns);
+  bc_sql_bind_u64(s, 2, bc->run_id);
+  sqlite3_finalize(s);
   bc_try(bc_check_sql_e(bc->sql));
 
   return BC_OK;
@@ -866,9 +882,11 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
   struct archive* a = archive_read_new();
   archive_read_support_filter_gzip(a);
   archive_read_support_format_mtree(a);
-  sqlite3_stmt* del_entries = SP_NULLPTR;
-  sqlite3_stmt* ins_entry   = SP_NULLPTR;
-  sqlite3_stmt* ups_mtree   = SP_NULLPTR;
+  struct {
+    sqlite3_stmt* del;
+    sqlite3_stmt* insert;
+    sqlite3_stmt* upsert;
+  } s = sp_zero;
 
   if (archive_read_open_filename(a, mtree_path_c, 8192) != ARCHIVE_OK) {
     sp_log_err("archive_read_open_filename {.red}: {}", sp_fmt_str(mtree_path), sp_fmt_cstr(archive_error_string(a)));
@@ -876,20 +894,20 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
     goto done;
   }
 
-  bc_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_delete_mtree_entries, -1, &del_entries, SP_NULLPTR)), err, done);
-  bc_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_mtree_entry,   -1, &ins_entry,   SP_NULLPTR)), err, done);
-  bc_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_mtree,         -1, &ups_mtree,   SP_NULLPTR)), err, done);
+  bc_try_goto(bc_sql_prepare(bc->sql, bc_db_delete_mtree_entries, -1, &s.del), err, done);
+  bc_try_goto(bc_sql_prepare(bc->sql, bc_db_insert_mtree_entry, -1, &s.insert), err, done);
+  bc_try_goto(bc_sql_prepare(bc->sql, bc_db_upsert_mtree, -1, &s.upsert), err, done);
 
   bc_try_goto(bc_sql_exec(bc->sql, "BEGIN;"), err, done);
   in_tx = true;
 
-  sqlite3_bind_text (ups_mtree, 1, pkg.data,     (s32)pkg.len,     SQLITE_STATIC);
-  sqlite3_bind_text (ups_mtree, 2, version.data, (s32)version.len, SQLITE_STATIC);
-  sqlite3_bind_int64(ups_mtree, 3, mtree_mtime);
-  bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(ups_mtree)), err, done);
+  sqlite3_bind_text (s.upsert, 1, pkg.data,     (s32)pkg.len,     SQLITE_STATIC);
+  sqlite3_bind_text (s.upsert, 2, version.data, (s32)version.len, SQLITE_STATIC);
+  sqlite3_bind_int64(s.upsert, 3, mtree_mtime);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(s.upsert)), err, done);
 
-  sqlite3_bind_text(del_entries, 1, pkg.data, (s32)pkg.len, SQLITE_STATIC);
-  bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(del_entries)), err, done);
+  sqlite3_bind_text(s.del, 1, pkg.data, (s32)pkg.len, SQLITE_STATIC);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(s.del)), err, done);
 
   struct archive_entry* ae = SP_NULLPTR;
   s32 ar;
@@ -922,20 +940,20 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
     sp_str_ht_insert(bc->mtree.ht, e.path, e);
     bc->mtree.entries++;
 
-    sqlite3_reset(ins_entry);
-    sqlite3_bind_text (ins_entry,  1, pkg.data,    (s32)pkg.len,    SQLITE_STATIC);
-    sqlite3_bind_text (ins_entry,  2, e.path.data, (s32)e.path.len, SQLITE_STATIC);
-    sqlite3_bind_int  (ins_entry,  3, (s32)e.kind);
-    sqlite3_bind_int64(ins_entry,  4, e.size);
-    sqlite3_bind_int  (ins_entry,  5, e.mode);
-    sqlite3_bind_int  (ins_entry,  6, e.uid);
-    sqlite3_bind_int  (ins_entry,  7, e.gid);
-    sqlite3_bind_int64(ins_entry,  8, e.mtime);
-    if (e.have_hash) sqlite3_bind_blob(ins_entry, 9, e.sha256, 32, SQLITE_STATIC);
-    else             sqlite3_bind_null(ins_entry, 9);
-    if (e.target.len) sqlite3_bind_text(ins_entry, 10, e.target.data, (s32)e.target.len, SQLITE_STATIC);
-    else              sqlite3_bind_null(ins_entry, 10);
-    bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(ins_entry)), err, done);
+    sqlite3_reset(s.insert);
+    sqlite3_bind_text (s.insert,  1, pkg.data,    (s32)pkg.len,    SQLITE_STATIC);
+    sqlite3_bind_text (s.insert,  2, e.path.data, (s32)e.path.len, SQLITE_STATIC);
+    sqlite3_bind_int  (s.insert,  3, (s32)e.kind);
+    sqlite3_bind_int64(s.insert,  4, e.size);
+    sqlite3_bind_int  (s.insert,  5, e.mode);
+    sqlite3_bind_int  (s.insert,  6, e.uid);
+    sqlite3_bind_int  (s.insert,  7, e.gid);
+    sqlite3_bind_int64(s.insert,  8, e.mtime);
+    if (e.have_hash) sqlite3_bind_blob(s.insert, 9, e.sha256, 32, SQLITE_STATIC);
+    else             sqlite3_bind_null(s.insert, 9);
+    if (e.target.len) sqlite3_bind_text(s.insert, 10, e.target.data, (s32)e.target.len, SQLITE_STATIC);
+    else              sqlite3_bind_null(s.insert, 10);
+    bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(s.insert)), err, done);
   }
   if (ar != ARCHIVE_EOF) {
     sp_log_err("mtree decode {.red}: {}", sp_fmt_str(mtree_path), sp_fmt_cstr(archive_error_string(a)));
@@ -948,9 +966,9 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
 
 done:
   if (in_tx) bc_sql_exec(bc->sql, "ROLLBACK;");
-  if (del_entries) sqlite3_finalize(del_entries);
-  if (ins_entry)   sqlite3_finalize(ins_entry);
-  if (ups_mtree)   sqlite3_finalize(ups_mtree);
+  if (s.del) sqlite3_finalize(s.del);
+  if (s.insert)   sqlite3_finalize(s.insert);
+  if (s.upsert)   sqlite3_finalize(s.upsert);
   archive_read_free(a);
   sp_mem_end_scratch(scratch);
   return err;
