@@ -9,10 +9,10 @@ import { listKbLayouts, listLocales, listLanguages, listEncodings } from './data
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { LocaleSchema, KernelsSchema } from './schemas'
 
-// @ts-ignore -- bundler text-loader import
-import css from './assets/app.css'
-// @ts-ignore -- bundler text-loader import
-import datastar from './assets/datastar.lib'
+// @ts-ignore -- text-loader import
+import css from './assets/app.css.txt'
+// @ts-ignore -- text-loader import
+import datastar from './assets/datastar.txt'
 
 const app = new Hono()
 

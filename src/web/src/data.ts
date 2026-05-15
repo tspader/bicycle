@@ -16,7 +16,8 @@ export async function listKbLayouts(): Promise<KbLayout[]> {
 }
 
 export async function listLocales(): Promise<Locale[]> {
-  const raw = new TextDecoder().decode(await readFile('/usr/share/i18n/SUPPORTED'))
+  // const raw = await readFile('/usr/share/i18n/SUPPORTED', 'utf8')
+  const raw = ''
   const out: Locale[] = []
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
