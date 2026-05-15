@@ -243,7 +243,7 @@ struct bc_t {
 
   struct {
     u64 mtree;
-    u64 files;
+    u64 alpm;
     u64 strays;
     u64 total;
   } timings;
@@ -252,7 +252,6 @@ struct bc_t {
 typedef struct {
   bc_t*           bc;
   const c8*       prompt;
-  sp_str_t        done_label;
   u32             frame_index;
   u64             count;
   sp_str_t        status;
@@ -315,35 +314,37 @@ static void bc_scan_render(sp_prompt_ctx_t* ctx) {
   bc_scan_widget_t* w = (bc_scan_widget_t*)ctx->user_data;
   sp_mem_arena_marker_t s = sp_mem_begin_scratch();
 
-  if (ctx->state == SP_PROMPT_STATE_SUBMIT) {
-    sp_prompt_line(ctx, sp_fmt(s.mem, "✔  {} {}",
-      sp_fmt_str(w->done_label),
-      sp_fmt_uint(w->count)).value);
-  } else if (ctx->state == SP_PROMPT_STATE_CANCEL) {
-    sp_prompt_line(ctx, sp_fmt(s.mem, "✖  cancelled at {}",
-      sp_fmt_uint(w->count)).value);
-  } else {
-    sp_str_t glyph = sp_prompt_repeat(ctx, bc_scan_frames[w->frame_index], 1);
-    sp_prompt_line(ctx, sp_fmt(s.mem, "{}  {} {}",
-      sp_fmt_str(glyph),
-      sp_fmt_cstr(w->prompt),
-      sp_fmt_uint(w->count)).value);
-    if (!sp_str_empty(w->status)) {
-      sp_prompt_line(ctx, sp_fmt(s.mem, "   {}", sp_fmt_str(w->status)).value);
-    } else {
-      sp_prompt_line(ctx, sp_str_lit(""));
+  switch (ctx->state) {
+    case SP_PROMPT_STATE_SUBMIT: {
+      sp_prompt_line(ctx, sp_fmt(s.mem, "Scanned: {}", sp_fmt_uint(w->count)).value);
+      break;
+    }
+    case SP_PROMPT_STATE_CANCEL: {
+      sp_prompt_line(ctx, sp_fmt(s.mem, "Cancelled after {}", sp_fmt_uint(w->count)).value);
+      break;
+    }
+    default: {
+      sp_str_t glyph = sp_prompt_repeat(ctx, bc_scan_frames[w->frame_index], 1);
+      sp_prompt_line(ctx, sp_fmt(s.mem, "{}  {} {}",
+        sp_fmt_str(glyph),
+        sp_fmt_cstr(w->prompt),
+        sp_fmt_uint(w->count)).value);
+      if (!sp_str_empty(w->status)) {
+        sp_prompt_line(ctx, sp_fmt(s.mem, "   {}", sp_fmt_str(w->status)).value);
+      } else {
+        sp_prompt_line(ctx, sp_str_lit(""));
+      }
     }
   }
 
   sp_mem_end_scratch(s);
 }
 
-static bc_scan_widget_t* bc_scan_widget_new(sp_prompt_ctx_t* ctx, bc_t* bc, const c8* prompt, sp_str_t done_label, s32 (*driver_fn)(void*)) {
+static bc_scan_widget_t* bc_scan_widget_new(sp_prompt_ctx_t* ctx, bc_t* bc, const c8* prompt, s32 (*driver_fn)(void*)) {
   bc_scan_widget_t* w = sp_mem_arena_alloc_type(ctx->arena, bc_scan_widget_t);
   *w = (bc_scan_widget_t) {
     .bc         = bc,
     .prompt     = prompt,
-    .done_label = done_label,
     .status     = sp_str_lit(""),
     .driver_fn  = driver_fn,
   };
@@ -1253,64 +1254,71 @@ s32 main(s32 num_args, const c8** args) {
   sp_try(bc_db_open_conn(bc.paths.cache, &bc.writer.sql));
   sp_thread_init(&bc.writer.thread, bc_writer_fn, &bc.writer);
 
+  if (!sp_os_is_tty(sp_sys_stdin)) {
+    bc_files_driver_fn(&bc);
+    bc_walk_strays(&bc);
+    goto done;
+  }
+
   bc.prompt = sp_prompt_begin(mem);
+  sp_assert(bc.prompt);
 
-  sp_tm_timer_t files_timer = sp_tm_start_timer(); {
-    if (bc.prompt) {
-      bc_scan_widget_t* w = bc_scan_widget_new(bc.prompt, &bc, "Scanning owned files...", sp_str_lit("Owned files scanned:"), bc_files_driver_fn);
-      sp_prompt_run(bc.prompt, bc_scan_widget_as_prompt(w));
-      if (w->driver_started) sp_thread_join(&w->driver);
-    } else {
-      bc_files_driver_fn(&bc);
-    }
-    bc.timings.files = sp_tm_read_timer(&files_timer);
+  struct {
+    sp_tm_timer_t alpm;
+    sp_tm_timer_t strays;
+  } timers = sp_zero;
+
+  timers.alpm = sp_tm_start_timer(); {
+    bc_scan_widget_t* w = bc_scan_widget_new(bc.prompt, &bc, "Scanning files owned by Pacman", bc_files_driver_fn);
+    sp_prompt_run(bc.prompt, bc_scan_widget_as_prompt(w));
+
+    if (w->driver_started) sp_thread_join(&w->driver); // @spader
+    bc.timings.alpm = sp_tm_read_timer(&timers.alpm);
+  }
+  if (sp_atomic_s32_get(&bc.cancel)) goto done;
+
+  timers.strays = sp_tm_start_timer(); {
+    bc_scan_widget_t* w = bc_scan_widget_new(bc.prompt, &bc, "Detecting unowned files", bc_strays_driver_fn);
+    sp_prompt_run(bc.prompt, bc_scan_widget_as_prompt(w));
+
+    if (w->driver_started) sp_thread_join(&w->driver);
+    bc.timings.strays = sp_tm_read_timer(&timers.strays);
   }
 
-  sp_tm_timer_t strays_timer = sp_tm_start_timer();
-  if (!sp_atomic_s32_get(&bc.cancel)) {
-    if (bc.prompt) {
-      bc_scan_widget_t* w = bc_scan_widget_new(bc.prompt, &bc, "Walking strays...", sp_str_lit("Entries scanned:"), bc_strays_driver_fn);
-      sp_prompt_run(bc.prompt, bc_scan_widget_as_prompt(w));
-      if (w->driver_started) sp_thread_join(&w->driver);
-    } else {
-      bc_walk_strays(&bc);
-    }
-  }
-  bc.timings.strays = sp_tm_read_timer(&strays_timer);
+  sp_prompt_end(bc.prompt);
 
-  if (bc.prompt) sp_prompt_end(bc.prompt);
-
+done:
   bc_queue_close(&bc.write);
   sp_thread_join(&bc.writer.thread);
-  bc.timings.total = bc.timings.mtree + bc.timings.files + bc.timings.strays;
+  bc.timings.total = bc.timings.mtree + bc.timings.alpm + bc.timings.strays;
   sp_try(bc_run_end(&bc, bc.timings.total));
-  sp_try(bc.writer.err);
+  if (bc.writer.err) {
+    sp_log_err("sqlite writer reported error: {.red}", sp_fmt_int(bc.writer.err));
+  }
 
   u64 hits = 0, misses = 0, hashed = 0, errors = 0, findings = 0;
   for (u32 i = 0; i < BC_NUM_WORKERS; i++) {
-    hits     += bc.workers[i].hits;
-    misses   += bc.workers[i].misses;
-    hashed   += bc.workers[i].hashed;
-    errors   += bc.workers[i].errors;
+    hits += bc.workers[i].hits;
+    misses += bc.workers[i].misses;
+    hashed += bc.workers[i].hashed;
+    errors += bc.workers[i].errors;
     findings += bc.workers[i].findings;
   }
 
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("packages:"), sp_fmt_uint(bc.num_packages));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("files:"),    sp_fmt_uint(bc.num_files));
-  sp_log("{:<12} {.cyan} visited, {.cyan} strays",
-    sp_fmt_cstr("strays:"),
-    sp_fmt_uint(bc.num_visited),
-    sp_fmt_uint(bc.num_strays));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("hits:"),     sp_fmt_uint(hits));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("misses:"),   sp_fmt_uint(misses));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("hashed:"),   sp_fmt_uint(hashed));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("findings:"), sp_fmt_uint(findings));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("errors:"),   sp_fmt_uint(errors));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("writes:"),   sp_fmt_uint(bc.writer.writes));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_mtree:"),  sp_fmt_uint(bc.timings.mtree));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_files:"),  sp_fmt_uint(bc.timings.files));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_strays:"), sp_fmt_uint(bc.timings.strays));
-  sp_log("{:<12} {.cyan .duration}", sp_fmt_cstr("t_total:"),  sp_fmt_uint(bc.timings.total));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("packages"), sp_fmt_uint(bc.num_packages));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("files"), sp_fmt_uint(bc.num_files));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("visited"), sp_fmt_uint(bc.num_visited));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("stray"), sp_fmt_uint(bc.num_strays));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("hits"), sp_fmt_uint(hits));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("misses"), sp_fmt_uint(misses));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("hashed"), sp_fmt_uint(hashed));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("findings"), sp_fmt_uint(findings));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("errors"), sp_fmt_uint(errors));
+  sp_log("{:<12}: {.cyan}", sp_fmt_cstr("writes"), sp_fmt_uint(bc.writer.writes));
+  sp_log("{:<12}: {.cyan .duration}", sp_fmt_cstr("t_mtree"), sp_fmt_uint(bc.timings.mtree));
+  sp_log("{:<12}: {.cyan .duration}", sp_fmt_cstr("t_files"), sp_fmt_uint(bc.timings.alpm));
+  sp_log("{:<12}: {.cyan .duration}", sp_fmt_cstr("t_strays"), sp_fmt_uint(bc.timings.strays));
+  sp_log("{:<12}: {.cyan .duration}", sp_fmt_cstr("t_total"), sp_fmt_uint(bc.timings.total));
 
   //bc_print_findings_for_run(&bc);
 
