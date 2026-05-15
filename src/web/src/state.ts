@@ -1,19 +1,13 @@
-import { KERNELS, type Kernel } from './data'
+import type { ArchinstallConfig } from './config'
 
-export type LocaleState = {
-  kb_layout: string
-  sys_lang: string
-  sys_enc: string
-}
-
-export type InstallerState = {
-  locale: LocaleState
-  kernels: Kernel[]
-  hostname: string
-}
-
-export const state: InstallerState = {
-  locale: { kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' },
-  kernels: [KERNELS[0]],
+let state: ArchinstallConfig = {
   hostname: 'bicycle-test',
+  kernels: ['linux'],
+  locale_config: { kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' },
+}
+
+export const getState = (): Readonly<ArchinstallConfig> => state
+
+export const setState = (patch: Partial<ArchinstallConfig>): void => {
+  state = { ...state, ...patch }
 }

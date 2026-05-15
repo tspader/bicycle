@@ -6,3 +6,5 @@
 /src/web/.playwright-cli
 /src/web/.llm
 /src/web/dist
+/example/user_configuration.json
+/example/user_credentials.json

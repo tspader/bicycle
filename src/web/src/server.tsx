@@ -4,7 +4,7 @@ import { CATEGORIES, type CategoryId } from './views/layout'
 import { LocaleView } from './views/locale'
 import { KernelsView } from './views/kernels'
 import { StubView } from './views/stub'
-import { state } from './state'
+import { getState, setState } from './state'
 import { listKbLayouts, listLocales, listLanguages, listEncodings } from './data'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { LocaleSchema, KernelsSchema } from './schemas'
@@ -35,17 +35,20 @@ app.get('/config/:category', async (c) => {
   switch (parsed.data) {
     case 'locale': {
       const [kbLayouts, locales] = await Promise.all([listKbLayouts(), listLocales()])
+      const { locale_config } = getState()
       return c.html(
         <LocaleView
-          state={state.locale}
+          state={locale_config!}
           kbLayouts={kbLayouts}
           languages={listLanguages(locales)}
           encodings={listEncodings(locales)}
         />,
       )
     }
-    case 'kernels':
-      return c.html(<KernelsView selected={state.kernels[0]!} />)
+    case 'kernels': {
+      const { kernels } = getState()
+      return c.html(<KernelsView selected={kernels?.[0] ?? 'linux'} />)
+    }
     default:
       return c.html(<StubView id={parsed.data} />)
   }
@@ -56,7 +59,7 @@ app.post('/api/locale', async (c) => {
   if (!read.success) return c.text(read.error, 400)
   const parsed = LocaleSchema.safeParse(read.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  state.locale = parsed.data
+  setState({ locale_config: parsed.data })
   return c.body(null, 204)
 })
 
@@ -65,7 +68,7 @@ app.post('/api/kernels', async (c) => {
   if (!read.success) return c.text(read.error, 400)
   const parsed = KernelsSchema.safeParse(read.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  state.kernels = [parsed.data.kernel]
+  setState({ kernels: [parsed.data.kernel] })
   return c.body(null, 204)
 })
 

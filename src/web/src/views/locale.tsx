@@ -1,14 +1,14 @@
 import { Layout, Page, Field } from './layout'
-import type { LocaleState } from '../state'
+import type { LocaleConfig } from '../config'
 
 type Props = {
-  state: LocaleState
+  state: LocaleConfig
   kbLayouts: string[]
   languages: string[]
   encodings: string[]
 }
 
-const SIGNAL_KEY: Record<keyof LocaleState, string> = {
+const SIGNAL_KEY: Record<keyof LocaleConfig, string> = {
   kb_layout: 'kbLayout',
   sys_lang: 'sysLang',
   sys_enc: 'sysEnc',
@@ -22,7 +22,7 @@ export const LocaleView = ({ state, kbLayouts, languages, encodings }: Props) =>
     options,
   }: {
     id: string
-    field: keyof LocaleState
+    field: keyof LocaleConfig
     value: string
     options: string[]
   }) => {

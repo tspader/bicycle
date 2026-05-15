@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { KERNELS } from './data'
+import { LocaleConfig, Kernel } from './config'
 
 export const LocaleSchema = z
   .object({
@@ -7,12 +7,12 @@ export const LocaleSchema = z
     sysLang: z.string().min(1),
     sysEnc: z.string().min(1),
   })
-  .transform((v) => ({
+  .transform((v): z.infer<typeof LocaleConfig> => ({
     kb_layout: v.kbLayout,
     sys_lang: v.sysLang,
     sys_enc: v.sysEnc,
   }))
 
 export const KernelsSchema = z.object({
-  kernel: z.enum(KERNELS),
+  kernel: Kernel,
 })
