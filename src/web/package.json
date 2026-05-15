@@ -2,10 +2,15 @@
   "name": "arch-installer-web",
   "type": "module",
   "scripts": {
-    "start": "bun run src/server.tsx"
+    "start": "bun run src/server.tsx",
+    "dev": "bun --hot run src/server.tsx",
+    "smoke": "bun run tools/smoke.ts"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "@starfederation/datastar": "^1.0.0-beta.11",
+    "@starfederation/datastar-sdk": "^1.0.0",
+    "hono": "^4.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest"

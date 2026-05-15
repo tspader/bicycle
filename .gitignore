@@ -3,3 +3,6 @@
 /build
 /compile_commands.json
 /.cache
+/src/web/.playwright-cli
+/src/web/.llm
+/src/web/dist
