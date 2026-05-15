@@ -19,6 +19,8 @@
 #include "sql/meta_run.h"
 #include "sql/findings.h"
 
+#define bc_try_goto(expr, err, label) do { err = (expr); if (err) goto label; } while (0)
+#define bc_try(expr) do { bc_err_t _bc_result = (expr); if (_bc_result) return _bc_result; } while (0)
 #define bc_alpm_for(it, list) for (alpm_list_t* it = list; it; it = alpm_list_next(it))
 
 #define BC_NUM_WORKERS       8
@@ -47,7 +49,7 @@ typedef struct {
   u8  sha256 [32];
 } bc_file_meta_t;
 
-typedef sp_ht(bc_file_key_t, bc_file_meta_t) bc_fmeta_ht_t;
+typedef sp_ht(bc_file_key_t, bc_file_meta_t) bc_file_cache_t;
 
 typedef struct {
   sp_str_t pkg;
@@ -214,10 +216,7 @@ struct bc_t {
   u64 num_strays;
   u64 run_id;
 
-  // Loaded once from the db on startup and read-only for the rest of the run.
-  // Workers read via sp_ht_get_ex, which doesn't touch the table's tmp slots,
-  // so no locking is needed.
-  bc_fmeta_ht_t files;
+  bc_file_cache_t files;
 
   struct {
     bc_mtree_ht_t   ht;
@@ -229,7 +228,7 @@ struct bc_t {
 
   struct {
     bc_work_queue_t queue;
-    sp_mem_arena_t* arena;  // bump arena backing every work item's path
+    sp_mem_arena_t* arena;
   } work;
 
   bc_write_queue_t write;
@@ -238,8 +237,8 @@ struct bc_t {
   bc_writer_t writer;
 
   sp_prompt_ctx_t* prompt;
-  sp_atomic_s32_t  files_scanned;
-  sp_atomic_s32_t  cancel;
+  sp_atomic_s32_t files_scanned;
+  sp_atomic_s32_t cancel;
 
   struct {
     u64 mtree;
@@ -373,6 +372,15 @@ bc_err_t bc_check_sql(sqlite3* sql, s32 rc) {
   return BC_OK;
 }
 
+bc_err_t bc_check_sql_e(sqlite3* sql) {
+  s32 rc = sqlite3_errcode(sql);
+  if (rc != SQLITE_OK && rc != SQLITE_DONE && rc != SQLITE_ROW) {
+    sp_log_err("sqlite error: {.red} (code {})", sp_fmt_cstr(sqlite3_errmsg(sql)), sp_fmt_int(rc));
+    return BC_ERR;
+  }
+  return BC_OK;
+}
+
 bc_err_t bc_sql_exec(sqlite3* sql, const c8* statement) {
   c8* err = SP_NULLPTR;
   s32 rc = sqlite3_exec(sql, statement, SP_NULLPTR, SP_NULLPTR, &err);
@@ -389,14 +397,14 @@ bc_err_t bc_db_open_conn(sp_str_t path, sqlite3** out) {
   c8* cpath = sp_str_to_cstr(sp_mem_arena_as_allocator(sp_mem_get_scratch_arena()), path);
   s32 rc = sqlite3_open(cpath, out);
   sp_mem_end_scratch(scratch);
-  sp_try(bc_check_sql(*out, rc));
-  sp_try(bc_sql_exec(*out, bc_db_pragmas));
+  bc_try(bc_check_sql(*out, rc));
+  bc_try(bc_sql_exec(*out, bc_db_pragmas));
   return BC_OK;
 }
 
 bc_err_t bc_db_open(bc_t* bc) {
-  sp_try(bc_db_open_conn(bc->paths.cache, &bc->sql));
-  sp_try(bc_sql_exec(bc->sql, bc_db_schema));
+  bc_try(bc_db_open_conn(bc->paths.cache, &bc->sql));
+  bc_try(bc_sql_exec(bc->sql, bc_db_schema));
   return BC_OK;
 }
 
@@ -422,10 +430,9 @@ bc_err_t bc_alpm_open(bc_t* bc) {
 
 bc_err_t bc_fmeta_load(bc_t* bc) {
   sqlite3_stmt* stmt = SP_NULLPTR;
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_file_metadata, -1, &stmt, SP_NULLPTR)));
+  bc_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_file_metadata, -1, &stmt, SP_NULLPTR)));
 
-  u64 loaded = 0;
-  s32 rc;
+  s32 rc = 0;
   while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
     bc_file_key_t  k = sp_zero;
     bc_file_meta_t m = sp_zero;
@@ -442,13 +449,10 @@ bc_err_t bc_fmeta_load(bc_t* bc) {
       sp_mem_copy(m.sha256, blob, 32);
     }
     sp_ht_insert(bc->files, k, m);
-    loaded++;
   }
-  bc_err_t err = bc_check_sql(bc->sql, rc);
   sqlite3_finalize(stmt);
-  sp_try(err);
+  bc_try(bc_check_sql_e(bc->sql));
 
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("loaded:"), sp_fmt_uint(loaded));
   return BC_OK;
 }
 
@@ -457,9 +461,6 @@ bc_err_t bc_fmeta_load(bc_t* bc) {
 // for regular files (2c), and push file_metadata writes plus any findings.
 //
 
-// libc lstat gives us uid/gid (which sp_sys_stat_t omits). Inputs/outputs are
-// the only things this helper needs to live in a thread-local buffer; the
-// fields used after this returns come from the local struct stat.
 static bool bc_worker_lstat(bc_worker_t* w, sp_str_t path, struct stat* out) {
   c8 buf [SP_PATH_MAX];
   if (path.len >= SP_PATH_MAX) { w->errors++; return false; }
@@ -601,6 +602,7 @@ s32 bc_worker_fn(void* userdata) {
       }
     }
     struct stat st;
+
     if (!bc_worker_lstat(w, path, &st)) {
       // alpm thinks this path is owned, but lstat failed. Look up the mtree
       // entry so we can name the owning pkg in the finding.
@@ -679,7 +681,7 @@ s32 bc_worker_fn(void* userdata) {
 // Writer thread: batch upserts into file_metadata on its own sqlite connection.
 //
 
-#define bc_writer_try(expr) sp_try_goto((expr), w->err, done)
+#define bc_writer_try(expr) bc_try_goto((expr), w->err, done)
 
 s32 bc_writer_fn(void* userdata) {
   bc_writer_t* w = (bc_writer_t*)userdata;
@@ -761,16 +763,15 @@ done:
 
 bc_err_t bc_run_begin(bc_t* bc, sp_str_t action) {
   sqlite3_stmt* stmt = SP_NULLPTR;
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_meta_run, -1, &stmt, SP_NULLPTR)));
+  bc_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_meta_run, -1, &stmt, SP_NULLPTR)));
 
   sp_tm_epoch_t now = sp_tm_now_epoch();
   sqlite3_bind_int64(stmt, 1, (s64)now.s);
   sqlite3_bind_text (stmt, 2, action.data, (s32)action.len, SQLITE_STATIC);
   sqlite3_bind_null (stmt, 3);
-
-  bc_err_t err = bc_check_sql(bc->sql, sqlite3_step(stmt));
+  sqlite3_step(stmt);
   sqlite3_finalize(stmt);
-  sp_try(err);
+  bc_try(bc_check_sql_e(bc->sql));
 
   bc->run_id = (u64)sqlite3_last_insert_rowid(bc->sql);
   return BC_OK;
@@ -778,14 +779,14 @@ bc_err_t bc_run_begin(bc_t* bc, sp_str_t action) {
 
 bc_err_t bc_run_end(bc_t* bc, u64 elapsed_ns) {
   sqlite3_stmt* stmt = SP_NULLPTR;
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_update_meta_run_elapsed, -1, &stmt, SP_NULLPTR)));
+  bc_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_update_meta_run_elapsed, -1, &stmt, SP_NULLPTR)));
 
   sqlite3_bind_double(stmt, 1, (f64)elapsed_ns);
   sqlite3_bind_int64 (stmt, 2, (s64)bc->run_id);
-
-  bc_err_t err = bc_check_sql(bc->sql, sqlite3_step(stmt));
   sqlite3_finalize(stmt);
-  return err;
+  bc_try(bc_check_sql_e(bc->sql));
+
+  return BC_OK;
 }
 
 //
@@ -811,7 +812,7 @@ bc_err_t bc_mtree_load_entries(bc_t* bc, sp_str_t pkg) {
   sp_mem_t arena_mem = sp_mem_arena_as_allocator(bc->mtree.arena);
 
   sqlite3_stmt* stmt = SP_NULLPTR;
-  sp_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_mtree_entries, -1, &stmt, SP_NULLPTR)));
+  bc_try(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_select_mtree_entries, -1, &stmt, SP_NULLPTR)));
   sqlite3_bind_text(stmt, 1, pkg.data, (s32)pkg.len, SQLITE_STATIC);
 
   s32 rc;
@@ -848,9 +849,10 @@ bc_err_t bc_mtree_load_entries(bc_t* bc, sp_str_t pkg) {
     sp_str_ht_insert(bc->mtree.ht, e.path, e);
     bc->mtree.entries++;
   }
-  bc_err_t err = bc_check_sql(bc->sql, rc);
   sqlite3_finalize(stmt);
-  return err;
+  bc_try(bc_check_sql_e(bc->sql));
+
+  return BC_OK;
 }
 
 bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mtime, sp_str_t mtree_path) {
@@ -874,20 +876,20 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
     goto done;
   }
 
-  sp_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_delete_mtree_entries, -1, &del_entries, SP_NULLPTR)), err, done);
-  sp_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_mtree_entry,   -1, &ins_entry,   SP_NULLPTR)), err, done);
-  sp_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_mtree,         -1, &ups_mtree,   SP_NULLPTR)), err, done);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_delete_mtree_entries, -1, &del_entries, SP_NULLPTR)), err, done);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_insert_mtree_entry,   -1, &ins_entry,   SP_NULLPTR)), err, done);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_prepare_v2(bc->sql, bc_db_upsert_mtree,         -1, &ups_mtree,   SP_NULLPTR)), err, done);
 
-  sp_try_goto(bc_sql_exec(bc->sql, "BEGIN;"), err, done);
+  bc_try_goto(bc_sql_exec(bc->sql, "BEGIN;"), err, done);
   in_tx = true;
 
   sqlite3_bind_text (ups_mtree, 1, pkg.data,     (s32)pkg.len,     SQLITE_STATIC);
   sqlite3_bind_text (ups_mtree, 2, version.data, (s32)version.len, SQLITE_STATIC);
   sqlite3_bind_int64(ups_mtree, 3, mtree_mtime);
-  sp_try_goto(bc_check_sql(bc->sql, sqlite3_step(ups_mtree)), err, done);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(ups_mtree)), err, done);
 
   sqlite3_bind_text(del_entries, 1, pkg.data, (s32)pkg.len, SQLITE_STATIC);
-  sp_try_goto(bc_check_sql(bc->sql, sqlite3_step(del_entries)), err, done);
+  bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(del_entries)), err, done);
 
   struct archive_entry* ae = SP_NULLPTR;
   s32 ar;
@@ -933,7 +935,7 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
     else             sqlite3_bind_null(ins_entry, 9);
     if (e.target.len) sqlite3_bind_text(ins_entry, 10, e.target.data, (s32)e.target.len, SQLITE_STATIC);
     else              sqlite3_bind_null(ins_entry, 10);
-    sp_try_goto(bc_check_sql(bc->sql, sqlite3_step(ins_entry)), err, done);
+    bc_try_goto(bc_check_sql(bc->sql, sqlite3_step(ins_entry)), err, done);
   }
   if (ar != ARCHIVE_EOF) {
     sp_log_err("mtree decode {.red}: {}", sp_fmt_str(mtree_path), sp_fmt_cstr(archive_error_string(a)));
@@ -941,7 +943,7 @@ bc_err_t bc_mtree_decode(bc_t* bc, sp_str_t pkg, sp_str_t version, s64 mtree_mti
     goto done;
   }
 
-  sp_try_goto(bc_sql_exec(bc->sql, "COMMIT;"), err, done);
+  bc_try_goto(bc_sql_exec(bc->sql, "COMMIT;"), err, done);
   in_tx = false;
 
 done:
@@ -1060,22 +1062,14 @@ static const c8* bc_stray_ignore_prefixes [] = {
 };
 
 static bool bc_path_is_ignored(sp_str_t path, sp_str_t cache_path) {
-  // Strip a single leading '/' if root joining produced a double slash so the
-  // ignore prefixes match. We compare normalized.
-  sp_str_t p = path;
-  while (p.len >= 2 && p.data[0] == '/' && p.data[1] == '/') {
-    p.data++;
-    p.len--;
-  }
-
   sp_for(i, sp_carr_len(bc_stray_ignore_prefixes)) {
     sp_str_t pref = sp_cstr_as_str(bc_stray_ignore_prefixes[i]);
-    if (sp_str_starts_with(p, pref)) {
+    if (sp_str_starts_with(path, pref)) {
       // Anchor at a path boundary so "/run" doesn't also ignore "/runtime".
-      if (p.len == pref.len || p.data[pref.len] == '/') return true;
+      if (path.len == pref.len || path.data[pref.len] == '/') return true;
     }
   }
-  if (cache_path.len && sp_str_equal(p, cache_path)) return true;
+  if (cache_path.len && sp_str_equal(path, cache_path)) return true;
   return false;
 }
 
@@ -1192,7 +1186,6 @@ void bc_print_findings_for_run(bc_t* bc) {
 }
 
 s32 main(s32 num_args, const c8** args) {
-  (void)num_args; (void)args;
   sp_mem_t mem = sp_mem_os_new();
 
   bc_t bc = sp_zero;
@@ -1206,25 +1199,19 @@ s32 main(s32 num_args, const c8** args) {
     bc.paths.cache = sp_fs_join_path(mem, cache_dir, sp_str_lit("bicycle.db"));
   }
 
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("libalpm:"), sp_fmt_cstr(alpm_version()));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("sqlite:"),  sp_fmt_cstr(sqlite3_libversion()));
-  sp_log("{:<12} {.cyan}", sp_fmt_cstr("cache:"),   sp_fmt_str(bc.paths.cache));
+  bc_try(bc_db_open(&bc));
+  bc_try(bc_alpm_open(&bc));
 
-  sp_try(bc_db_open(&bc));
-  sp_try(bc_alpm_open(&bc));
-
-  // In-memory file metadata cache, loaded once. Workers read concurrently
-  // via sp_ht_get_ex (no shared tmp state), so no mutex.
   sp_ht_init(mem, bc.files);
-  sp_try(bc_fmeta_load(&bc));
+  bc_try(bc_fmeta_load(&bc));
 
-  sp_try(bc_run_begin(&bc, sp_str_lit("scan")));
+  bc_try(bc_run_begin(&bc, sp_str_lit("scan")));
   sp_log("{:<12} {.cyan}", sp_fmt_cstr("run_id:"), sp_fmt_uint(bc.run_id));
 
   bc.mtree.arena = sp_mem_arena_new_ex(mem, BC_ARENA_BLOCK_SIZE, SP_MEM_ARENA_MODE_DEFAULT, SP_MEM_ALIGNMENT);
   sp_str_ht_init(sp_mem_arena_as_allocator(bc.mtree.arena), bc.mtree.ht);
   sp_tm_timer_t mtree_timer = sp_tm_start_timer();
-  sp_try(bc_mtree_load(&bc));
+  bc_try(bc_mtree_load(&bc));
   bc.timings.mtree = sp_tm_read_timer(&mtree_timer);
   sp_log("{:<12} {.cyan} decoded, {.cyan} cached, {.cyan} entries",
     sp_fmt_cstr("mtree:"),
@@ -1251,7 +1238,7 @@ s32 main(s32 num_args, const c8** args) {
   }
 
   bc.writer.bc = &bc;
-  sp_try(bc_db_open_conn(bc.paths.cache, &bc.writer.sql));
+  bc_try(bc_db_open_conn(bc.paths.cache, &bc.writer.sql));
   sp_thread_init(&bc.writer.thread, bc_writer_fn, &bc.writer);
 
   if (!sp_os_is_tty(sp_sys_stdin)) {
@@ -1291,7 +1278,7 @@ done:
   bc_queue_close(&bc.write);
   sp_thread_join(&bc.writer.thread);
   bc.timings.total = bc.timings.mtree + bc.timings.alpm + bc.timings.strays;
-  sp_try(bc_run_end(&bc, bc.timings.total));
+  bc_try(bc_run_end(&bc, bc.timings.total));
   if (bc.writer.err) {
     sp_log_err("sqlite writer reported error: {.red}", sp_fmt_int(bc.writer.err));
   }

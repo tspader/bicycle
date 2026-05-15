@@ -6,6 +6,9 @@ TOOL_DIR = build/tools
 TOOLS = build
 TOOL_BINARIES = $(addprefix $(TOOL_DIR)/, $(TOOLS))
 
+.PHONY: all
+all: bicycle
+
 tools: $(TOOL_BINARIES)
 
 $(TOOL_DIR)/%: tools/%.c | $(TOOL_DIR)
