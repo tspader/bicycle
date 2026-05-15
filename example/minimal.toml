@@ -1,0 +1,50 @@
+[core]
+hostname = "mark"
+timezone = "America/New_York"
+kernels = ["linux"]
+ntp = true
+
+[locale]
+language = "en_US.UTF-8"
+encoding = "UTF-8"
+keyboard = "us"
+
+[boot]
+loader = "systemd-boot"
+
+[[disk]]
+device = "/dev/vda"
+wipe = true
+table = "gpt"
+
+  [[disk.partition]]
+  mount = "/boot"
+  fs    = "fat32"
+  size  = "512MiB"
+  start = "1MiB"
+  flags = ["boot", "esp"]
+
+  [[disk.partition]]
+  mount = "/"
+  fs    = "ext4"
+  size  = "rest"
+
+[swap]
+enabled = true
+
+[[user]]
+name = "spader"
+sudo = true
+groups = ["wheel"]
+
+[packages]
+extra = [ "git", "vim" ]
+services = ["sshd"]
+
+[mirrors]
+regions = ["United States", "Canada"]
+custom  = ["https://mymirror.example.com/$repo/os/$arch"]
+
+[network]
+mode = "networkmanager" # iwd, iso, manual, none
+
