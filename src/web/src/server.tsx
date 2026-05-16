@@ -127,20 +127,6 @@ const renderFull = async (c: AppContext, active: CategoryId, body: Child, hash?:
   )
 }
 
-const PageContent = ({ children }: { children: any}) => (
-  <main id="page-content" class="content">
-    {children}
-  </main>
-)
-
-
-type Sse = ServerSentEventGenerator;
-
-const patch = {
-  elements: (stream: Sse, html: Child) => stream.patchElements(String(html)),
-  signals: (stream: Sse, signals: Signals) => stream.patchSignals(JSON.stringify(signals)),
-  script: (stream: Sse, source: string) => stream.executeScript(source)
-}
 const renderPatch = (active: CategoryId, body: Child, hash?: string) =>
   ServerSentEventGenerator.stream(async (stream) => {
     const activeSub = hash || defaultSub(active)
