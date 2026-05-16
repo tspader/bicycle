@@ -59,12 +59,14 @@ export const Layout = ({
   title?: string
   children?: Child
 }) => {
-  const CriticalCss = () => (
-    <style>{`html,body{background:#0e0e0e;color:#e6e6e6}.sidebar{background:#111111}`}</style>
-  )
+  const navParent = (id: CategoryId) =>
+    `history.pushState({}, '', '/config/${id}'); $activeCat = '${id}'; @get('/config/${id}')`
+
+  const navSub = (id: CategoryId, sub: string) =>
+    `history.pushState({}, '', '/config/${id}#${sub}'); $activeCat = '${id}'; @get('/config/${id}?h=${sub}')`
 
   const Sidebar = ({ active }: { active: CategoryId }) => (
-    <aside class="sidebar" data-signals={JSON.stringify({ q: '' })}>
+    <aside class="sidebar" data-signals={JSON.stringify({ q: '', activeCat: active })}>
       <a class="brand" href="/">{'>>'} bicycle</a>
       <input
         class="nav-filter"
@@ -81,6 +83,8 @@ export const Layout = ({
               <a
                 href={`/config/${c.id}`}
                 class={`nav-link${c.id === active ? ' nav-link-active' : ''}`}
+                data-class:nav-link-active={`$activeCat === '${c.id}'`}
+                data-on:click__prevent={navParent(c.id)}
                 data-show={parentMatch}
               >
                 {c.label}
@@ -89,6 +93,7 @@ export const Layout = ({
                 <a
                   href={`/config/${c.id}#${s.id}`}
                   class="nav-link nav-sublink"
+                  data-on:click__prevent={navSub(c.id, s.id)}
                   data-show={matchExpr([c.label, s.label])}
                 >
                   {s.label}
@@ -113,14 +118,14 @@ export const Layout = ({
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>{title}</title>
         <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-        <CriticalCss />
         <link rel="stylesheet" href="/static/app.css" />
         <script type="module" src="/static/datastar.js" />
+        <script dangerouslySetInnerHTML={{ __html: `addEventListener('popstate',()=>location.reload())` }} />
       </head>
       <body>
         <div class="shell">
           <Sidebar active={active} />
-          <main class="content">{children}</main>
+          <main id="page-content" class="content">{children}</main>
         </div>
       </body>
     </html>

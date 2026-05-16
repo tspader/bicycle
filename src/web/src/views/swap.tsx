@@ -13,7 +13,7 @@ export const SwapSection = ({ enabled, algorithm }: Props) => (
             id="enabled"
             type="checkbox"
             data-bind="enabled"
-            data-on-change="@post('/api/swap')"
+            data-on:change="@post('/api/swap')"
             checked={enabled}
           />
           <span data-text="$enabled ? 'On' : 'Off'" />
@@ -24,7 +24,7 @@ export const SwapSection = ({ enabled, algorithm }: Props) => (
           id="algorithm"
           class="combo"
           data-bind="algorithm"
-          data-on-change="@post('/api/swap')"
+          data-on:change="@post('/api/swap')"
         >
           {ALGORITHMS.map((a) => (
             <option value={a} selected={a === algorithm}>

@@ -1,18 +1,16 @@
-import { Layout, Page, Field } from './layout'
+import { Page, Field } from './layout'
 import type { User } from '../config'
 
 type Props = { rootSet: boolean; users: User[] }
 
 export const UsersView = ({ rootSet, users }: Props) => (
-  <Layout active="users">
-    <Page heading="Users" subhead="Root password and additional user accounts.">
-      <RootCard rootSet={rootSet} />
-      {users.map((u) => (
-        <UserCard u={u} />
-      ))}
-      <AddUserSlot />
-    </Page>
-  </Layout>
+  <Page heading="Users" subhead="Root password and additional user accounts.">
+    <RootCard rootSet={rootSet} />
+    {users.map((u) => (
+      <UserCard u={u} />
+    ))}
+    <AddUserSlot />
+  </Page>
 )
 
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
@@ -38,7 +36,7 @@ const RootCard = ({ rootSet }: { rootSet: boolean }) => {
         />
       </Field>
       <div class="form-actions">
-        <button type="button" class="btn" data-on-click="@post('/api/users/root')">
+        <button type="button" class="btn" data-on:click="@post('/api/users/root')">
           Save
         </button>
       </div>
@@ -60,7 +58,7 @@ const UserCard = ({ u }: { u: User }) => {
     <form class="form card account-card" data-signals={JSON.stringify(signals)}>
       <div class="card-header">
         <h2 class="card-title" data-text={`$${p}_username || 'user'`} />
-        <button type="button" class="btn btn-danger" data-on-click={`@post('${deleteUrl}')`}>
+        <button type="button" class="btn btn-danger" data-on:click={`@post('${deleteUrl}')`}>
           Remove
         </button>
       </div>
@@ -97,7 +95,7 @@ const UserCard = ({ u }: { u: User }) => {
         />
       </Field>
       <div class="form-actions">
-        <button type="button" class="btn" data-on-click={`@post('${saveUrl}')`}>
+        <button type="button" class="btn" data-on:click={`@post('${saveUrl}')`}>
           Save
         </button>
       </div>
@@ -119,7 +117,7 @@ const AddUserSlot = () => {
         type="button"
         class="btn"
         data-show="!$addingUser"
-        data-on-click="$addingUser = true"
+        data-on:click="$addingUser = true"
       >
         + Add another user
       </button>
@@ -129,7 +127,7 @@ const AddUserSlot = () => {
           <button
             type="button"
             class="btn-link"
-            data-on-click="$addingUser = false; $new_username = ''; $new_password = ''; $new_sudo = true; $new_groups = 'wheel'"
+            data-on:click="$addingUser = false; $new_username = ''; $new_password = ''; $new_sudo = true; $new_groups = 'wheel'"
           >
             Cancel
           </button>
@@ -162,7 +160,7 @@ const AddUserSlot = () => {
           />
         </Field>
         <div class="form-actions">
-          <button type="button" class="btn" data-on-click="@post('/api/users/create')">
+          <button type="button" class="btn" data-on:click="@post('/api/users/create')">
             Save
           </button>
         </div>

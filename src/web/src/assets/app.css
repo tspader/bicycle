@@ -308,7 +308,8 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--r-md);
   background: var(--bg-input);
 }
-.detail-deps { align-self: stretch; }
+.detail-deps { align-self: stretch; position: relative; overflow: hidden; }
+.detail-deps-inner { position: absolute; inset: 0; overflow-y: auto; }
 .dep-table { width: 100%; }
 .dep-table thead th {
   position: sticky;

@@ -9,7 +9,7 @@ export const HostnameSection = ({ value }: { value: string }) => (
           class="combo"
           type="text"
           data-bind="hostname"
-          data-on-change="@post('/api/hostname')"
+          data-on:change="@post('/api/hostname')"
           value={value}
         />
       </Field>

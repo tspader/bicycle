@@ -29,7 +29,7 @@ const Combo = ({
     id={id}
     class="combo"
     data-bind={SIGNAL_KEY[field]}
-    data-on-change="@post('/api/locale')"
+    data-on:change="@post('/api/locale')"
   >
     {options.map((opt) => (
       <option value={opt} selected={opt === value}>

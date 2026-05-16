@@ -1,4 +1,4 @@
-import { Layout, Page } from './layout'
+import { Page } from './layout'
 import { HostnameSection } from './hostname'
 import { LocaleSection } from './locale'
 import { TimeSection } from './timezone'
@@ -18,12 +18,10 @@ type Props = {
 }
 
 export const SystemView = ({ hostname, locale, time, network }: Props) => (
-  <Layout active="system">
-    <Page heading="System" subhead="Hostname, locale, time, and network.">
-      <HostnameSection value={hostname} />
-      <LocaleSection {...locale} />
-      <TimeSection value={time.zone} zones={time.zones} ntp={time.ntp} />
-      <NetworkSection mode={network.mode} />
-    </Page>
-  </Layout>
+  <Page heading="System" subhead="Hostname, locale, time, and network.">
+    <HostnameSection value={hostname} />
+    <LocaleSection {...locale} />
+    <TimeSection value={time.zone} zones={time.zones} ntp={time.ntp} />
+    <NetworkSection mode={network.mode} />
+  </Page>
 )

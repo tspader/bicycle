@@ -12,7 +12,7 @@ export const BootloaderSection = ({ loader, uki, removable }: Props) => (
           id="loader"
           class="combo"
           data-bind="loader"
-          data-on-change="@post('/api/bootloader')"
+          data-on:change="@post('/api/bootloader')"
         >
           {LOADERS.map((l) => (
             <option value={l} selected={l === loader}>
@@ -27,7 +27,7 @@ export const BootloaderSection = ({ loader, uki, removable }: Props) => (
             id="uki"
             type="checkbox"
             data-bind="uki"
-            data-on-change="@post('/api/bootloader')"
+            data-on:change="@post('/api/bootloader')"
             checked={uki}
           />
           <span data-text="$uki ? 'On' : 'Off'" />
@@ -39,7 +39,7 @@ export const BootloaderSection = ({ loader, uki, removable }: Props) => (
             id="removable"
             type="checkbox"
             data-bind="removable"
-            data-on-change="@post('/api/bootloader')"
+            data-on:change="@post('/api/bootloader')"
             checked={removable}
           />
           <span data-text="$removable ? 'On' : 'Off'" />

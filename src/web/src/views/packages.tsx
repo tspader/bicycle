@@ -27,7 +27,7 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage }
             type="text"
             placeholder="Filter..."
             data-bind="q"
-            {...{ 'data-on-input__debounce.250ms': "@get('/api/packages/list')" }}
+            {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
           />
         </Field>
       </form>
@@ -45,14 +45,14 @@ const PackageRow = ({ p, isChecked, isSelected }: { p: PackageEntry; isChecked: 
     <tr
       class={`row pkg-row${isSelected ? ' row-selected' : ''}`}
       id={`pkg-row-${p.name}`}
-      data-on-click={`if(evt.target.closest('input')) return; @get('${detailUrl}')`}
+      data-on:click={`if(evt.target.closest('input')) return; @get('${detailUrl}')`}
     >
       <td class="col-check">
         <input
           type="checkbox"
           class="pkg-check"
           checked={isChecked}
-          data-on-change={`@post('${toggleUrl}')`}
+          data-on:change={`@post('${toggleUrl}')`}
         />
       </td>
       <td class="col-name">
@@ -99,7 +99,7 @@ export const PackageMore = ({ next }: { next: string | null }) => (
       <button
         type="button"
         class="btn"
-        data-on-click={`@get('/api/packages/list?after=${encodeURIComponent(next)}&mode=append')`}
+        data-on:click={`@get('/api/packages/list?after=${encodeURIComponent(next)}&mode=append')`}
       >
         Load more
       </button>
@@ -149,6 +149,7 @@ const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
           <dd>{detail.description}</dd>
         </dl>
         <div class="detail-deps scroll-card">
+          <div class="detail-deps-inner">
           <table class="table dep-table">
             <thead>
               <tr>
@@ -169,6 +170,7 @@ const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </>

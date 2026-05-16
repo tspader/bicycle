@@ -20,7 +20,7 @@ export const MirrorsSection = ({ regions, selected }: Props) => {
             type="text"
             placeholder="Filter..."
             data-bind="q"
-            {...{ 'data-on-input__debounce.250ms': "@get('/api/mirrors/list')" }}
+            {...{ 'data-on:input__debounce.250ms': "@get('/api/mirrors/list')" }}
           />
         </Field>
       </form>
@@ -39,14 +39,14 @@ const RegionRow = ({ name, isChecked }: { name: string; isChecked: boolean }) =>
     <tr
       class="row mir-row"
       id={`region-row-${slug(name)}`}
-      data-on-click={`if(evt.target.closest('input')) return; @post('${toggleUrl}')`}
+      data-on:click={`if(evt.target.closest('input')) return; @post('${toggleUrl}')`}
     >
       <td class="col-check">
         <input
           type="checkbox"
           class="pkg-check"
           checked={isChecked}
-          data-on-change={`@post('${toggleUrl}')`}
+          data-on:change={`@post('${toggleUrl}')`}
         />
       </td>
       <td>{name}</td>

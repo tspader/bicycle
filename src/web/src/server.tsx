@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { CATEGORIES, type CategoryId } from './views/layout'
+import { CATEGORIES, Layout, type CategoryId } from './views/layout'
+import type { Child } from 'hono/jsx'
 import { SystemView } from './views/system'
 import { DiskView } from './views/disk'
 import { PacmanView } from './views/pacman'
@@ -55,16 +56,30 @@ const CategoryParam = z.enum(CATEGORIES.map((c) => c.id) as [CategoryId, ...Cate
 
 const LOADER_MAP = { 'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub', Limine: 'limine', Refind: 'refind' } as const
 
-app.get('/config/:category', async (c) => {
-  const parsed = CategoryParam.safeParse(c.req.param('category'))
-  if (!parsed.success) return c.redirect('/config/system')
-  const s = getState()
+const renderPage = (c: { req: { raw: Request }; html: (n: unknown) => Response | Promise<Response> }, active: CategoryId, body: Child, hash?: string) => {
+  const isDatastar = c.req.raw.headers.get('datastar-request') === 'true'
+  if (!isDatastar) {
+    return c.html(<Layout active={active}>{body}</Layout>)
+  }
+  return ServerSentEventGenerator.stream((stream) => {
+    const html = (<main id="page-content" class="content">{body}</main>).toString()
+    stream.patchElements(html)
+    stream.patchSignals(JSON.stringify({ activeCat: active }))
+    if (hash) {
+      stream.executeScript(
+        `document.getElementById(${JSON.stringify(hash)})?.scrollIntoView({behavior:'smooth'})`,
+      )
+    }
+  })
+}
 
-  switch (parsed.data) {
+const buildPage = async (cat: CategoryId, c: { req: { query: (k: string) => string | undefined } }): Promise<Child> => {
+  const s = getState()
+  switch (cat) {
     case 'system': {
       const [kb, locs, zones] = await Promise.all([kbLayouts(), locales(), timezones()])
       const lc = s.locale_config ?? { kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' }
-      return c.html(
+      return (
         <SystemView
           hostname={s.hostname ?? ''}
           locale={{
@@ -75,16 +90,16 @@ app.get('/config/:category', async (c) => {
           }}
           time={{ zone: s.timezone ?? 'UTC', zones, ntp: s.ntp ?? true }}
           network={{ mode: s.network_config?.type ?? 'iso' }}
-        />,
+        />
       )
     }
     case 'users': {
       const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
-      return c.html(<UsersView rootSet={rootSet} users={s.users ?? []} />)
+      return <UsersView rootSet={rootSet} users={s.users ?? []} />
     }
     case 'disk': {
       const sw = s.swap ?? { enabled: true, algorithm: 'zstd' as const }
-      return c.html(<DiskView swap={sw} />)
+      return <DiskView swap={sw} />
     }
     case 'pacman': {
       const q = c.req.query('q') ?? ''
@@ -92,7 +107,7 @@ app.get('/config/:category', async (c) => {
       const selected = Object.keys(s.mirror_config?.mirror_regions ?? {})
       const page = await searchPackages({ q, selected: new Set(installed) })
       setCurrentDetail(null)
-      return c.html(
+      return (
         <PacmanView
           mirrors={{ regions: regions(), selected }}
           packages={{
@@ -101,19 +116,27 @@ app.get('/config/:category', async (c) => {
             selectedName: null,
             initialPage: { items: page.items, next: page.next, q },
           }}
-        />,
+        />
       )
     }
     case 'boot': {
       const b = s.bootloader_config ?? { bootloader: 'Systemd-boot' as const, uki: true, removable: false }
-      return c.html(
+      return (
         <BootView
           kernel={s.kernels?.[0] ?? 'linux'}
           bootloader={{ loader: LOADER_MAP[b.bootloader], uki: b.uki, removable: b.removable }}
-        />,
+        />
       )
     }
   }
+}
+
+app.get('/config/:category', async (c) => {
+  const parsed = CategoryParam.safeParse(c.req.param('category'))
+  if (!parsed.success) return c.redirect('/config/system')
+  const body = await buildPage(parsed.data, c)
+  const hash = c.req.query('h')
+  return renderPage(c, parsed.data, body, hash)
 })
 
 type Ctx = { req: { raw: Request } }
@@ -215,7 +238,7 @@ app.post('/api/mirrors/toggle', async (c) => {
   const isChecked = name in current
   return ServerSentEventGenerator.stream((stream) => {
     const html = (<RegionRowFragment name={name} isChecked={isChecked} />).toString()
-    stream.mergeFragments(html)
+    stream.patchElements(html)
   })
 })
 
@@ -229,7 +252,7 @@ app.get('/api/mirrors/list', async (c) => {
   const checked = new Set(Object.keys(s.mirror_config?.mirror_regions ?? {}))
   return ServerSentEventGenerator.stream((stream) => {
     const html = (<RegionListFragment items={filtered} checked={checked} />).toString()
-    stream.mergeFragments(html)
+    stream.patchElements(html)
   })
 })
 
@@ -252,12 +275,12 @@ app.post('/api/packages/toggle', async (c) => {
   return ServerSentEventGenerator.stream(async (stream) => {
     if (entry) {
       const rowHtml = (<PackageRowFragment p={entry} isChecked={isChecked} isSelected={showDetail} />).toString()
-      stream.mergeFragments(rowHtml)
+      stream.patchElements(rowHtml)
     }
     if (showDetail) {
       const detail = await packageDetail(name)
       const html = (<PackageDetailFragment detail={detail} />).toString()
-      stream.mergeFragments(html)
+      stream.patchElements(html)
     }
   })
 })
@@ -276,13 +299,13 @@ app.get('/api/packages/list', async (c) => {
     if (mode === 'append') {
       const rows = (<PackageRowsFragment items={page.items} state={state} />).toString()
       const more = (<PackageMore next={page.next} />).toString()
-      stream.mergeFragments(rows, { selector: '#package-list', mergeMode: 'append' as never })
-      stream.mergeFragments(more)
+      stream.patchElements(rows, { selector: '#package-list', mode: 'append' as never })
+      stream.patchElements(more)
     } else {
       const html = (
         <PackageListFragment page={{ items: page.items, next: page.next, q }} state={state} />
       ).toString()
-      stream.mergeFragments(`<div id="package-list" class="list">${html}</div>`)
+      stream.patchElements(`<div id="package-list" class="list">${html}</div>`)
     }
   })
 })
@@ -302,17 +325,17 @@ app.get('/api/packages/detail', async (c) => {
       const prevEntry = all.find((p) => p.name === prev)
       if (prevEntry) {
         const row = (<PackageRowFragment p={prevEntry} isChecked={checked.has(prev)} isSelected={false} />).toString()
-        stream.mergeFragments(row)
+        stream.patchElements(row)
       }
     }
     if (detail) {
       const cur = all.find((p) => p.name === name)
       if (cur) {
         const row = (<PackageRowFragment p={cur} isChecked={checked.has(name)} isSelected={true} />).toString()
-        stream.mergeFragments(row)
+        stream.patchElements(row)
       }
     }
-    stream.mergeFragments(html)
+    stream.patchElements(html)
   })
 })
 
@@ -320,7 +343,16 @@ const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') 
 const parseGroups = (g: string): string[] => g.split(/[, ]+/).map((x) => x.trim()).filter(Boolean)
 const reload = () =>
   ServerSentEventGenerator.stream((stream) => {
-    stream.executeScript("window.location.href = '/config/users'")
+    const s = getState()
+    const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
+    const html = (
+      <main id="page-content" class="content">
+        <UsersView rootSet={rootSet} users={s.users ?? []} />
+      </main>
+    ).toString()
+    stream.patchElements(html)
+    stream.patchSignals(JSON.stringify({ activeCat: 'users' }))
+    stream.executeScript("history.pushState({}, '', '/config/users')")
   })
 
 const UserFields = z.object({

@@ -10,7 +10,7 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
           id="timezone"
           class="combo"
           data-bind="timezone"
-          data-on-change="@post('/api/timezone')"
+          data-on:change="@post('/api/timezone')"
         >
           {zones.map((z) => (
             <option value={z} selected={z === value}>
@@ -28,7 +28,7 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
             id="ntp"
             type="checkbox"
             data-bind="ntp"
-            data-on-change="@post('/api/ntp')"
+            data-on:change="@post('/api/ntp')"
             checked={ntp}
           />
           <span data-text="$ntp ? 'On' : 'Off'" />
