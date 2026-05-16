@@ -1,7 +1,7 @@
 import { Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
-import { CATEGORIES, Layout, Preview, type CategoryId } from './views/layout'
+import { CATEGORIES, Layout, Preview } from './views/layout'
 import type { Child } from 'hono/jsx'
 import { codeToHtml } from 'shiki'
 import { toToml } from './config'
@@ -18,7 +18,7 @@ import {
   PackageMore,
   PackageDetailFragment,
 } from './views/packages'
-import { getCurrentDetail, setCurrentDetail } from './ui-state'
+import { getCurrentDetail, setCurrentDetail, type CategoryId } from './ui-state'
 import { loadPackages } from './system'
 import { getState, setState } from './state'
 import {
@@ -42,20 +42,15 @@ import appCssPath from "./assets/app.css" with { type: "file" };
 import datastarPath from "./assets/datastar.js" with { type: "file" };
 import faviconPath from "./assets/favicon.ico" with { type: "file" };
 
-type SignalRead =
-  | { success: true; signals: Signals }
-  | { success: false; error: string }
-
 type App = {
-  signalRead: SignalRead
+  signals: Signals
+  error: string | null
+  datastar: boolean
 }
 
 type AppContext = Context<{ Variables: App }>
 
-const getSignals = (c: AppContext): Signals => {
-  const read = c.get('signalRead')
-  return read.success ? read.signals : {}
-}
+const getSignals = (c: AppContext): Signals => c.get('signals')
 
 // const getSignal = ... totally fucks my syntax highlighting
 function getSignal<K extends SignalName>(c: AppContext, name: K): typeof defaultSignals[K] {
@@ -64,9 +59,9 @@ function getSignal<K extends SignalName>(c: AppContext, name: K): typeof default
 }
 
 function parseSignals<T extends z.ZodTypeAny>(c: AppContext, schema: T): z.infer<T> {
-  const read = c.get('signalRead')
-  if (!read.success) throw new HTTPException(400, { message: read.error })
-  const parsed = schema.safeParse(read.signals)
+  const err = c.get('error')
+  if (err) throw new HTTPException(400, { message: err })
+  const parsed = schema.safeParse(c.get('signals'))
   if (!parsed.success) {
     throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid' })
   }
@@ -76,7 +71,10 @@ function parseSignals<T extends z.ZodTypeAny>(c: AppContext, schema: T): z.infer
 const app = new Hono<{ Variables: App }>()
 
 app.use('*', async (c, next) => {
-  c.set('signalRead', await ServerSentEventGenerator.readSignals(c.req.raw))
+  const r = await ServerSentEventGenerator.readSignals(c.req.raw)
+  c.set('signals', r.success ? r.signals : {})
+  c.set('error', r.success ? null : r.error)
+  c.set('datastar', c.req.raw.headers.get('datastar-request') === 'true')
   await next()
 })
 
@@ -112,45 +110,61 @@ const previewFragment = async (): Promise<string> =>
 const defaultSub = (cat: CategoryId): string =>
   CATEGORIES.find((c) => c.id === cat)?.subs?.[0]?.id ?? ''
 
-const renderPage = async (
-  c: AppContext,
-  active: CategoryId,
-  body: Child,
-  hash?: string,
-) => {
+const patchPreview = () =>
+  ServerSentEventGenerator.stream(async (stream) => {
+    stream.patchElements(await previewFragment())
+  })
+
+const renderFull = async (c: AppContext, active: CategoryId, body: Child, hash?: string) => {
   const activeSub = hash || defaultSub(active)
-  const isDatastar = c.req.raw.headers.get('datastar-request') === 'true'
-  if (!isDatastar) {
-    const previewHtml = await renderPreviewHtml()
-    return c.html(
-      <SignalProvider value={getSignals(c)}>
-        <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
-          {body}
-        </Layout>
-      </SignalProvider>
-    )
-  }
-  const preview = await previewFragment()
-  return ServerSentEventGenerator.stream((stream) => {
-    const html = (
-      <main id="page-content" class="content">
+  const previewHtml = await renderPreviewHtml()
+  return c.html(
+    <SignalProvider value={getSignals(c)}>
+      <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
         {body}
-      </main>
-    ).toString()
-    stream.patchElements(html)
-    stream.patchElements(preview)
+      </Layout>
+    </SignalProvider>,
+  )
+}
+
+const PageContent = ({ children }: { children: any}) => (
+  <main id="page-content" class="content">
+    {children}
+  </main>
+)
+
+
+type Sse = ServerSentEventGenerator;
+
+const patch = {
+  elements: (stream: Sse, html: Child) => stream.patchElements(String(html)),
+  signals: (stream: Sse, signals: Signals) => stream.patchSignals(JSON.stringify(signals)),
+  script: (stream: Sse, source: string) => stream.executeScript(source)
+}
+const renderPatch = (active: CategoryId, body: Child, hash?: string) =>
+  ServerSentEventGenerator.stream(async (stream) => {
+    const activeSub = hash || defaultSub(active)
+
+    const elements = [
+      (
+        <Preview html={await renderPreviewHtml()} />
+      ),
+      (
+        <main id="page-content" class="content">
+          {body}
+        </main>
+      )
+    ]
+    for (const element of elements) stream.patchElements(element.toString())
+
+
+    // patch.signals(stream, { activeCat: active, activeSub })
     stream.patchSignals(JSON.stringify({ activeCat: active, activeSub }))
     if (hash) {
       stream.executeScript(
         `document.getElementById(${JSON.stringify(hash)})?.scrollIntoView({behavior:'smooth'})`,
       )
     }
-  })
-}
-
-const patchPreview = () =>
-  ServerSentEventGenerator.stream(async (stream) => {
-    stream.patchElements(await previewFragment())
   })
 
 const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
@@ -213,10 +227,15 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
 
 app.get('/config/:category', async (c) => {
   const parsed = CategoryParam.safeParse(c.req.param('category'))
-  if (!parsed.success) return c.redirect('/config/system')
+  if (!parsed.success) {
+    return c.redirect('/config/system')
+  }
+
   const body = await buildPage(parsed.data, c)
   const hash = c.req.query('h')
-  return renderPage(c, parsed.data, body, hash)
+  return c.get('datastar') ?
+    renderPatch(parsed.data, body, hash) :
+    renderFull(c, parsed.data, body, hash)
 })
 
 app.post('/api/locale', (c) => {
@@ -276,8 +295,7 @@ app.post('/api/mirrors/toggle', async (c) => {
   })
   const isChecked = name in current
   return ServerSentEventGenerator.stream(async (stream) => {
-    const html = (<RegionRowFragment name={name} isChecked={isChecked} />).toString()
-    stream.patchElements(html)
+    stream.patchElements((<RegionRowFragment name={name} isChecked={isChecked} />).toString())
     stream.patchElements(await previewFragment())
   })
 })
@@ -289,8 +307,7 @@ app.get('/api/mirrors/list', async (c) => {
   const s = getState()
   const checked = new Set(Object.keys(s.mirror_config?.mirror_regions ?? {}))
   return ServerSentEventGenerator.stream((stream) => {
-    const html = (<RegionListFragment items={filtered} checked={checked} />).toString()
-    stream.patchElements(html)
+    stream.patchElements((<RegionListFragment items={filtered} checked={checked} />).toString())
   })
 })
 
@@ -312,13 +329,11 @@ app.post('/api/packages/toggle', async (c) => {
 
   return ServerSentEventGenerator.stream(async (stream) => {
     if (entry) {
-      const rowHtml = (<PackageRowFragment p={entry} isChecked={isChecked} isSelected={showDetail} />).toString()
-      stream.patchElements(rowHtml)
+      stream.patchElements((<PackageRowFragment p={entry} isChecked={isChecked} isSelected={showDetail} />).toString())
     }
     if (showDetail) {
       const detail = await packageDetail(name)
-      const html = (<PackageDetailFragment detail={detail} />).toString()
-      stream.patchElements(html)
+      stream.patchElements((<PackageDetailFragment detail={detail} />).toString())
     }
     stream.patchElements(await previewFragment())
   })
@@ -333,18 +348,14 @@ app.get('/api/packages/list', async (c) => {
   const state = { checked, selectedName: getCurrentDetail() }
 
   const q = getSignal(c, 'q')
-  console.log(q)
   const page = await searchPackages({ q, after, selected: checked })
   return ServerSentEventGenerator.stream((stream) => {
     if (mode === 'append') {
       const rows = (<PackageRowsFragment items={page.items} state={state} />).toString()
-      const more = (<PackageMore next={page.next} />).toString()
       stream.patchElements(rows, { selector: '#package-list', mode: 'append' as never })
-      stream.patchElements(more)
+      stream.patchElements((<PackageMore next={page.next} />).toString())
     } else {
-      const html = (
-        <PackageListFragment page={{ items: page.items, next: page.next }} state={state} />
-      ).toString()
+      const html = (<PackageListFragment page={{ items: page.items, next: page.next }} state={state} />).toString()
       stream.patchElements(`<div id="package-list" class="list">${html}</div>`)
     }
   })
@@ -359,23 +370,20 @@ app.get('/api/packages/detail', async (c) => {
   const s = getState()
   const checked = new Set(s.packages ?? [])
   const all = await loadPackages()
-  const html = (<PackageDetailFragment detail={detail} />).toString()
   return ServerSentEventGenerator.stream((stream) => {
     if (prev && prev !== name) {
       const prevEntry = all.find((p) => p.name === prev)
       if (prevEntry) {
-        const row = (<PackageRowFragment p={prevEntry} isChecked={checked.has(prev)} isSelected={false} />).toString()
-        stream.patchElements(row)
+        stream.patchElements((<PackageRowFragment p={prevEntry} isChecked={checked.has(prev)} isSelected={false} />).toString())
       }
     }
     if (detail) {
       const cur = all.find((p) => p.name === name)
       if (cur) {
-        const row = (<PackageRowFragment p={cur} isChecked={checked.has(name)} isSelected={true} />).toString()
-        stream.patchElements(row)
+        stream.patchElements((<PackageRowFragment p={cur} isChecked={checked.has(name)} isSelected={true} />).toString())
       }
     }
-    stream.patchElements(html)
+    stream.patchElements((<PackageDetailFragment detail={detail} />).toString())
   })
 })
 
@@ -385,12 +393,8 @@ const reload = () =>
   ServerSentEventGenerator.stream(async (stream) => {
     const s = getState()
     const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
-    const html = (
-      <main id="page-content" class="content">
-        <UsersView rootSet={rootSet} users={s.users ?? []} />
-      </main>
-    ).toString()
-    stream.patchElements(html)
+    const body = <UsersView rootSet={rootSet} users={s.users ?? []} />
+    stream.patchElements((<main id="page-content" class="content">{body}</main>).toString())
     stream.patchElements(await previewFragment())
     stream.patchSignals(JSON.stringify({ activeCat: 'users' }))
     stream.executeScript("history.pushState({}, '', '/config/users')")

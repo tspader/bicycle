@@ -1,14 +1,18 @@
 import { createContext, useContext } from 'hono/jsx';
-import { Jsonifiable } from '@starfederation/datastar-sdk/types'
+import type { CategoryId } from './ui-state';
 
 export const defaultSignals = {
   q: '',
   hostname: '',
   ntp: true,
   addingUser: false,
-} as const
+  activeCat: 'system' as CategoryId,
+  activeSub: 'hostname'
+}
 
-export type Signal = Record<string, Jsonifiable>;
+//export type Signal = Record<string, Jsonifiable>;
+//export type Signal = Partial<Record<string, Jsonifiable>>;
+export type Signal = { [K in SignalName]?: typeof defaultSignals[K] }
 
 const context = createContext<Signal>({})
 export const SignalProvider = context.Provider;

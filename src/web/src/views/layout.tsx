@@ -1,6 +1,6 @@
 import type { Child } from 'hono/jsx'
+import type { CategoryId } from '../ui-state';
 
-export type CategoryId = 'system' | 'users' | 'disk' | 'pacman' | 'boot'
 
 type SubCategory = { id: string; label: string }
 type Category = { id: CategoryId; label: string; subs?: SubCategory[] }
