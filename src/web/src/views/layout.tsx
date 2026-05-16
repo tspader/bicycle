@@ -182,12 +182,10 @@ export const Section = ({
 
 export const Field = ({
   label,
-  hint,
   htmlFor,
   children,
 }: {
   label: string
-  hint?: string
   htmlFor?: string
   children?: Child
 }) => (
@@ -195,9 +193,6 @@ export const Field = ({
     <label class="field-label" for={htmlFor}>
       {label}
     </label>
-    <div class="field-control">
-      {children}
-      {hint ? <p class="field-hint">{hint}</p> : null}
-    </div>
+    <div class="field-control">{children}</div>
   </div>
 )

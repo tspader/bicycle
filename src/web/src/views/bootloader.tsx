@@ -21,7 +21,7 @@ export const BootloaderSection = ({ loader, uki, removable }: Props) => (
           ))}
         </select>
       </Field>
-      <Field label="Unified Kernel Image" htmlFor="uki" hint="Bundle kernel + initrd + cmdline.">
+      <Field label="Unified Kernel Image" htmlFor="uki">
         <label class="toggle">
           <input
             id="uki"
@@ -33,7 +33,7 @@ export const BootloaderSection = ({ loader, uki, removable }: Props) => (
           <span data-text="$uki ? 'On' : 'Off'" />
         </label>
       </Field>
-      <Field label="Removable install" htmlFor="removable" hint="Install to /EFI/BOOT/BOOTX64.EFI for portable drives.">
+      <Field label="Removable install" htmlFor="removable">
         <label class="toggle">
           <input
             id="removable"

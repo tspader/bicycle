@@ -240,11 +240,7 @@ a { color: inherit; text-decoration: none; }
   text-transform: uppercase;
   letter-spacing: var(--label-tracking);
 }
-.field-control { display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
-.field-hint {
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
-}
+.field-control { min-width: 0; }
 
 .combo {
   background: var(--bg-input);

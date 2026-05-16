@@ -21,7 +21,7 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
       </Field>
     </form>
     <form class="form" data-signals={JSON.stringify({ ntp })}>
-      <Field label="NTP" htmlFor="ntp" hint="Sync time post-install with systemd-timesyncd.">
+      <Field label="NTP" htmlFor="ntp">
         <label class="toggle">
           <input
             id="ntp"

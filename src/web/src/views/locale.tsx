@@ -48,13 +48,13 @@ export const LocaleSection = ({ state, kbLayouts, languages, encodings }: Props)
   return (
     <Section id="locale" title="Locale" subhead="Keyboard layout, language, and encoding.">
       <form class="form" data-signals={JSON.stringify(signals)}>
-        <Field label="Keyboard layout" htmlFor="kb_layout" hint="Console keymap (localectl).">
+        <Field label="Keyboard layout" htmlFor="kb_layout">
           <Combo id="kb_layout" field="kb_layout" value={state.kb_layout} options={kbLayouts} />
         </Field>
-        <Field label="Language" htmlFor="sys_lang" hint="Glibc locale (e.g. en_US.UTF-8).">
+        <Field label="Language" htmlFor="sys_lang">
           <Combo id="sys_lang" field="sys_lang" value={state.sys_lang} options={languages} />
         </Field>
-        <Field label="Encoding" htmlFor="sys_enc" hint="Character encoding for the locale.">
+        <Field label="Encoding" htmlFor="sys_enc">
           <Combo id="sys_enc" field="sys_enc" value={state.sys_enc} options={encodings} />
         </Field>
       </form>

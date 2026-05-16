@@ -3,7 +3,7 @@ import { Field, Section } from './layout'
 export const HostnameSection = ({ value }: { value: string }) => (
   <Section id="hostname" title="Hostname" subhead="System hostname.">
     <form class="form" data-signals={JSON.stringify({ hostname: value })}>
-      <Field label="Hostname" htmlFor="hostname" hint="Letters, digits, and hyphens.">
+      <Field label="Hostname" htmlFor="hostname">
         <input
           id="hostname"
           class="combo"

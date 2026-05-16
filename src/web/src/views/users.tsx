@@ -25,7 +25,7 @@ const RootCard = ({ rootSet }: { rootSet: boolean }) => {
       <Field
         label="Password"
         htmlFor="root-pw"
-        hint={rootSet ? 'Leave blank to keep existing.' : 'Required.'}
+       
       >
         <input
           id="root-pw"
@@ -70,7 +70,7 @@ const UserCard = ({ u }: { u: User }) => {
           data-bind={`${p}_username`}
         />
       </Field>
-      <Field label="Password" htmlFor={`${p}-pw`} hint="Leave blank to keep existing.">
+      <Field label="Password" htmlFor={`${p}-pw`}>
         <input
           id={`${p}-pw`}
           class="combo"
@@ -85,7 +85,7 @@ const UserCard = ({ u }: { u: User }) => {
           <span data-text={`$${p}_sudo ? 'On' : 'Off'`} />
         </label>
       </Field>
-      <Field label="Groups" htmlFor={`${p}-groups`} hint="Comma-separated.">
+      <Field label="Groups" htmlFor={`${p}-groups`}>
         <input
           id={`${p}-groups`}
           class="combo"
@@ -150,7 +150,7 @@ const AddUserSlot = () => {
             <span data-text="$new_sudo ? 'On' : 'Off'" />
           </label>
         </Field>
-        <Field label="Groups" htmlFor="new-groups" hint="Comma-separated.">
+        <Field label="Groups" htmlFor="new-groups">
           <input
             id="new-groups"
             class="combo"
