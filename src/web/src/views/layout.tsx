@@ -59,23 +59,29 @@ export const Preview = ({ html }: { html: string }) => (
 
 export const Layout = ({
   active,
+  activeSub = '',
   title = 'Bicycle',
   previewHtml,
   children,
 }: {
   active: CategoryId
+  activeSub?: string
   title?: string
   previewHtml: string
   children?: Child
 }) => {
   const navParent = (id: CategoryId) =>
-    `history.pushState({}, '', '/config/${id}'); $activeCat = '${id}'; @get('/config/${id}')`
+    `history.pushState({}, '', '/config/${id}'); $activeCat = '${id}'; $activeSub = ''; @get('/config/${id}')`
 
   const navSub = (id: CategoryId, sub: string) =>
-    `history.pushState({}, '', '/config/${id}#${sub}'); $activeCat = '${id}'; @get('/config/${id}?h=${sub}')`
+    `history.pushState({}, '', '/config/${id}#${sub}'); $activeCat = '${id}'; $activeSub = '${sub}'; @get('/config/${id}?h=${sub}')`
 
-  const Sidebar = ({ active }: { active: CategoryId }) => (
-    <aside class="sidebar" data-signals={JSON.stringify({ q: '', activeCat: active })}>
+  const Sidebar = ({ active, activeSub }: { active: CategoryId; activeSub: string }) => (
+    <aside
+      class="sidebar"
+      data-signals={JSON.stringify({ q: '', activeCat: active, activeSub })}
+      data-on:active-sub__window="$activeSub = evt.detail"
+    >
       <a class="brand" href="/">{'>>'} bicycle</a>
       <input
         class="nav-filter"
@@ -101,7 +107,8 @@ export const Layout = ({
               {c.subs?.map((s) => (
                 <a
                   href={`/config/${c.id}#${s.id}`}
-                  class="nav-link nav-sublink"
+                  class={`nav-link nav-sublink${c.id === active && s.id === activeSub ? ' nav-link-active' : ''}`}
+                  data-class:nav-link-active={`$activeCat === '${c.id}' && $activeSub === '${s.id}'`}
                   data-on:click__prevent={navSub(c.id, s.id)}
                   data-show={matchExpr([c.label, s.label])}
                 >
@@ -129,11 +136,37 @@ export const Layout = ({
         <link rel="icon" type="image/x-icon" href="/favicon.ico" />
         <link rel="stylesheet" href="/static/app.css" />
         <script type="module" src="/static/datastar.js" />
-        <script dangerouslySetInnerHTML={{ __html: `addEventListener('popstate',()=>location.reload())` }} />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              addEventListener('popstate',()=>location.reload());
+              let _spyTick;
+              const _spyUpdate = () => {
+                const sections = document.querySelectorAll('main .section');
+                if (!sections.length) return;
+                let active = sections[0].id;
+                for (const s of sections) {
+                  if (s.getBoundingClientRect().top <= 120) active = s.id;
+                  else break;
+                }
+                window.dispatchEvent(new CustomEvent('active-sub', { detail: active }));
+              };
+              const _onScroll = () => {
+                if (_spyTick) return;
+                _spyTick = requestAnimationFrame(() => { _spyTick = 0; _spyUpdate(); });
+              };
+              window.bicycleScrollSpy = () => {
+                removeEventListener('scroll', _onScroll);
+                addEventListener('scroll', _onScroll, { passive: true });
+                _spyUpdate();
+              };
+            `,
+          }}
+        />
       </head>
       <body>
         <div class="shell">
-          <Sidebar active={active} />
+          <Sidebar active={active} activeSub={activeSub} />
           <main id="page-content" class="content">{children}</main>
           <Preview html={previewHtml} />
         </div>
@@ -171,7 +204,7 @@ export const Section = ({
   subhead?: string
   children?: Child
 }) => (
-  <section id={id} class="section">
+  <section id={id} class="section" data-init="bicycleScrollSpy()">
     <header class="section-head">
       <h2 class="section-title">{title}</h2>
       {subhead ? <p class="section-sub">{subhead}</p> : null}

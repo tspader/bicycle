@@ -71,23 +71,31 @@ const renderPreviewHtml = async (): Promise<string> => {
 const previewFragment = async (): Promise<string> =>
   (<Preview html={await renderPreviewHtml()} />).toString()
 
+const defaultSub = (cat: CategoryId): string =>
+  CATEGORIES.find((c) => c.id === cat)?.subs?.[0]?.id ?? ''
+
 const renderPage = async (
   c: { req: { raw: Request }; html: (n: unknown) => Response | Promise<Response> },
   active: CategoryId,
   body: Child,
   hash?: string,
 ) => {
+  const activeSub = hash || defaultSub(active)
   const isDatastar = c.req.raw.headers.get('datastar-request') === 'true'
   if (!isDatastar) {
     const previewHtml = await renderPreviewHtml()
-    return c.html(<Layout active={active} previewHtml={previewHtml}>{body}</Layout>)
+    return c.html(
+      <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
+        {body}
+      </Layout>,
+    )
   }
   const preview = await previewFragment()
   return ServerSentEventGenerator.stream((stream) => {
     const html = (<main id="page-content" class="content">{body}</main>).toString()
     stream.patchElements(html)
     stream.patchElements(preview)
-    stream.patchSignals(JSON.stringify({ activeCat: active }))
+    stream.patchSignals(JSON.stringify({ activeCat: active, activeSub }))
     if (hash) {
       stream.executeScript(
         `document.getElementById(${JSON.stringify(hash)})?.scrollIntoView({behavior:'smooth'})`,
