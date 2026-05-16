@@ -107,30 +107,24 @@ const renderPreviewHtml = async (): Promise<string> => {
 const previewFragment = async (): Promise<string> =>
   (<Preview html={await renderPreviewHtml()} />).toString()
 
-const defaultSub = (cat: CategoryId): string =>
-  CATEGORIES.find((c) => c.id === cat)?.subs?.[0]?.id ?? ''
-
 const patchPreview = () =>
   ServerSentEventGenerator.stream(async (stream) => {
     stream.patchElements(await previewFragment())
   })
 
-const renderFull = async (c: AppContext, active: CategoryId, body: Child, hash?: string) => {
-  const activeSub = hash || defaultSub(active)
+const renderFull = async (c: AppContext, active: CategoryId, body: Child) => {
   const previewHtml = await renderPreviewHtml()
   return c.html(
     <SignalProvider value={getSignals(c)}>
-      <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
+      <Layout active={active} previewHtml={previewHtml}>
         {body}
       </Layout>
     </SignalProvider>,
   )
 }
 
-const renderPatch = (active: CategoryId, body: Child, hash?: string) =>
+const renderPatch = (active: CategoryId, body: Child) =>
   ServerSentEventGenerator.stream(async (stream) => {
-    const activeSub = hash || defaultSub(active)
-
     const elements = [
       (
         <Preview html={await renderPreviewHtml()} />
@@ -143,14 +137,7 @@ const renderPatch = (active: CategoryId, body: Child, hash?: string) =>
     ]
     for (const element of elements) stream.patchElements(element.toString())
 
-
-    // patch.signals(stream, { activeCat: active, activeSub })
-    stream.patchSignals(JSON.stringify({ activeCat: active, activeSub }))
-    if (hash) {
-      stream.executeScript(
-        `document.getElementById(${JSON.stringify(hash)})?.scrollIntoView({behavior:'smooth'})`,
-      )
-    }
+    stream.patchSignals(JSON.stringify({ activeCat: active }))
   })
 
 const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
@@ -218,10 +205,9 @@ app.get('/config/:category', async (c) => {
   }
 
   const body = await buildPage(parsed.data, c)
-  const hash = c.req.query('h')
   return c.get('datastar') ?
-    renderPatch(parsed.data, body, hash) :
-    renderFull(c, parsed.data, body, hash)
+    renderPatch(parsed.data, body) :
+    renderFull(c, parsed.data, body)
 })
 
 app.post('/api/locale', (c) => {

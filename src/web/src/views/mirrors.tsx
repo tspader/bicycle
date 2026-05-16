@@ -8,7 +8,6 @@ export const MirrorsSection = ({ regions, selected }: Props) => {
   const set = new Set(selected)
   return (
     <Section
-      id="mirrors"
       title="Mirrors"
       subhead="Pacman mirror regions. Archinstall fetches and ranks at install time."
     >

@@ -5,7 +5,7 @@ const ALGORITHMS = ['zstd', 'lzo-rle', 'lzo', 'lz4', 'lz4hc'] as const
 type Props = { enabled: boolean; algorithm: (typeof ALGORITHMS)[number] }
 
 export const SwapSection = ({ enabled, algorithm }: Props) => (
-  <Section id="swap" title="Swap" subhead="zram swap configuration.">
+  <Section title="Swap" subhead="zram swap configuration.">
     <form class="form" data-signals={JSON.stringify({ enabled, algorithm })}>
       <Field label="Enabled" htmlFor="enabled">
         <label class="toggle">

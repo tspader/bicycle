@@ -46,7 +46,7 @@ export const LocaleSection = ({ state, kbLayouts, languages, encodings }: Props)
     sysEnc: state.sys_enc,
   }
   return (
-    <Section id="locale" title="Locale" subhead="Keyboard layout, language, and encoding.">
+    <Section title="Locale" subhead="Keyboard layout, language, and encoding.">
       <form class="form" data-signals={JSON.stringify(signals)}>
         <Field label="Keyboard layout" htmlFor="kb_layout">
           <Combo id="kb_layout" field="kb_layout" value={state.kb_layout} options={kbLayouts} />

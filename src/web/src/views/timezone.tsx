@@ -3,7 +3,7 @@ import { Field, Section } from './layout'
 type Props = { value: string; zones: string[]; ntp: boolean }
 
 export const TimeSection = ({ value, zones, ntp }: Props) => (
-  <Section id="time" title="Time" subhead="Time zone and clock sync.">
+  <Section title="Time" subhead="Time zone and clock sync.">
     <form class="form" data-signals={JSON.stringify({ timezone: value })}>
       <Field label="Zone" htmlFor="timezone">
         <select

@@ -7,7 +7,7 @@ type Props = {
 
 export const DiskView = ({ swap }: Props) => (
   <Page heading="Disk" subhead="Partitioning and swap.">
-    <Section id="partitions" title="Partitions" subhead="Disk layout.">
+    <Section title="Partitions" subhead="Disk layout.">
       <p class="empty">Not yet implemented.</p>
     </Section>
     <SwapSection enabled={swap.enabled} algorithm={swap.algorithm} />

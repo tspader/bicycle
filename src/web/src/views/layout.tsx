@@ -2,51 +2,18 @@ import type { Child } from 'hono/jsx'
 import type { CategoryId } from '../ui-state';
 
 
-type SubCategory = { id: string; label: string }
-type Category = { id: CategoryId; label: string; subs?: SubCategory[] }
+type Category = { id: CategoryId; label: string }
 
 export const CATEGORIES: Category[] = [
-  {
-    id: 'system',
-    label: 'System',
-    subs: [
-      { id: 'hostname', label: 'Hostname' },
-      { id: 'locale', label: 'Locale' },
-      { id: 'time', label: 'Time' },
-      { id: 'network', label: 'Network' },
-    ],
-  },
+  { id: 'system', label: 'System' },
   { id: 'users', label: 'Users' },
-  {
-    id: 'disk',
-    label: 'Disk',
-    subs: [
-      { id: 'partitions', label: 'Partitions' },
-      { id: 'swap', label: 'Swap' },
-    ],
-  },
-  {
-    id: 'pacman',
-    label: 'Pacman',
-    subs: [
-      { id: 'packages', label: 'Packages' },
-      { id: 'mirrors', label: 'Mirrors' },
-    ],
-  },
-  {
-    id: 'boot',
-    label: 'Boot',
-    subs: [
-      { id: 'kernels', label: 'Kernels' },
-      { id: 'bootloader', label: 'Bootloader' },
-    ],
-  },
+  { id: 'disk', label: 'Disk' },
+  { id: 'pacman', label: 'Pacman' },
+  { id: 'boot', label: 'Boot' },
 ]
 
-const norm = (s: string): string => s.toLowerCase()
-
-const matchExpr = (terms: string[]): string => {
-  const haystack = norm(terms.join(' ')).replace(/'/g, "\\'")
+const matchExpr = (label: string): string => {
+  const haystack = label.toLowerCase().replace(/'/g, "\\'")
   return `!$q || '${haystack}'.includes($q.toLowerCase())`
 }
 
@@ -59,28 +26,22 @@ export const Preview = ({ html }: { html: string }) => (
 
 export const Layout = ({
   active,
-  activeSub = '',
   title = 'Bicycle',
   previewHtml,
   children,
 }: {
   active: CategoryId
-  activeSub?: string
   title?: string
   previewHtml: string
   children?: Child
 }) => {
-  const navParent = (id: CategoryId) =>
-    `history.pushState({}, '', '/config/${id}'); $activeCat = '${id}'; $activeSub = ''; @get('/config/${id}')`
+  const nav = (id: CategoryId) =>
+    `history.pushState({}, '', '/config/${id}'); $activeCat = '${id}'; @get('/config/${id}')`
 
-  const navSub = (id: CategoryId, sub: string) =>
-    `history.pushState({}, '', '/config/${id}#${sub}'); $activeCat = '${id}'; $activeSub = '${sub}'; @get('/config/${id}?h=${sub}')`
-
-  const Sidebar = ({ active, activeSub }: { active: CategoryId; activeSub: string }) => (
+  const Sidebar = ({ active }: { active: CategoryId }) => (
     <aside
       class="sidebar"
-      data-signals={JSON.stringify({ q: '', activeCat: active, activeSub })}
-      data-on:active-sub__window="$activeSub = evt.detail"
+      data-signals={JSON.stringify({ q: '', activeCat: active })}
     >
       <a class="brand" href="/">{'>>'} bicycle</a>
       <input
@@ -90,34 +51,17 @@ export const Layout = ({
         data-bind="q"
       />
       <nav class="nav">
-        {CATEGORIES.map((c) => {
-          const subLabels = c.subs?.map((s) => s.label) ?? []
-          const parentMatch = matchExpr([c.label, ...subLabels])
-          return (
-            <>
-              <a
-                href={`/config/${c.id}`}
-                class={`nav-link${c.id === active ? ' nav-link-active' : ''}`}
-                data-class:nav-link-active={`$activeCat === '${c.id}'`}
-                data-on:click__prevent={navParent(c.id)}
-                data-show={parentMatch}
-              >
-                {c.label}
-              </a>
-              {c.subs?.map((s) => (
-                <a
-                  href={`/config/${c.id}#${s.id}`}
-                  class={`nav-link nav-sublink${c.id === active && s.id === activeSub ? ' nav-link-active' : ''}`}
-                  data-class:nav-link-active={`$activeCat === '${c.id}' && $activeSub === '${s.id}'`}
-                  data-on:click__prevent={navSub(c.id, s.id)}
-                  data-show={matchExpr([c.label, s.label])}
-                >
-                  {s.label}
-                </a>
-              ))}
-            </>
-          )
-        })}
+        {CATEGORIES.map((c) => (
+          <a
+            href={`/config/${c.id}`}
+            class={`nav-link${c.id === active ? ' nav-link-active' : ''}`}
+            data-class:nav-link-active={`$activeCat === '${c.id}'`}
+            data-on:click__prevent={nav(c.id)}
+            data-show={matchExpr(c.label)}
+          >
+            {c.label}
+          </a>
+        ))}
       </nav>
       <div class="sidebar-foot">
         <button type="button" class="btn-install" disabled>
@@ -136,37 +80,11 @@ export const Layout = ({
         <link rel="icon" type="image/x-icon" href="/favicon.ico" />
         <link rel="stylesheet" href="/static/app.css" />
         <script type="module" src="/static/datastar.js" />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              addEventListener('popstate',()=>location.reload());
-              let _spyTick;
-              const _spyUpdate = () => {
-                const sections = document.querySelectorAll('main .section');
-                if (!sections.length) return;
-                let active = sections[0].id;
-                for (const s of sections) {
-                  if (s.getBoundingClientRect().top <= 120) active = s.id;
-                  else break;
-                }
-                window.dispatchEvent(new CustomEvent('active-sub', { detail: active }));
-              };
-              const _onScroll = () => {
-                if (_spyTick) return;
-                _spyTick = requestAnimationFrame(() => { _spyTick = 0; _spyUpdate(); });
-              };
-              window.bicycleScrollSpy = () => {
-                removeEventListener('scroll', _onScroll);
-                addEventListener('scroll', _onScroll, { passive: true });
-                _spyUpdate();
-              };
-            `,
-          }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: `addEventListener('popstate',()=>location.reload());` }} />
       </head>
       <body>
         <div class="shell">
-          <Sidebar active={active} activeSub={activeSub} />
+          <Sidebar active={active} />
           <main id="page-content" class="content">{children}</main>
           <Preview html={previewHtml} />
         </div>
@@ -194,17 +112,15 @@ export const Page = ({
 )
 
 export const Section = ({
-  id,
   title,
   subhead,
   children,
 }: {
-  id: string
   title: string
   subhead?: string
   children?: Child
 }) => (
-  <section id={id} class="section" data-init="bicycleScrollSpy()">
+  <section class="section">
     <header class="section-head">
       <h2 class="section-title">{title}</h2>
       {subhead ? <p class="section-sub">{subhead}</p> : null}

@@ -164,11 +164,6 @@ a { color: inherit; text-decoration: none; }
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.nav-sublink {
-  padding-left: var(--s-6);
-  font-size: var(--text-sm);
-}
-
 .sidebar-foot {
   margin-top: auto;
   padding-top: var(--s-5);

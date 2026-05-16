@@ -5,7 +5,7 @@ const LOADERS = ['systemd-boot', 'grub', 'efistub', 'limine', 'refind'] as const
 type Props = { loader: (typeof LOADERS)[number]; uki: boolean; removable: boolean }
 
 export const BootloaderSection = ({ loader, uki, removable }: Props) => (
-  <Section id="bootloader" title="Bootloader" subhead="UEFI boot manager.">
+  <Section title="Bootloader" subhead="UEFI boot manager.">
     <form class="form" data-signals={JSON.stringify({ loader, uki, removable })}>
       <Field label="Loader" htmlFor="loader">
         <select

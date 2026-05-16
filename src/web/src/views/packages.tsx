@@ -1,5 +1,5 @@
 import { Page } from './layout'
-import { Field, Section } from './layout'
+import { Field } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
 import { Signal } from '../components/signal'
 
@@ -130,33 +130,38 @@ const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
   return (
     <>
       <div class="detail-head">
-        <h2 class="card-title">
-          {detail.name} <span class="muted small">{detail.version}</span>
-        </h2>
       </div>
       <div class="detail-split">
-        <dl class="detail-fields">
-          <dt>Repo</dt>
-          <dd>{detail.repo}</dd>
-          <dt>URL</dt>
-          <dd>
-            <a class="link" href={detail.url} target="_blank" rel="noreferrer">
-              {detail.url}
-            </a>
-          </dd>
-          <dt>Size</dt>
-          <dd>{detail.installed_size}</dd>
-          <dt>Depends</dt>
-          <dd>{detail.depends.length}</dd>
-          <dt>Description</dt>
-          <dd>{detail.description}</dd>
-        </dl>
+        <div display="flex" flex-direction="column">
+          <h2 class="card-title">
+            {detail.name}
+            <span class="muted small">
+              {detail.version}
+            </span>
+          </h2>
+          <dl class="detail-fields">
+            <dt>Repo</dt>
+            <dd>{detail.repo}</dd>
+            <dt>URL</dt>
+            <dd>
+              <a class="link" href={detail.url} target="_blank" rel="noreferrer">
+                {detail.url}
+              </a>
+            </dd>
+            <dt>Size</dt>
+            <dd>{detail.installed_size}</dd>
+            <dt>Depends</dt>
+            <dd>{detail.depends.length}</dd>
+            <dt>Description</dt>
+            <dd>{detail.description}</dd>
+          </dl>
+        </div>
         <div class="detail-deps scroll-card">
           <div class="detail-deps-inner">
           <table class="table dep-table">
             <thead>
               <tr>
-                <th>Dependency</th>
+                <th>Dependencies</th>
               </tr>
             </thead>
             <tbody>

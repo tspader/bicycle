@@ -7,7 +7,6 @@ export const defaultSignals = {
   ntp: true,
   addingUser: false,
   activeCat: 'system' as CategoryId,
-  activeSub: 'hostname'
 }
 
 //export type Signal = Record<string, Jsonifiable>;
