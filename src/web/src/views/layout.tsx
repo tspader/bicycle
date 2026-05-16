@@ -29,8 +29,8 @@ export const CATEGORIES: Category[] = [
     id: 'pacman',
     label: 'Pacman',
     subs: [
-      { id: 'mirrors', label: 'Mirrors' },
       { id: 'packages', label: 'Packages' },
+      { id: 'mirrors', label: 'Mirrors' },
     ],
   },
   {

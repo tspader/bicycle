@@ -32,6 +32,7 @@ import {
   syncPacman,
   KERNELS,
 } from './system'
+import { SignalProvider } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig, LocaleConfig, Kernel } from './config'
 import { hashPassword } from './auth'

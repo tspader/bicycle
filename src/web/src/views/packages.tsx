@@ -1,5 +1,7 @@
+import { Page } from './layout'
 import { Field, Section } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
+import { Signal } from '../components/signal'
 
 type Props = {
   installed: string[]
@@ -15,26 +17,27 @@ export type RowState = { checked: Set<string>; selectedName: string | null }
 export const PackagesSection = ({ installed, detail, selectedName, initialPage }: Props) => {
   const state: RowState = { checked: new Set(installed), selectedName }
   return (
-    <Section id="packages" title="Packages" subhead="Additional packages to install.">
+    <Page heading="Packages">
       <div id="package-detail" class="card">
         <PackageDetailPanel detail={detail} />
       </div>
+
+      <Signal name="q">
+      </Signal>
+
       <form class="form" data-signals={JSON.stringify({ q: initialPage.q })}>
-        <Field label="Search" htmlFor="q">
-          <input
-            id="q"
-            class="combo"
-            type="text"
+        <div class="field-control">
+          <input class="combo" type="text"
             placeholder="Filter..."
             data-bind="q"
             {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
           />
-        </Field>
+        </div>
       </form>
       <div id="package-list" class="list">
         <PackageList page={initialPage} state={state} />
       </div>
-    </Section>
+    </Page>
   )
 }
 

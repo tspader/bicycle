@@ -15,7 +15,7 @@ type Props = {
 
 export const PacmanView = ({ mirrors, packages }: Props) => (
   <Page heading="Pacman" subhead="Mirrors and packages.">
-    <MirrorsSection regions={mirrors.regions} selected={mirrors.selected} />
     <PackagesSection {...packages} />
+    <MirrorsSection regions={mirrors.regions} selected={mirrors.selected} />
   </Page>
 )
