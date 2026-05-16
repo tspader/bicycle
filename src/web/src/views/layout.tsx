@@ -54,7 +54,7 @@ export const Layout: FC<PropsWithChildren<{ active: CategoryId; title?: string }
     <body>
       <div class="shell">
         <aside class="sidebar">
-          <a class="brand" href="/">arch installer</a>
+          <a class="brand" href="/">{'>>'} bicycle</a>
           <nav class="nav">
             {CATEGORIES.map((c) => (
               <a

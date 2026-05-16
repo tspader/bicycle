@@ -9,7 +9,7 @@ import { SwapView } from './views/swap'
 import { BootloaderView } from './views/bootloader'
 import { NetworkView } from './views/network'
 import { TimezoneView } from './views/timezone'
-import { MirrorsView } from './views/mirrors'
+import { MirrorsView, RegionListFragment, RegionRowFragment } from './views/mirrors'
 import { UsersView, toRows } from './views/users'
 import {
   PackagesView,
@@ -218,7 +218,25 @@ app.post('/api/mirrors/toggle', async (c) => {
       optional_repositories: s.mirror_config?.optional_repositories ?? [],
     },
   })
-  return c.body(null, 204)
+  const isChecked = name in current
+  return ServerSentEventGenerator.stream((stream) => {
+    const html = (<RegionRowFragment name={name} isChecked={isChecked} />).toString()
+    stream.mergeFragments(html)
+  })
+})
+
+app.get('/api/mirrors/list', async (c) => {
+  const r = await ServerSentEventGenerator.readSignals(c.req.raw)
+  const q = (r.success ? String(r.signals['q'] ?? '') : '') || (c.req.query('q') ?? '')
+  const needle = q.trim().toLowerCase()
+  const all = regions()
+  const filtered = needle ? all.filter((name) => name.toLowerCase().includes(needle)) : all
+  const s = getState()
+  const checked = new Set(Object.keys(s.mirror_config?.mirror_regions ?? {}))
+  return ServerSentEventGenerator.stream((stream) => {
+    const html = (<RegionListFragment items={filtered} checked={checked} />).toString()
+    stream.mergeFragments(html)
+  })
 })
 
 app.post('/api/packages/toggle', async (c) => {
