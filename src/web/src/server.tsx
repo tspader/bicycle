@@ -46,7 +46,8 @@ type App = {
 
 type AppContext = Context<{ Variables: App }>
 
-const getSignal = <K extends SignalName>(c: AppContext, name: K) => {
+// const getSignal = ... totally fucks my syntax highlighting
+function getSignal<K extends SignalName>(c: AppContext, name: K): typeof defaultSignals[K] {
   const signal = c.get('signals')[name] ?? defaultSignals[name]
   return signal as typeof defaultSignals[K]
 }
@@ -99,8 +100,6 @@ const renderPage = async (
   body: Child,
   hash?: string,
 ) => {
-  const signals = c.get('signals')
-  console.log(signals)
   const activeSub = hash || defaultSub(active)
   const isDatastar = c.req.raw.headers.get('datastar-request') === 'true'
   if (!isDatastar) {
