@@ -1,86 +1,140 @@
-import type { FC, PropsWithChildren } from 'hono/jsx'
+import type { Child } from 'hono/jsx'
 
-export type CategoryId =
-  | 'locale'
-  | 'kernels'
-  | 'hostname'
-  | 'users'
-  | 'disk'
-  | 'bootloader'
-  | 'profile'
-  | 'network'
-  | 'timezone'
-  | 'mirrors'
-  | 'packages'
-  | 'swap'
-  | 'ntp'
+export type CategoryId = 'system' | 'users' | 'disk' | 'pacman' | 'boot'
 
-type Category = { id: CategoryId; label: string }
+type SubCategory = { id: string; label: string }
+type Category = { id: CategoryId; label: string; subs?: SubCategory[] }
 
 export const CATEGORIES: Category[] = [
-  { id: 'locale', label: 'Locale' },
-  { id: 'kernels', label: 'Kernels' },
-  { id: 'hostname', label: 'Hostname' },
+  {
+    id: 'system',
+    label: 'System',
+    subs: [
+      { id: 'hostname', label: 'Hostname' },
+      { id: 'locale', label: 'Locale' },
+      { id: 'time', label: 'Time' },
+      { id: 'network', label: 'Network' },
+    ],
+  },
   { id: 'users', label: 'Users' },
-  { id: 'disk', label: 'Disk' },
-  { id: 'bootloader', label: 'Bootloader' },
-  { id: 'profile', label: 'Profile' },
-  { id: 'network', label: 'Network' },
-  { id: 'timezone', label: 'Timezone' },
-  { id: 'mirrors', label: 'Mirrors' },
-  { id: 'packages', label: 'Packages' },
-  { id: 'swap', label: 'Swap' },
-  { id: 'ntp', label: 'NTP' },
+  {
+    id: 'disk',
+    label: 'Disk',
+    subs: [
+      { id: 'partitions', label: 'Partitions' },
+      { id: 'swap', label: 'Swap' },
+    ],
+  },
+  {
+    id: 'pacman',
+    label: 'Pacman',
+    subs: [
+      { id: 'mirrors', label: 'Mirrors' },
+      { id: 'packages', label: 'Packages' },
+    ],
+  },
+  {
+    id: 'boot',
+    label: 'Boot',
+    subs: [
+      { id: 'kernels', label: 'Kernels' },
+      { id: 'bootloader', label: 'Bootloader' },
+    ],
+  },
 ]
 
-const CriticalCss: FC = () => (
-  <style>{`html,body{background:#0e0e0e;color:#e6e6e6}.sidebar{background:#111111}`}</style>
-)
+const norm = (s: string): string => s.toLowerCase()
 
-export const Layout: FC<PropsWithChildren<{ active: CategoryId; title?: string }>> = ({
+const matchExpr = (terms: string[]): string => {
+  const haystack = norm(terms.join(' ')).replace(/'/g, "\\'")
+  return `!$q || '${haystack}'.includes($q.toLowerCase())`
+}
+
+export const Layout = ({
   active,
-  title = 'Arch Installer',
+  title = 'Bicycle',
   children,
-}) => (
-  <html lang="en">
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>{title}</title>
-      <CriticalCss />
-      <link rel="stylesheet" href="/static/app.css" />
-      <script type="module" src="/static/datastar.js" />
-    </head>
-    <body>
-      <div class="shell">
-        <aside class="sidebar">
-          <a class="brand" href="/">{'>>'} bicycle</a>
-          <nav class="nav">
-            {CATEGORIES.map((c) => (
+}: {
+  active: CategoryId
+  title?: string
+  children?: Child
+}) => {
+  const CriticalCss = () => (
+    <style>{`html,body{background:#0e0e0e;color:#e6e6e6}.sidebar{background:#111111}`}</style>
+  )
+
+  const Sidebar = ({ active }: { active: CategoryId }) => (
+    <aside class="sidebar" data-signals={JSON.stringify({ q: '' })}>
+      <a class="brand" href="/">{'>>'} bicycle</a>
+      <input
+        class="nav-filter"
+        type="text"
+        placeholder="Filter…"
+        data-bind="q"
+      />
+      <nav class="nav">
+        {CATEGORIES.map((c) => {
+          const subLabels = c.subs?.map((s) => s.label) ?? []
+          const parentMatch = matchExpr([c.label, ...subLabels])
+          return (
+            <>
               <a
                 href={`/config/${c.id}`}
                 class={`nav-link${c.id === active ? ' nav-link-active' : ''}`}
+                data-show={parentMatch}
               >
                 {c.label}
               </a>
-            ))}
-          </nav>
-          <div class="sidebar-foot">
-            <button type="button" class="btn-install" disabled>
-              Install
-            </button>
-          </div>
-        </aside>
-        <main class="content">{children}</main>
+              {c.subs?.map((s) => (
+                <a
+                  href={`/config/${c.id}#${s.id}`}
+                  class="nav-link nav-sublink"
+                  data-show={matchExpr([c.label, s.label])}
+                >
+                  {s.label}
+                </a>
+              ))}
+            </>
+          )
+        })}
+      </nav>
+      <div class="sidebar-foot">
+        <button type="button" class="btn-install" disabled>
+          Install
+        </button>
       </div>
-    </body>
-  </html>
-)
+    </aside>
+  )
 
-export const Page: FC<PropsWithChildren<{ heading: string; subhead?: string }>> = ({
+  return (
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>{title}</title>
+        <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+        <CriticalCss />
+        <link rel="stylesheet" href="/static/app.css" />
+        <script type="module" src="/static/datastar.js" />
+      </head>
+      <body>
+        <div class="shell">
+          <Sidebar active={active} />
+          <main class="content">{children}</main>
+        </div>
+      </body>
+    </html>
+  )
+}
+
+export const Page = ({
   heading,
   subhead,
   children,
+}: {
+  heading: string
+  subhead?: string
+  children?: Child
 }) => (
   <section class="page">
     <header class="page-head">
@@ -91,11 +145,36 @@ export const Page: FC<PropsWithChildren<{ heading: string; subhead?: string }>> 
   </section>
 )
 
-export const Field: FC<PropsWithChildren<{ label: string; hint?: string; htmlFor?: string }>> = ({
+export const Section = ({
+  id,
+  title,
+  subhead,
+  children,
+}: {
+  id: string
+  title: string
+  subhead?: string
+  children?: Child
+}) => (
+  <section id={id} class="section">
+    <header class="section-head">
+      <h2 class="section-title">{title}</h2>
+      {subhead ? <p class="section-sub">{subhead}</p> : null}
+    </header>
+    <div class="section-body">{children}</div>
+  </section>
+)
+
+export const Field = ({
   label,
   hint,
   htmlFor,
   children,
+}: {
+  label: string
+  hint?: string
+  htmlFor?: string
+  children?: Child
 }) => (
   <div class="field">
     <label class="field-label" for={htmlFor}>

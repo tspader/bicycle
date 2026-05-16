@@ -1,18 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { CATEGORIES, type CategoryId } from './views/layout'
-import { LocaleView } from './views/locale'
-import { KernelsView } from './views/kernels'
-import { HostnameView } from './views/hostname'
-import { NtpView } from './views/ntp'
-import { SwapView } from './views/swap'
-import { BootloaderView } from './views/bootloader'
-import { NetworkView } from './views/network'
-import { TimezoneView } from './views/timezone'
-import { MirrorsView, RegionListFragment, RegionRowFragment } from './views/mirrors'
-import { UsersView, toRows } from './views/users'
+import { SystemView } from './views/system'
+import { DiskView } from './views/disk'
+import { PacmanView } from './views/pacman'
+import { BootView } from './views/boot'
+import { UsersView } from './views/users'
+import { RegionListFragment, RegionRowFragment } from './views/mirrors'
 import {
-  PackagesView,
   PackageList as PackageListFragment,
   PackageRowsFragment,
   PackageRowFragment,
@@ -21,7 +16,6 @@ import {
 } from './views/packages'
 import { getCurrentDetail, setCurrentDetail } from './ui-state'
 import { loadPackages } from './system'
-import { StubView } from './views/stub'
 import { getState, setState } from './state'
 import {
   kbLayouts,
@@ -40,6 +34,7 @@ import { ArchinstallConfig, LocaleConfig, Kernel } from './config'
 import { hashPassword } from './auth'
 import appCssPath from "./assets/app.css" with { type: "file" };
 import datastarPath from "./assets/datastar.js" with { type: "file" };
+import faviconPath from "./assets/favicon.ico" with { type: "file" };
 
 const app = new Hono()
 
@@ -51,74 +46,73 @@ app.get("/static/datastar.js", () =>
   new Response(Bun.file(datastarPath), { headers: { "content-type": "application/javascript; charset=utf-8" } })
 );
 
-app.get('/', (c) => c.redirect('/config/locale'))
-app.get('/favicon.ico', (c) => c.body(null, 204))
+app.get('/', (c) => c.redirect('/config/system'))
+app.get('/favicon.ico', () =>
+  new Response(Bun.file(faviconPath), { headers: { "content-type": "image/x-icon" } })
+)
 
 const CategoryParam = z.enum(CATEGORIES.map((c) => c.id) as [CategoryId, ...CategoryId[]])
 
+const LOADER_MAP = { 'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub', Limine: 'limine', Refind: 'refind' } as const
+
 app.get('/config/:category', async (c) => {
   const parsed = CategoryParam.safeParse(c.req.param('category'))
-  if (!parsed.success) return c.redirect('/config/locale')
+  if (!parsed.success) return c.redirect('/config/system')
   const s = getState()
 
   switch (parsed.data) {
-    case 'locale': {
-      const [kb, locs] = await Promise.all([kbLayouts(), locales()])
+    case 'system': {
+      const [kb, locs, zones] = await Promise.all([kbLayouts(), locales(), timezones()])
       const lc = s.locale_config ?? { kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' }
-      return c.html(<LocaleView state={lc} kbLayouts={kb} languages={languages(locs)} encodings={encodings(locs)} />)
-    }
-    case 'kernels': {
-      return c.html(<KernelsView selected={s.kernels?.[0] ?? 'linux'} />)
-    }
-    case 'hostname': {
-      return c.html(<HostnameView value={s.hostname ?? ''} />)
-    }
-    case 'ntp': {
-      return c.html(<NtpView enabled={s.ntp ?? true} />)
-    }
-    case 'swap': {
-      const sw = s.swap ?? { enabled: true, algorithm: 'zstd' as const }
-      return c.html(<SwapView enabled={sw.enabled} algorithm={sw.algorithm} />)
-    }
-    case 'bootloader': {
-      const b = s.bootloader_config ?? { bootloader: 'Systemd-boot' as const, uki: true, removable: false }
-      const loaderMap = { 'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub', Limine: 'limine', Refind: 'refind' } as const
-      return c.html(<BootloaderView loader={loaderMap[b.bootloader]} uki={b.uki} removable={b.removable} />)
-    }
-    case 'network': {
-      const t = s.network_config?.type ?? 'iso'
-      return c.html(<NetworkView mode={t} />)
-    }
-    case 'timezone': {
-      const zones = await timezones()
-      return c.html(<TimezoneView value={s.timezone ?? 'UTC'} zones={zones} />)
-    }
-    case 'mirrors': {
-      const selected = Object.keys(s.mirror_config?.mirror_regions ?? {})
-      return c.html(<MirrorsView regions={regions()} selected={selected} />)
-    }
-    case 'users': {
-      const editName = c.req.query('edit')
-      const rows = toRows(s.users, s.root_enc_password !== null && s.root_enc_password !== undefined)
-      const editing = editName ? rows.find((r) => r.username === editName) ?? null : null
-      return c.html(<UsersView rows={rows} editing={editing} />)
-    }
-    case 'packages': {
-      const q = c.req.query('q') ?? ''
-      const installed = s.packages ?? []
-      const page = await searchPackages({ q, selected: new Set(installed) })
-      setCurrentDetail(null)
       return c.html(
-        <PackagesView
-          installed={installed}
-          detail={null}
-          selectedName={null}
-          initialPage={{ items: page.items, next: page.next, q }}
+        <SystemView
+          hostname={s.hostname ?? ''}
+          locale={{
+            state: lc,
+            kbLayouts: kb,
+            languages: languages(locs),
+            encodings: encodings(locs),
+          }}
+          time={{ zone: s.timezone ?? 'UTC', zones, ntp: s.ntp ?? true }}
+          network={{ mode: s.network_config?.type ?? 'iso' }}
         />,
       )
     }
-    default:
-      return c.html(<StubView id={parsed.data} />)
+    case 'users': {
+      const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
+      return c.html(<UsersView rootSet={rootSet} users={s.users ?? []} />)
+    }
+    case 'disk': {
+      const sw = s.swap ?? { enabled: true, algorithm: 'zstd' as const }
+      return c.html(<DiskView swap={sw} />)
+    }
+    case 'pacman': {
+      const q = c.req.query('q') ?? ''
+      const installed = s.packages ?? []
+      const selected = Object.keys(s.mirror_config?.mirror_regions ?? {})
+      const page = await searchPackages({ q, selected: new Set(installed) })
+      setCurrentDetail(null)
+      return c.html(
+        <PacmanView
+          mirrors={{ regions: regions(), selected }}
+          packages={{
+            installed,
+            detail: null,
+            selectedName: null,
+            initialPage: { items: page.items, next: page.next, q },
+          }}
+        />,
+      )
+    }
+    case 'boot': {
+      const b = s.bootloader_config ?? { bootloader: 'Systemd-boot' as const, uki: true, removable: false }
+      return c.html(
+        <BootView
+          kernel={s.kernels?.[0] ?? 'linux'}
+          bootloader={{ loader: LOADER_MAP[b.bootloader], uki: b.uki, removable: b.removable }}
+        />,
+      )
+    }
   }
 })
 
@@ -322,39 +316,85 @@ app.get('/api/packages/detail', async (c) => {
   })
 })
 
-const UserPayload = z.object({
-  kind: z.enum(['root', 'user']),
+const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
+const parseGroups = (g: string): string[] => g.split(/[, ]+/).map((x) => x.trim()).filter(Boolean)
+const reload = () =>
+  ServerSentEventGenerator.stream((stream) => {
+    stream.executeScript("window.location.href = '/config/users'")
+  })
+
+const UserFields = z.object({
   username: z.string().min(1).max(32),
   sudo: z.boolean(),
   groups: z.string(),
   password: z.string(),
 })
 
-app.post('/api/users/save', async (c) => {
+const readUserFields = (signals: Record<string, unknown>, prefix: string) =>
+  UserFields.safeParse({
+    username: signals[`${prefix}_username`],
+    sudo: signals[`${prefix}_sudo`],
+    groups: signals[`${prefix}_groups`],
+    password: signals[`${prefix}_password`],
+  })
+
+app.post('/api/users/root', async (c) => {
   const r = await readSignals(c)
   if (!r.success) return c.text(r.error, 400)
-  const parsed = UserPayload.safeParse(r.signals)
+  const parsed = z.object({ root_password: z.string() }).safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  const groups = parsed.data.groups.split(/[, ]+/).map((g) => g.trim()).filter(Boolean)
-  const enc_password = parsed.data.password ? await hashPassword(parsed.data.password) : null
+  if (parsed.data.root_password) {
+    setState({ root_enc_password: await hashPassword(parsed.data.root_password) })
+  }
+  return reload()
+})
+
+app.post('/api/users/save', async (c) => {
+  const original = c.req.query('original')
+  if (!original) return c.text('missing original', 400)
+  const r = await readSignals(c)
+  if (!r.success) return c.text(r.error, 400)
+  const parsed = readUserFields(r.signals as Record<string, unknown>, slug(original))
+  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
 
   const s = getState()
-  if (parsed.data.kind === 'root') {
-    if (enc_password) setState({ root_enc_password: enc_password })
-  } else {
-    const existing = (s.users ?? []).filter((u) => u.username !== parsed.data.username)
-    const prev = (s.users ?? []).find((u) => u.username === parsed.data.username)
-    existing.push({
-      username: parsed.data.username,
-      sudo: parsed.data.sudo,
-      groups,
-      enc_password: enc_password ?? prev?.enc_password ?? null,
-    })
-    setState({ users: existing })
-  }
-  return ServerSentEventGenerator.stream((stream) => {
-    stream.executeScript("window.location.href = '/config/users'")
+  const prev = (s.users ?? []).find((u) => u.username === original)
+  const enc_password = parsed.data.password
+    ? await hashPassword(parsed.data.password)
+    : prev?.enc_password ?? null
+  const next = (s.users ?? []).filter((u) => u.username !== original)
+  next.push({
+    username: parsed.data.username,
+    sudo: parsed.data.sudo,
+    groups: parseGroups(parsed.data.groups),
+    enc_password,
   })
+  setState({ users: next })
+  return reload()
+})
+
+app.post('/api/users/create', async (c) => {
+  const r = await readSignals(c)
+  if (!r.success) return c.text(r.error, 400)
+  const parsed = readUserFields(r.signals as Record<string, unknown>, 'new')
+  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
+  const s = getState()
+  if ((s.users ?? []).some((u) => u.username === parsed.data.username)) {
+    return c.text('username already exists', 400)
+  }
+  const enc_password = parsed.data.password ? await hashPassword(parsed.data.password) : null
+  setState({
+    users: [
+      ...(s.users ?? []),
+      {
+        username: parsed.data.username,
+        sudo: parsed.data.sudo,
+        groups: parseGroups(parsed.data.groups),
+        enc_password,
+      },
+    ],
+  })
+  return reload()
 })
 
 app.post('/api/users/delete', async (c) => {
@@ -362,9 +402,7 @@ app.post('/api/users/delete', async (c) => {
   if (!name) return c.text('missing name', 400)
   const s = getState()
   setState({ users: (s.users ?? []).filter((u) => u.username !== name) })
-  return ServerSentEventGenerator.stream((stream) => {
-    stream.executeScript("window.location.href = '/config/users'")
-  })
+  return reload()
 })
 
 app.get('/api/config.json', (c) => {

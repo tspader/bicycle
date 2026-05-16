@@ -1,129 +1,172 @@
 import { Layout, Page, Field } from './layout'
 import type { User } from '../config'
 
-export type UserRow = { kind: 'root' | 'user'; username: string; sudo: boolean; groups: string[]; has_password: boolean }
+type Props = { rootSet: boolean; users: User[] }
 
-type Props = {
-  rows: UserRow[]
-  editing: UserRow | null
-}
+export const UsersView = ({ rootSet, users }: Props) => (
+  <Layout active="users">
+    <Page heading="Users" subhead="Root password and additional user accounts.">
+      <RootCard rootSet={rootSet} />
+      {users.map((u) => (
+        <UserCard u={u} />
+      ))}
+      <AddUserSlot />
+    </Page>
+  </Layout>
+)
 
-export const UsersView = ({ rows, editing }: Props) => {
-  const init = editing ?? { kind: 'user' as const, username: '', sudo: false, groups: [] as string[], has_password: false }
-  const signals = {
-    kind: init.kind,
-    username: init.username,
-    sudo: init.sudo,
-    groups: init.groups.join(', '),
-    password: '',
-  }
-  const formAttrs: Record<string, string> = {
-    'data-signals': JSON.stringify(signals),
-  }
+const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
+
+const RootCard = ({ rootSet }: { rootSet: boolean }) => {
+  const signals = { root_password: '' }
   return (
-    <Layout active="users">
-      <Page heading="Users" subhead="Root password and additional user accounts.">
-        <UserForm attrs={formAttrs} isRoot={init.kind === 'root'} editing={editing !== null} />
-        <UsersTable rows={rows} />
-      </Page>
-    </Layout>
+    <form class="form card account-card" data-signals={JSON.stringify(signals)}>
+      <div class="card-header">
+        <h2 class="card-title">Root</h2>
+      </div>
+      <Field
+        label="Password"
+        htmlFor="root-pw"
+        hint={rootSet ? 'Leave blank to keep existing.' : 'Required.'}
+      >
+        <input
+          id="root-pw"
+          class="combo"
+          type="password"
+          data-bind="root_password"
+          placeholder="••••••"
+        />
+      </Field>
+      <div class="form-actions">
+        <button type="button" class="btn" data-on-click="@post('/api/users/root')">
+          Save
+        </button>
+      </div>
+    </form>
   )
 }
 
-const UserForm = ({ attrs, isRoot, editing }: { attrs: Record<string, string>; isRoot: boolean; editing: boolean }) => (
-  <form id="user-form" class="form card" {...attrs}>
-    <h2 class="card-title" data-text={'$kind === "root" ? "root" : ($username || "new user")'} />
-    <Field label="Username" htmlFor="username">
-      <input
-        id="username"
-        class="combo"
-        type="text"
-        data-bind="username"
-        data-attr-disabled="$kind === 'root'"
-        disabled={isRoot}
-        value={isRoot ? 'root' : ''}
-      />
-    </Field>
-    <Field label="Password" htmlFor="password" hint={editing ? 'Leave blank to keep existing.' : ''}>
-      <input id="password" class="combo" type="password" data-bind="password" placeholder="••••••" />
-    </Field>
-    <Field label="Sudo" htmlFor="sudo">
-      <label class="toggle">
-        <input
-          id="sudo"
-          type="checkbox"
-          data-bind="sudo"
-          data-attr-disabled="$kind === 'root'"
-          disabled={isRoot}
-        />
-        <span data-text="$sudo ? 'On' : 'Off'" />
-      </label>
-    </Field>
-    <Field label="Groups" htmlFor="groups" hint="Comma-separated.">
-      <input
-        id="groups"
-        class="combo"
-        type="text"
-        data-bind="groups"
-        data-attr-disabled="$kind === 'root'"
-        disabled={isRoot}
-        placeholder="wheel, video"
-      />
-    </Field>
-    <div class="form-actions">
-      <button type="button" class="btn" data-on-click="@post('/api/users/save')">
-        Save
-      </button>
-      <a class="btn-link" href="/config/users">
-        Reset
-      </a>
-    </div>
-  </form>
-)
-
-const UsersTable = ({ rows }: { rows: UserRow[] }) => (
-  <table id="users-table" class="table">
-    <thead>
-      <tr>
-        <th>User</th>
-        <th>Sudo</th>
-        <th>Groups</th>
-        <th>Password</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {rows.map((r) => (
-        <tr class="row" key={r.username}>
-          <td>
-            <a class="link" href={`/config/users?edit=${encodeURIComponent(r.username)}`}>
-              {r.username}
-            </a>
-          </td>
-          <td>{r.sudo ? 'yes' : ''}</td>
-          <td>{r.groups.join(', ')}</td>
-          <td>{r.has_password ? 'set' : '—'}</td>
-          <td>
-            {r.kind === 'user' ? (
-              <button
-                type="button"
-                class="btn-danger"
-                data-on-click={`@post('/api/users/delete?name=${encodeURIComponent(r.username)}')`}
-              >
-                Delete
-              </button>
-            ) : null}
-          </td>
-        </tr>
-      ))}
-    </tbody>
-  </table>
-)
-
-export const toRows = (users: User[] | undefined, rootSet: boolean): UserRow[] => {
-  const out: UserRow[] = [{ kind: 'root', username: 'root', sudo: true, groups: [], has_password: rootSet }]
-  for (const u of users ?? []) {
-    out.push({ kind: 'user', username: u.username, sudo: u.sudo, groups: u.groups, has_password: u.enc_password !== null })
+const UserCard = ({ u }: { u: User }) => {
+  const p = slug(u.username)
+  const signals: Record<string, unknown> = {
+    [`${p}_username`]: u.username,
+    [`${p}_password`]: '',
+    [`${p}_sudo`]: u.sudo,
+    [`${p}_groups`]: u.groups.join(', '),
   }
-  return out
+  const saveUrl = `/api/users/save?original=${encodeURIComponent(u.username)}`
+  const deleteUrl = `/api/users/delete?name=${encodeURIComponent(u.username)}`
+  return (
+    <form class="form card account-card" data-signals={JSON.stringify(signals)}>
+      <div class="card-header">
+        <h2 class="card-title" data-text={`$${p}_username || 'user'`} />
+        <button type="button" class="btn btn-danger" data-on-click={`@post('${deleteUrl}')`}>
+          Remove
+        </button>
+      </div>
+      <Field label="Username" htmlFor={`${p}-name`}>
+        <input
+          id={`${p}-name`}
+          class="combo"
+          type="text"
+          data-bind={`${p}_username`}
+        />
+      </Field>
+      <Field label="Password" htmlFor={`${p}-pw`} hint="Leave blank to keep existing.">
+        <input
+          id={`${p}-pw`}
+          class="combo"
+          type="password"
+          data-bind={`${p}_password`}
+          placeholder="••••••"
+        />
+      </Field>
+      <Field label="Sudo" htmlFor={`${p}-sudo`}>
+        <label class="toggle">
+          <input id={`${p}-sudo`} type="checkbox" data-bind={`${p}_sudo`} />
+          <span data-text={`$${p}_sudo ? 'On' : 'Off'`} />
+        </label>
+      </Field>
+      <Field label="Groups" htmlFor={`${p}-groups`} hint="Comma-separated.">
+        <input
+          id={`${p}-groups`}
+          class="combo"
+          type="text"
+          data-bind={`${p}_groups`}
+          placeholder="wheel, video"
+        />
+      </Field>
+      <div class="form-actions">
+        <button type="button" class="btn" data-on-click={`@post('${saveUrl}')`}>
+          Save
+        </button>
+      </div>
+    </form>
+  )
+}
+
+const AddUserSlot = () => {
+  const signals = {
+    addingUser: false,
+    new_username: '',
+    new_password: '',
+    new_sudo: true,
+    new_groups: 'wheel',
+  }
+  return (
+    <div data-signals={JSON.stringify(signals)}>
+      <button
+        type="button"
+        class="btn"
+        data-show="!$addingUser"
+        data-on-click="$addingUser = true"
+      >
+        + Add another user
+      </button>
+      <form class="form card account-card" data-show="$addingUser">
+        <div class="card-header">
+          <h2 class="card-title" data-text="$new_username || 'new user'" />
+          <button
+            type="button"
+            class="btn-link"
+            data-on-click="$addingUser = false; $new_username = ''; $new_password = ''; $new_sudo = true; $new_groups = 'wheel'"
+          >
+            Cancel
+          </button>
+        </div>
+        <Field label="Username" htmlFor="new-name">
+          <input id="new-name" class="combo" type="text" data-bind="new_username" />
+        </Field>
+        <Field label="Password" htmlFor="new-pw">
+          <input
+            id="new-pw"
+            class="combo"
+            type="password"
+            data-bind="new_password"
+            placeholder="••••••"
+          />
+        </Field>
+        <Field label="Sudo" htmlFor="new-sudo">
+          <label class="toggle">
+            <input id="new-sudo" type="checkbox" data-bind="new_sudo" />
+            <span data-text="$new_sudo ? 'On' : 'Off'" />
+          </label>
+        </Field>
+        <Field label="Groups" htmlFor="new-groups" hint="Comma-separated.">
+          <input
+            id="new-groups"
+            class="combo"
+            type="text"
+            data-bind="new_groups"
+            placeholder="wheel, video"
+          />
+        </Field>
+        <div class="form-actions">
+          <button type="button" class="btn" data-on-click="@post('/api/users/create')">
+            Save
+          </button>
+        </div>
+      </form>
+    </div>
+  )
 }

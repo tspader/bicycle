@@ -1,32 +1,40 @@
-import { Layout, Page, Field } from './layout'
+import { Field, Section } from './layout'
 
-type Props = { value: string; zones: string[] }
+type Props = { value: string; zones: string[]; ntp: boolean }
 
-export const TimezoneView = ({ value, zones }: Props) => {
-  const formAttrs: Record<string, string> = {
-    'data-signals': JSON.stringify({ timezone: value }),
-  }
-  return (
-    <Layout active="timezone">
-      <Page heading="Timezone" subhead="System time zone.">
-        <form class="form" {...formAttrs}>
-          <Field label="Zone" htmlFor="timezone">
-            <select
-              id="timezone"
-              class="combo"
-              data-bind="timezone"
-              data-on-change="@post('/api/timezone')"
-            >
-              {zones.map((z) => (
-                <option value={z} selected={z === value}>
-                  {z}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <p class="save-hint" data-text="'Saved · ' + $timezone" />
-        </form>
-      </Page>
-    </Layout>
-  )
-}
+export const TimeSection = ({ value, zones, ntp }: Props) => (
+  <Section id="time" title="Time" subhead="Time zone and clock sync.">
+    <form class="form" data-signals={JSON.stringify({ timezone: value })}>
+      <Field label="Zone" htmlFor="timezone">
+        <select
+          id="timezone"
+          class="combo"
+          data-bind="timezone"
+          data-on-change="@post('/api/timezone')"
+        >
+          {zones.map((z) => (
+            <option value={z} selected={z === value}>
+              {z}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <p class="save-hint" data-text="'Saved · ' + $timezone" />
+    </form>
+    <form class="form" data-signals={JSON.stringify({ ntp })}>
+      <Field label="NTP" htmlFor="ntp" hint="Sync time post-install with systemd-timesyncd.">
+        <label class="toggle">
+          <input
+            id="ntp"
+            type="checkbox"
+            data-bind="ntp"
+            data-on-change="@post('/api/ntp')"
+            checked={ntp}
+          />
+          <span data-text="$ntp ? 'On' : 'Off'" />
+        </label>
+      </Field>
+      <p class="save-hint" data-text="'Saved · ' + ($ntp ? 'on' : 'off')" />
+    </form>
+  </Section>
+)

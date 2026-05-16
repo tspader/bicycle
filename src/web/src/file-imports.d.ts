@@ -8,6 +8,11 @@ declare module "*.png" {
   export default path;
 }
 
+declare module "*.ico" {
+  const path: string;
+  export default path;
+}
+
 declare module "*.css" {
   const path: string;
   export default path;

@@ -1,36 +1,35 @@
-import { Layout, Page, Field } from './layout'
+import { Field, Section } from './layout'
 
 type Props = { regions: string[]; selected: string[] }
 
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 
-export const MirrorsView = ({ regions, selected }: Props) => {
+export const MirrorsSection = ({ regions, selected }: Props) => {
   const set = new Set(selected)
-  const formAttrs: Record<string, string> = {
-    'data-signals': JSON.stringify({ q: '' }),
-  }
   return (
-    <Layout active="mirrors">
-      <Page heading="Mirrors" subhead="Pacman mirror regions. Archinstall fetches and ranks at install time.">
-        <form class="form" {...formAttrs}>
-          <Field label="Search" htmlFor="region-q">
-            <input
-              id="region-q"
-              class="combo"
-              type="text"
-              placeholder="Filter..."
-              data-bind="q"
-              {...{ 'data-on-input__debounce.250ms': "@get('/api/mirrors/list')" }}
-            />
-          </Field>
-        </form>
-        <div class="region-scroll">
-          <div id="region-list">
-            <RegionRows items={regions} checked={set} />
-          </div>
+    <Section
+      id="mirrors"
+      title="Mirrors"
+      subhead="Pacman mirror regions. Archinstall fetches and ranks at install time."
+    >
+      <form class="form" data-signals={JSON.stringify({ q: '' })}>
+        <Field label="Search" htmlFor="region-q">
+          <input
+            id="region-q"
+            class="combo"
+            type="text"
+            placeholder="Filter..."
+            data-bind="q"
+            {...{ 'data-on-input__debounce.250ms': "@get('/api/mirrors/list')" }}
+          />
+        </Field>
+      </form>
+      <div class="region-scroll scroll-card">
+        <div id="region-list">
+          <RegionRows items={regions} checked={set} />
         </div>
-      </Page>
-    </Layout>
+      </div>
+    </Section>
   )
 }
 

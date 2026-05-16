@@ -1,4 +1,4 @@
-import { Layout, Page, Field } from './layout'
+import { Field, Section } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
 
 type Props = {
@@ -12,34 +12,29 @@ export type PackageList = { items: PackageEntry[]; next: string | null; q: strin
 
 export type RowState = { checked: Set<string>; selectedName: string | null }
 
-export const PackagesView = ({ installed, detail, selectedName, initialPage }: Props) => {
-  const formAttrs: Record<string, string> = {
-    'data-signals': JSON.stringify({ q: initialPage.q }),
-  }
+export const PackagesSection = ({ installed, detail, selectedName, initialPage }: Props) => {
   const state: RowState = { checked: new Set(installed), selectedName }
   return (
-    <Layout active="packages">
-      <Page heading="Packages" subhead="Additional packages to install.">
-        <div id="package-detail" class="card">
-          <PackageDetailPanel detail={detail} />
-        </div>
-        <form class="form" {...formAttrs}>
-          <Field label="Search" htmlFor="q">
-            <input
-              id="q"
-              class="combo"
-              type="text"
-              placeholder="Filter..."
-              data-bind="q"
-              {...{ 'data-on-input__debounce.250ms': "@get('/api/packages/list')" }}
-            />
-          </Field>
-        </form>
-        <div id="package-list" class="list">
-          <PackageList page={initialPage} state={state} />
-        </div>
-      </Page>
-    </Layout>
+    <Section id="packages" title="Packages" subhead="Additional packages to install.">
+      <div id="package-detail" class="card">
+        <PackageDetailPanel detail={detail} />
+      </div>
+      <form class="form" data-signals={JSON.stringify({ q: initialPage.q })}>
+        <Field label="Search" htmlFor="q">
+          <input
+            id="q"
+            class="combo"
+            type="text"
+            placeholder="Filter..."
+            data-bind="q"
+            {...{ 'data-on-input__debounce.250ms': "@get('/api/packages/list')" }}
+          />
+        </Field>
+      </form>
+      <div id="package-list" class="list">
+        <PackageList page={initialPage} state={state} />
+      </div>
+    </Section>
   )
 }
 
@@ -153,8 +148,7 @@ const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
           <dt>Description</dt>
           <dd>{detail.description}</dd>
         </dl>
-        <div class="detail-deps">
-          <div class="detail-deps-scroll">
+        <div class="detail-deps scroll-card">
           <table class="table dep-table">
             <thead>
               <tr>
@@ -175,7 +169,6 @@ const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
               )}
             </tbody>
           </table>
-          </div>
         </div>
       </div>
     </>
