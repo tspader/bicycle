@@ -2,7 +2,7 @@ import { createContext, useContext } from 'hono/jsx';
 import { Jsonifiable } from '@starfederation/datastar-sdk/types'
 
 export const defaultSignals = {
-  q: 'gcc',
+  q: '',
   hostname: '',
   ntp: true,
   addingUser: false,

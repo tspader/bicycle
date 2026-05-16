@@ -1,4 +1,5 @@
 import { Context, Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
 import { CATEGORIES, Layout, Preview, type CategoryId } from './views/layout'
 import type { Child } from 'hono/jsx'
@@ -34,31 +35,48 @@ import {
 } from './system'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
-import { ArchinstallConfig, LocaleConfig, Kernel } from './config'
+import { ArchinstallConfig } from './config'
 import { hashPassword } from './auth'
+import { Api } from './api'
 import appCssPath from "./assets/app.css" with { type: "file" };
 import datastarPath from "./assets/datastar.js" with { type: "file" };
 import faviconPath from "./assets/favicon.ico" with { type: "file" };
 
+type SignalRead =
+  | { success: true; signals: Signals }
+  | { success: false; error: string }
+
 type App = {
-  signals: Signals
+  signalRead: SignalRead
 }
 
 type AppContext = Context<{ Variables: App }>
 
+const getSignals = (c: AppContext): Signals => {
+  const read = c.get('signalRead')
+  return read.success ? read.signals : {}
+}
+
 // const getSignal = ... totally fucks my syntax highlighting
 function getSignal<K extends SignalName>(c: AppContext, name: K): typeof defaultSignals[K] {
-  const signal = c.get('signals')[name] ?? defaultSignals[name]
+  const signal = getSignals(c)[name] ?? defaultSignals[name]
   return signal as typeof defaultSignals[K]
+}
+
+function parseSignals<T extends z.ZodTypeAny>(c: AppContext, schema: T): z.infer<T> {
+  const read = c.get('signalRead')
+  if (!read.success) throw new HTTPException(400, { message: read.error })
+  const parsed = schema.safeParse(read.signals)
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid' })
+  }
+  return parsed.data
 }
 
 const app = new Hono<{ Variables: App }>()
 
 app.use('*', async (c, next) => {
-  const datastar = await ServerSentEventGenerator.readSignals(c.req.raw)
-  const signals = datastar.success ? datastar.signals : {}
-  c.set('signals', signals)
-
+  c.set('signalRead', await ServerSentEventGenerator.readSignals(c.req.raw))
   await next()
 })
 
@@ -105,7 +123,7 @@ const renderPage = async (
   if (!isDatastar) {
     const previewHtml = await renderPreviewHtml()
     return c.html(
-      <SignalProvider value={c.get('signals')}>
+      <SignalProvider value={getSignals(c)}>
         <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
           {body}
         </Layout>
@@ -201,84 +219,43 @@ app.get('/config/:category', async (c) => {
   return renderPage(c, parsed.data, body, hash)
 })
 
-type Ctx = { req: { raw: Request } }
-const readSignals = (c: Ctx) => ServerSentEventGenerator.readSignals(c.req.raw)
-
-app.post('/api/locale', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const Schema = z.object({ kbLayout: z.string().min(1), sysLang: z.string().min(1), sysEnc: z.string().min(1) })
-  const parsed = Schema.safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  const lc: z.infer<typeof LocaleConfig> = { kb_layout: parsed.data.kbLayout, sys_lang: parsed.data.sysLang, sys_enc: parsed.data.sysEnc }
-  setState({ locale_config: lc })
+app.post('/api/locale', (c) => {
+  setState({ locale_config: parseSignals(c, Api.Locale) })
   return patchPreview()
 })
 
-app.post('/api/kernels', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z.object({ kernel: Kernel }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  setState({ kernels: [parsed.data.kernel] })
+app.post('/api/kernels', (c) => {
+  setState({ kernels: [parseSignals(c, Api.Kernel).kernel] })
   return patchPreview()
 })
 
-app.post('/api/hostname', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z.object({ hostname: z.string().min(1).max(63) }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  setState({ hostname: parsed.data.hostname })
+app.post('/api/hostname', (c) => {
+  setState({ hostname: parseSignals(c, Api.Hostname).hostname })
   return patchPreview()
 })
 
-app.post('/api/ntp', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z.object({ ntp: z.boolean() }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  setState({ ntp: parsed.data.ntp })
+app.post('/api/ntp', (c) => {
+  setState({ ntp: parseSignals(c, Api.Ntp).ntp })
   return patchPreview()
 })
 
-app.post('/api/swap', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z
-    .object({ enabled: z.boolean(), algorithm: z.enum(['zstd', 'lzo-rle', 'lzo', 'lz4', 'lz4hc']) })
-    .safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  setState({ swap: parsed.data })
+app.post('/api/swap', (c) => {
+  setState({ swap: parseSignals(c, Api.Swap) })
   return patchPreview()
 })
 
-app.post('/api/bootloader', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const LoaderTok = z.enum(['systemd-boot', 'grub', 'efistub', 'limine', 'refind'])
-  const parsed = z.object({ loader: LoaderTok, uki: z.boolean(), removable: z.boolean() }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  const map = { 'systemd-boot': 'Systemd-boot', grub: 'Grub', efistub: 'Efistub', limine: 'Limine', refind: 'Refind' } as const
-  setState({ bootloader_config: { bootloader: map[parsed.data.loader], uki: parsed.data.uki, removable: parsed.data.removable } })
+app.post('/api/bootloader', (c) => {
+  setState({ bootloader_config: parseSignals(c, Api.Bootloader) })
   return patchPreview()
 })
 
-app.post('/api/network', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z.object({ mode: z.enum(['iso', 'nm', 'nm_iwd', 'manual']) }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  setState({ network_config: { type: parsed.data.mode } })
+app.post('/api/network', (c) => {
+  setState({ network_config: { type: parseSignals(c, Api.Network).mode } })
   return patchPreview()
 })
 
-app.post('/api/timezone', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z.object({ timezone: z.string().min(1) }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  setState({ timezone: parsed.data.timezone })
+app.post('/api/timezone', (c) => {
+  setState({ timezone: parseSignals(c, Api.Timezone).timezone })
   return patchPreview()
 })
 
@@ -306,9 +283,7 @@ app.post('/api/mirrors/toggle', async (c) => {
 })
 
 app.get('/api/mirrors/list', async (c) => {
-  const r = await ServerSentEventGenerator.readSignals(c.req.raw)
-  const q = (r.success ? String(r.signals['q'] ?? '') : '') || (c.req.query('q') ?? '')
-  const needle = q.trim().toLowerCase()
+  const needle = getSignal(c, 'q').trim().toLowerCase()
   const all = regions()
   const filtered = needle ? all.filter((name) => name.toLowerCase().includes(needle)) : all
   const s = getState()
@@ -350,7 +325,6 @@ app.post('/api/packages/toggle', async (c) => {
 })
 
 app.get('/api/packages/list', async (c) => {
-  const r = await ServerSentEventGenerator.readSignals(c.req.raw)
   const after = c.req.query('after') ?? ''
   const mode = c.req.query('mode') ?? 'outer'
   const s = getState()
@@ -358,7 +332,7 @@ app.get('/api/packages/list', async (c) => {
   const checked = new Set(installed)
   const state = { checked, selectedName: getCurrentDetail() }
 
-  const q = getSignal(c, "q") as string
+  const q = getSignal(c, 'q')
   console.log(q)
   const page = await searchPackages({ q, after, selected: checked })
   return ServerSentEventGenerator.stream((stream) => {
@@ -422,28 +396,10 @@ const reload = () =>
     stream.executeScript("history.pushState({}, '', '/config/users')")
   })
 
-const UserFields = z.object({
-  username: z.string().min(1).max(32),
-  sudo: z.boolean(),
-  groups: z.string(),
-  password: z.string(),
-})
-
-const readUserFields = (signals: Record<string, unknown>, prefix: string) =>
-  UserFields.safeParse({
-    username: signals[`${prefix}_username`],
-    sudo: signals[`${prefix}_sudo`],
-    groups: signals[`${prefix}_groups`],
-    password: signals[`${prefix}_password`],
-  })
-
 app.post('/api/users/root', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = z.object({ root_password: z.string() }).safeParse(r.signals)
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
-  if (parsed.data.root_password) {
-    setState({ root_enc_password: await hashPassword(parsed.data.root_password) })
+  const { root_password } = parseSignals(c, Api.RootPassword)
+  if (root_password) {
+    setState({ root_enc_password: await hashPassword(root_password) })
   }
   return reload()
 })
@@ -451,21 +407,18 @@ app.post('/api/users/root', async (c) => {
 app.post('/api/users/save', async (c) => {
   const original = c.req.query('original')
   if (!original) return c.text('missing original', 400)
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = readUserFields(r.signals as Record<string, unknown>, slug(original))
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
+  const fields = parseSignals(c, Api.UserFields(slug(original)))
 
   const s = getState()
   const prev = (s.users ?? []).find((u) => u.username === original)
-  const enc_password = parsed.data.password
-    ? await hashPassword(parsed.data.password)
+  const enc_password = fields.password
+    ? await hashPassword(fields.password)
     : prev?.enc_password ?? null
   const next = (s.users ?? []).filter((u) => u.username !== original)
   next.push({
-    username: parsed.data.username,
-    sudo: parsed.data.sudo,
-    groups: parseGroups(parsed.data.groups),
+    username: fields.username,
+    sudo: fields.sudo,
+    groups: parseGroups(fields.groups),
     enc_password,
   })
   setState({ users: next })
@@ -473,22 +426,19 @@ app.post('/api/users/save', async (c) => {
 })
 
 app.post('/api/users/create', async (c) => {
-  const r = await readSignals(c)
-  if (!r.success) return c.text(r.error, 400)
-  const parsed = readUserFields(r.signals as Record<string, unknown>, 'new')
-  if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
+  const fields = parseSignals(c, Api.UserFields('new'))
   const s = getState()
-  if ((s.users ?? []).some((u) => u.username === parsed.data.username)) {
+  if ((s.users ?? []).some((u) => u.username === fields.username)) {
     return c.text('username already exists', 400)
   }
-  const enc_password = parsed.data.password ? await hashPassword(parsed.data.password) : null
+  const enc_password = fields.password ? await hashPassword(fields.password) : null
   setState({
     users: [
       ...(s.users ?? []),
       {
-        username: parsed.data.username,
-        sudo: parsed.data.sudo,
-        groups: parseGroups(parsed.data.groups),
+        username: fields.username,
+        sudo: fields.sudo,
+        groups: parseGroups(fields.groups),
         enc_password,
       },
     ],
