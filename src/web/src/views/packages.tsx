@@ -10,7 +10,7 @@ type Props = {
   initialPage: PackageList
 }
 
-export type PackageList = { items: PackageEntry[]; next: string | null; q: string }
+export type PackageList = { items: PackageEntry[]; next: string | null; }
 
 export type RowState = { checked: Set<string>; selectedName: string | null }
 
@@ -23,17 +23,17 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage }
       </div>
 
       <Signal name="q">
+        <form class="form">
+          <div class="field-control">
+            <input class="combo" type="text"
+              placeholder="Filter..."
+              data-bind="q"
+              {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
+            />
+          </div>
+        </form>
       </Signal>
 
-      <form class="form" data-signals={JSON.stringify({ q: initialPage.q })}>
-        <div class="field-control">
-          <input class="combo" type="text"
-            placeholder="Filter..."
-            data-bind="q"
-            {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
-          />
-        </div>
-      </form>
       <div id="package-list" class="list">
         <PackageList page={initialPage} state={state} />
       </div>

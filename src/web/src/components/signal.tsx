@@ -1,11 +1,11 @@
-import { useSignal } from "../signal"
+import { useSignal, SignalName } from "../signal"
 
 
 export const Signals = ({ names, children }: {
-  names: string[],
+  names: SignalName[],
   children?: any
 }) => {
-  const o = Object.fromEntries(names.map(name => [name, useSignal(name) ?? '']))
+  const o = Object.fromEntries(names.map(name => [name, useSignal(name)]))
   return (
     <div data-signals={JSON.stringify(o)}>
       {children}
@@ -14,7 +14,7 @@ export const Signals = ({ names, children }: {
 }
 
 export const Signal = ({ name, children }: {
-  name: string,
+  name: SignalName,
   children?: any
 }) => {
   return (

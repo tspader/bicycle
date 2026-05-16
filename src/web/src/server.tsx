@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Context, Hono } from 'hono'
 import { z } from 'zod'
 import { CATEGORIES, Layout, Preview, type CategoryId } from './views/layout'
 import type { Child } from 'hono/jsx'
@@ -32,7 +32,7 @@ import {
   syncPacman,
   KERNELS,
 } from './system'
-import { SignalProvider } from './signal'
+import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig, LocaleConfig, Kernel } from './config'
 import { hashPassword } from './auth'
@@ -40,8 +40,26 @@ import appCssPath from "./assets/app.css" with { type: "file" };
 import datastarPath from "./assets/datastar.js" with { type: "file" };
 import faviconPath from "./assets/favicon.ico" with { type: "file" };
 
-const app = new Hono()
+type App = {
+  signals: Signals
+}
 
+type AppContext = Context<{ Variables: App }>
+
+const getSignal = <K extends SignalName>(c: AppContext, name: K) => {
+  const signal = c.get('signals')[name] ?? defaultSignals[name]
+  return signal as typeof defaultSignals[K]
+}
+
+const app = new Hono<{ Variables: App }>()
+
+app.use('*', async (c, next) => {
+  const datastar = await ServerSentEventGenerator.readSignals(c.req.raw)
+  const signals = datastar.success ? datastar.signals : {}
+  c.set('signals', signals)
+
+  await next()
+})
 
 app.get("/static/app.css", () =>
   new Response(Bun.file(appCssPath), { headers: { "content-type": "text/css; charset=utf-8" } })
@@ -76,24 +94,32 @@ const defaultSub = (cat: CategoryId): string =>
   CATEGORIES.find((c) => c.id === cat)?.subs?.[0]?.id ?? ''
 
 const renderPage = async (
-  c: { req: { raw: Request }; html: (n: unknown) => Response | Promise<Response> },
+  c: AppContext,
   active: CategoryId,
   body: Child,
   hash?: string,
 ) => {
+  const signals = c.get('signals')
+  console.log(signals)
   const activeSub = hash || defaultSub(active)
   const isDatastar = c.req.raw.headers.get('datastar-request') === 'true'
   if (!isDatastar) {
     const previewHtml = await renderPreviewHtml()
     return c.html(
-      <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
-        {body}
-      </Layout>,
+      <SignalProvider value={c.get('signals')}>
+        <Layout active={active} activeSub={activeSub} previewHtml={previewHtml}>
+          {body}
+        </Layout>
+      </SignalProvider>
     )
   }
   const preview = await previewFragment()
   return ServerSentEventGenerator.stream((stream) => {
-    const html = (<main id="page-content" class="content">{body}</main>).toString()
+    const html = (
+      <main id="page-content" class="content">
+        {body}
+      </main>
+    ).toString()
     stream.patchElements(html)
     stream.patchElements(preview)
     stream.patchSignals(JSON.stringify({ activeCat: active, activeSub }))
@@ -110,7 +136,7 @@ const patchPreview = () =>
     stream.patchElements(await previewFragment())
   })
 
-const buildPage = async (cat: CategoryId, c: { req: { query: (k: string) => string | undefined } }): Promise<Child> => {
+const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
   const s = getState()
   switch (cat) {
     case 'system': {
@@ -139,7 +165,7 @@ const buildPage = async (cat: CategoryId, c: { req: { query: (k: string) => stri
       return <DiskView swap={sw} />
     }
     case 'pacman': {
-      const q = c.req.query('q') ?? ''
+      const q = getSignal(c, 'q')
       const installed = s.packages ?? []
       const selected = Object.keys(s.mirror_config?.mirror_regions ?? {})
       const page = await searchPackages({ q, selected: new Set(installed) })
@@ -151,7 +177,7 @@ const buildPage = async (cat: CategoryId, c: { req: { query: (k: string) => stri
             installed,
             detail: null,
             selectedName: null,
-            initialPage: { items: page.items, next: page.next, q },
+            initialPage: { items: page.items, next: page.next },
           }}
         />
       )
@@ -326,13 +352,15 @@ app.post('/api/packages/toggle', async (c) => {
 
 app.get('/api/packages/list', async (c) => {
   const r = await ServerSentEventGenerator.readSignals(c.req.raw)
-  const q = (r.success ? String(r.signals['q'] ?? '') : '') || (c.req.query('q') ?? '')
   const after = c.req.query('after') ?? ''
   const mode = c.req.query('mode') ?? 'outer'
   const s = getState()
   const installed = s.packages ?? []
   const checked = new Set(installed)
   const state = { checked, selectedName: getCurrentDetail() }
+
+  const q = getSignal(c, "q") as string
+  console.log(q)
   const page = await searchPackages({ q, after, selected: checked })
   return ServerSentEventGenerator.stream((stream) => {
     if (mode === 'append') {
@@ -342,7 +370,7 @@ app.get('/api/packages/list', async (c) => {
       stream.patchElements(more)
     } else {
       const html = (
-        <PackageListFragment page={{ items: page.items, next: page.next, q }} state={state} />
+        <PackageListFragment page={{ items: page.items, next: page.next }} state={state} />
       ).toString()
       stream.patchElements(`<div id="package-list" class="list">${html}</div>`)
     }
