@@ -104,5 +104,6 @@ export const ArchinstallConfig = z.object({
   mirror_config: MirrorConfig.optional(),
   packages: z.array(z.string()).optional(),
   users: z.array(User).optional(),
+  root_enc_password: z.string().nullable().optional(),
 })
 export type ArchinstallConfig = z.infer<typeof ArchinstallConfig>

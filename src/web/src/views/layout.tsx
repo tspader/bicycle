@@ -4,6 +4,7 @@ export type CategoryId =
   | 'locale'
   | 'kernels'
   | 'hostname'
+  | 'users'
   | 'disk'
   | 'bootloader'
   | 'profile'
@@ -20,6 +21,7 @@ export const CATEGORIES: Category[] = [
   { id: 'locale', label: 'Locale' },
   { id: 'kernels', label: 'Kernels' },
   { id: 'hostname', label: 'Hostname' },
+  { id: 'users', label: 'Users' },
   { id: 'disk', label: 'Disk' },
   { id: 'bootloader', label: 'Bootloader' },
   { id: 'profile', label: 'Profile' },

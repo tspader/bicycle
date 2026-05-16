@@ -1,0 +1,32 @@
+import { Layout, Page, Field } from './layout'
+
+const MODES = [
+  { id: 'iso', label: 'Copy ISO config' },
+  { id: 'nm', label: 'NetworkManager' },
+  { id: 'nm_iwd', label: 'NetworkManager (iwd)' },
+  { id: 'manual', label: 'Manual (not yet)' },
+] as const
+
+export const NetworkView = ({ mode }: { mode: (typeof MODES)[number]['id'] }) => {
+  const formAttrs: Record<string, string> = {
+    'data-signals': JSON.stringify({ mode }),
+  }
+  return (
+    <Layout active="network">
+      <Page heading="Network" subhead="Networking backend in the installed system.">
+        <form class="form" {...formAttrs}>
+          <Field label="Mode" htmlFor="mode">
+            <select id="mode" class="combo" data-bind="mode" data-on-change="@post('/api/network')">
+              {MODES.map((m) => (
+                <option value={m.id} selected={m.id === mode}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <p class="save-hint" data-text="'Saved · ' + $mode" />
+        </form>
+      </Page>
+    </Layout>
+  )
+}

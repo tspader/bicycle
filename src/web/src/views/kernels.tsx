@@ -1,5 +1,5 @@
 import { Layout, Page, Field } from './layout'
-import { KERNELS, type Kernel } from '../data'
+import { KERNELS, type Kernel } from '../system'
 
 type Props = { selected: Kernel }
 
