@@ -19,7 +19,6 @@ export const NetworkSection = ({ mode }: { mode: (typeof MODES)[number]['id'] })
           ))}
         </select>
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + $mode" />
     </form>
   </Section>
 )

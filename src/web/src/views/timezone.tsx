@@ -19,7 +19,6 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
           ))}
         </select>
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + $timezone" />
     </form>
     <form class="form" data-signals={JSON.stringify({ ntp })}>
       <Field label="NTP" htmlFor="ntp" hint="Sync time post-install with systemd-timesyncd.">
@@ -34,7 +33,6 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
           <span data-text="$ntp ? 'On' : 'Off'" />
         </label>
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + ($ntp ? 'on' : 'off')" />
     </form>
   </Section>
 )

@@ -33,7 +33,6 @@ export const SwapSection = ({ enabled, algorithm }: Props) => (
           ))}
         </select>
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + ($enabled ? $algorithm : 'off')" />
     </form>
   </Section>
 )

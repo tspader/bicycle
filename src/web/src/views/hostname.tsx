@@ -13,7 +13,6 @@ export const HostnameSection = ({ value }: { value: string }) => (
           value={value}
         />
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + $hostname" />
     </form>
   </Section>
 )

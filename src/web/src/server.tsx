@@ -1,7 +1,9 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { CATEGORIES, Layout, type CategoryId } from './views/layout'
+import { CATEGORIES, Layout, Preview, type CategoryId } from './views/layout'
 import type { Child } from 'hono/jsx'
+import { codeToHtml } from 'shiki'
+import { toToml } from './config'
 import { SystemView } from './views/system'
 import { DiskView } from './views/disk'
 import { PacmanView } from './views/pacman'
@@ -56,14 +58,35 @@ const CategoryParam = z.enum(CATEGORIES.map((c) => c.id) as [CategoryId, ...Cate
 
 const LOADER_MAP = { 'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub', Limine: 'limine', Refind: 'refind' } as const
 
-const renderPage = (c: { req: { raw: Request }; html: (n: unknown) => Response | Promise<Response> }, active: CategoryId, body: Child, hash?: string) => {
+const renderPreviewHtml = async (): Promise<string> => {
+  let toml: string
+  try {
+    toml = toToml(getState())
+  } catch (e) {
+    toml = `# preview unavailable\n# ${(e as Error).message}`
+  }
+  return codeToHtml(toml, { lang: 'toml', theme: 'github-dark-default' })
+}
+
+const previewFragment = async (): Promise<string> =>
+  (<Preview html={await renderPreviewHtml()} />).toString()
+
+const renderPage = async (
+  c: { req: { raw: Request }; html: (n: unknown) => Response | Promise<Response> },
+  active: CategoryId,
+  body: Child,
+  hash?: string,
+) => {
   const isDatastar = c.req.raw.headers.get('datastar-request') === 'true'
   if (!isDatastar) {
-    return c.html(<Layout active={active}>{body}</Layout>)
+    const previewHtml = await renderPreviewHtml()
+    return c.html(<Layout active={active} previewHtml={previewHtml}>{body}</Layout>)
   }
+  const preview = await previewFragment()
   return ServerSentEventGenerator.stream((stream) => {
     const html = (<main id="page-content" class="content">{body}</main>).toString()
     stream.patchElements(html)
+    stream.patchElements(preview)
     stream.patchSignals(JSON.stringify({ activeCat: active }))
     if (hash) {
       stream.executeScript(
@@ -72,6 +95,11 @@ const renderPage = (c: { req: { raw: Request }; html: (n: unknown) => Response |
     }
   })
 }
+
+const patchPreview = () =>
+  ServerSentEventGenerator.stream(async (stream) => {
+    stream.patchElements(await previewFragment())
+  })
 
 const buildPage = async (cat: CategoryId, c: { req: { query: (k: string) => string | undefined } }): Promise<Child> => {
   const s = getState()
@@ -150,7 +178,7 @@ app.post('/api/locale', async (c) => {
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   const lc: z.infer<typeof LocaleConfig> = { kb_layout: parsed.data.kbLayout, sys_lang: parsed.data.sysLang, sys_enc: parsed.data.sysEnc }
   setState({ locale_config: lc })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/kernels', async (c) => {
@@ -159,7 +187,7 @@ app.post('/api/kernels', async (c) => {
   const parsed = z.object({ kernel: Kernel }).safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   setState({ kernels: [parsed.data.kernel] })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/hostname', async (c) => {
@@ -168,7 +196,7 @@ app.post('/api/hostname', async (c) => {
   const parsed = z.object({ hostname: z.string().min(1).max(63) }).safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   setState({ hostname: parsed.data.hostname })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/ntp', async (c) => {
@@ -177,7 +205,7 @@ app.post('/api/ntp', async (c) => {
   const parsed = z.object({ ntp: z.boolean() }).safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   setState({ ntp: parsed.data.ntp })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/swap', async (c) => {
@@ -188,7 +216,7 @@ app.post('/api/swap', async (c) => {
     .safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   setState({ swap: parsed.data })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/bootloader', async (c) => {
@@ -199,7 +227,7 @@ app.post('/api/bootloader', async (c) => {
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   const map = { 'systemd-boot': 'Systemd-boot', grub: 'Grub', efistub: 'Efistub', limine: 'Limine', refind: 'Refind' } as const
   setState({ bootloader_config: { bootloader: map[parsed.data.loader], uki: parsed.data.uki, removable: parsed.data.removable } })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/network', async (c) => {
@@ -208,7 +236,7 @@ app.post('/api/network', async (c) => {
   const parsed = z.object({ mode: z.enum(['iso', 'nm', 'nm_iwd', 'manual']) }).safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   setState({ network_config: { type: parsed.data.mode } })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/timezone', async (c) => {
@@ -217,7 +245,7 @@ app.post('/api/timezone', async (c) => {
   const parsed = z.object({ timezone: z.string().min(1) }).safeParse(r.signals)
   if (!parsed.success) return c.text(parsed.error.issues[0]?.message ?? 'invalid', 400)
   setState({ timezone: parsed.data.timezone })
-  return c.body(null, 204)
+  return patchPreview()
 })
 
 app.post('/api/mirrors/toggle', async (c) => {
@@ -236,9 +264,10 @@ app.post('/api/mirrors/toggle', async (c) => {
     },
   })
   const isChecked = name in current
-  return ServerSentEventGenerator.stream((stream) => {
+  return ServerSentEventGenerator.stream(async (stream) => {
     const html = (<RegionRowFragment name={name} isChecked={isChecked} />).toString()
     stream.patchElements(html)
+    stream.patchElements(await previewFragment())
   })
 })
 
@@ -270,7 +299,7 @@ app.post('/api/packages/toggle', async (c) => {
   const isChecked = set.has(name)
   const showDetail = getCurrentDetail() === name
 
-  if (!entry && !showDetail) return c.body(null, 204)
+  if (!entry && !showDetail) return patchPreview()
 
   return ServerSentEventGenerator.stream(async (stream) => {
     if (entry) {
@@ -282,6 +311,7 @@ app.post('/api/packages/toggle', async (c) => {
       const html = (<PackageDetailFragment detail={detail} />).toString()
       stream.patchElements(html)
     }
+    stream.patchElements(await previewFragment())
   })
 })
 
@@ -342,7 +372,7 @@ app.get('/api/packages/detail', async (c) => {
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
 const parseGroups = (g: string): string[] => g.split(/[, ]+/).map((x) => x.trim()).filter(Boolean)
 const reload = () =>
-  ServerSentEventGenerator.stream((stream) => {
+  ServerSentEventGenerator.stream(async (stream) => {
     const s = getState()
     const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
     const html = (
@@ -351,6 +381,7 @@ const reload = () =>
       </main>
     ).toString()
     stream.patchElements(html)
+    stream.patchElements(await previewFragment())
     stream.patchSignals(JSON.stringify({ activeCat: 'users' }))
     stream.executeScript("history.pushState({}, '', '/config/users')")
   })

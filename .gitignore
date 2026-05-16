@@ -10,3 +10,5 @@
 /example/user_credentials.json
 /.playwright-mcp
 /src/web/.playwright-mcp
+**/*.png
+src/web/*.png

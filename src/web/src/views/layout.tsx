@@ -50,13 +50,22 @@ const matchExpr = (terms: string[]): string => {
   return `!$q || '${haystack}'.includes($q.toLowerCase())`
 }
 
+export const Preview = ({ html }: { html: string }) => (
+  <aside id="config-preview" class="preview">
+    <div class="preview-head">bicycle.toml</div>
+    <div class="preview-body" dangerouslySetInnerHTML={{ __html: html }} />
+  </aside>
+)
+
 export const Layout = ({
   active,
   title = 'Bicycle',
+  previewHtml,
   children,
 }: {
   active: CategoryId
   title?: string
+  previewHtml: string
   children?: Child
 }) => {
   const navParent = (id: CategoryId) =>
@@ -126,6 +135,7 @@ export const Layout = ({
         <div class="shell">
           <Sidebar active={active} />
           <main id="page-content" class="content">{children}</main>
+          <Preview html={previewHtml} />
         </div>
       </body>
     </html>
@@ -185,7 +195,9 @@ export const Field = ({
     <label class="field-label" for={htmlFor}>
       {label}
     </label>
-    {children}
-    {hint ? <p class="field-hint">{hint}</p> : null}
+    <div class="field-control">
+      {children}
+      {hint ? <p class="field-hint">{hint}</p> : null}
+    </div>
   </div>
 )

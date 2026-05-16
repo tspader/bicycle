@@ -45,7 +45,6 @@ export const BootloaderSection = ({ loader, uki, removable }: Props) => (
           <span data-text="$removable ? 'On' : 'Off'" />
         </label>
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + $loader" />
     </form>
   </Section>
 )

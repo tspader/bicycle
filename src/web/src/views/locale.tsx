@@ -57,7 +57,6 @@ export const LocaleSection = ({ state, kbLayouts, languages, encodings }: Props)
         <Field label="Encoding" htmlFor="sys_enc" hint="Character encoding for the locale.">
           <Combo id="sys_enc" field="sys_enc" value={state.sys_enc} options={encodings} />
         </Field>
-        <p class="save-hint" data-text="'Saved · ' + $kbLayout + ' / ' + $sysLang + ' / ' + $sysEnc" />
       </form>
     </Section>
   )

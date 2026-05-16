@@ -13,7 +13,6 @@ export const KernelsSection = ({ selected }: { selected: Kernel }) => (
           ))}
         </select>
       </Field>
-      <p class="save-hint" data-text="'Saved · ' + $kernel" />
     </form>
   </Section>
 )
