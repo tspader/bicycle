@@ -19,29 +19,20 @@ import {
   PackageDetailFragment,
 } from './views/packages'
 import { getCurrentDetail, setCurrentDetail, type CategoryId } from './ui-state'
-import { loadPackages } from './system'
-import { getState, setState } from './state'
 import {
-  kbLayouts,
-  locales,
-  languages,
-  encodings,
-  timezones,
-  regions,
-  searchPackages,
-  packageDetail,
-  syncPacman,
-  availableRepos,
-  KERNELS,
+  kbLayouts, locales, languages, encodings, timezones,
+  regions, searchPackages, packageDetail, syncPacman, availableRepos,
+  loadPackages,
 } from './system'
+import { getState, setState } from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig } from './config'
 import { hashPassword } from './auth'
 import { Api } from './api'
-import appCssPath from "./assets/app.css" with { type: "file" };
-import datastarPath from "./assets/datastar.js" with { type: "file" };
-import faviconPath from "./assets/favicon.ico" with { type: "file" };
+import appCssPath from "./assets/app.css" with { type: "file" }
+import datastarPath from "./assets/datastar.js" with { type: "file" }
+import faviconPath from "./assets/favicon.ico" with { type: "file" }
 
 type App = {
   signals: Signals
@@ -51,11 +42,9 @@ type App = {
 
 type AppContext = Context<{ Variables: App }>
 
-const getSignals = (c: AppContext): Signals => c.get('signals')
-
 // const getSignal = ... totally fucks my syntax highlighting
 function getSignal<K extends SignalName>(c: AppContext, name: K): typeof defaultSignals[K] {
-  const signal = getSignals(c)[name] ?? defaultSignals[name]
+  const signal = c.get('signals')[name] ?? defaultSignals[name]
   return signal as typeof defaultSignals[K]
 }
 
@@ -69,6 +58,12 @@ function parseSignals<T extends z.ZodTypeAny>(c: AppContext, schema: T): z.infer
   return parsed.data
 }
 
+const requiredQuery = (c: AppContext, key: string): string => {
+  const v = c.req.query(key)
+  if (!v) throw new HTTPException(400, { message: `missing ${key}` })
+  return v
+}
+
 const app = new Hono<{ Variables: App }>()
 
 app.use('*', async (c, next) => {
@@ -79,21 +74,21 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-app.get("/static/app.css", () =>
-  new Response(Bun.file(appCssPath), { headers: { "content-type": "text/css; charset=utf-8" } })
-);
-app.get("/static/datastar.js", () =>
-  new Response(Bun.file(datastarPath), { headers: { "content-type": "application/javascript; charset=utf-8" } })
-);
+const staticFile = (path: string, type: string) => () =>
+  new Response(Bun.file(path), { headers: { 'content-type': type } })
+
+app.get('/static/app.css', staticFile(appCssPath, 'text/css; charset=utf-8'))
+app.get('/static/datastar.js', staticFile(datastarPath, 'application/javascript; charset=utf-8'))
+app.get('/favicon.ico', staticFile(faviconPath, 'image/x-icon'))
 
 app.get('/', (c) => c.redirect('/config/system'))
-app.get('/favicon.ico', () =>
-  new Response(Bun.file(faviconPath), { headers: { "content-type": "image/x-icon" } })
-)
 
 const CategoryParam = z.enum(CATEGORIES.map((c) => c.id) as [CategoryId, ...CategoryId[]])
 
-const LOADER_MAP = { 'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub', Limine: 'limine', Refind: 'refind' } as const
+const LOADER_MAP = {
+  'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub',
+  Limine: 'limine', Refind: 'refind',
+} as const
 
 const renderPreviewHtml = async (): Promise<string> => {
   let toml: string
@@ -115,33 +110,22 @@ const patchPreview = () =>
     stream.patchElements(await previewFragment())
   })
 
-const renderFull = async (c: AppContext, active: CategoryId, body: Child) => {
+const renderPage = async (c: AppContext, active: CategoryId, body: Child, pushUrl?: string) => {
   const previewHtml = await renderPreviewHtml()
-  return c.html(
-    <SignalProvider value={getSignals(c)}>
-      <Layout active={active} previewHtml={previewHtml}>
-        {body}
-      </Layout>
-    </SignalProvider>,
-  )
-}
-
-const renderPatch = (active: CategoryId, body: Child) =>
-  ServerSentEventGenerator.stream(async (stream) => {
-    const elements = [
-      (
-        <Preview html={await renderPreviewHtml()} />
-      ),
-      (
-        <main id="page-content" class="content">
-          {body}
-        </main>
-      )
-    ]
-    for (const element of elements) stream.patchElements(element.toString())
-
+  if (!c.get('datastar')) {
+    return c.html(
+      <SignalProvider value={c.get('signals')}>
+        <Layout active={active} previewHtml={previewHtml}>{body}</Layout>
+      </SignalProvider>,
+    )
+  }
+  return ServerSentEventGenerator.stream((stream) => {
+    stream.patchElements((<Preview html={previewHtml} />).toString())
+    stream.patchElements((<main id="page-content" class="content">{body}</main>).toString())
     stream.patchSignals(JSON.stringify({ activeCat: active }))
+    if (pushUrl) stream.executeScript(`history.pushState({}, '', '${pushUrl}')`)
   })
+}
 
 const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
   const s = getState()
@@ -153,20 +137,16 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
         <SystemView
           hostname={s.hostname ?? ''}
           locale={{
-            state: lc,
-            kbLayouts: kb,
-            languages: languages(locs),
-            encodings: encodings(locs),
+            state: lc, kbLayouts: kb,
+            languages: languages(locs), encodings: encodings(locs),
           }}
           time={{ zone: s.timezone ?? 'UTC', zones, ntp: s.ntp ?? true }}
           network={{ mode: s.network_config?.type ?? 'iso' }}
         />
       )
     }
-    case 'users': {
-      const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
-      return <UsersView rootSet={rootSet} users={s.users ?? []} />
-    }
+    case 'users':
+      return <UsersView rootSet={s.root_enc_password != null} users={s.users ?? []} />
     case 'disk': {
       const sw = s.swap ?? { enabled: true, algorithm: 'zstd' as const }
       return <DiskView swap={sw} />
@@ -184,12 +164,9 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
         <PacmanView
           mirrors={{ regions: regions(), selected }}
           packages={{
-            installed,
-            detail: null,
-            selectedName: null,
+            installed, detail: null, selectedName: null,
             initialPage: { items: page.items, next: page.next },
-            availableRepos: allRepos,
-            selectedRepos: repos,
+            availableRepos: allRepos, selectedRepos: repos,
           }}
         />
       )
@@ -208,59 +185,31 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
 
 app.get('/config/:category', async (c) => {
   const parsed = CategoryParam.safeParse(c.req.param('category'))
-  if (!parsed.success) {
-    return c.redirect('/config/system')
-  }
-
-  const body = await buildPage(parsed.data, c)
-  return c.get('datastar') ?
-    renderPatch(parsed.data, body) :
-    renderFull(c, parsed.data, body)
+  if (!parsed.success) return c.redirect('/config/system')
+  return renderPage(c, parsed.data, await buildPage(parsed.data, c))
 })
 
-app.post('/api/locale', (c) => {
-  setState({ locale_config: parseSignals(c, Api.Locale) })
-  return patchPreview()
-})
+const stateRoute = <T extends z.ZodTypeAny>(
+  path: string,
+  schema: T,
+  apply: (data: z.infer<T>) => Partial<ArchinstallConfig>,
+) =>
+  app.post(path, (c) => {
+    setState(apply(parseSignals(c, schema)))
+    return patchPreview()
+  })
 
-app.post('/api/kernels', (c) => {
-  setState({ kernels: [parseSignals(c, Api.Kernel).kernel] })
-  return patchPreview()
-})
+stateRoute('/api/locale',     Api.Locale,     (d) => ({ locale_config: d }))
+stateRoute('/api/kernels',    Api.Kernel,     (d) => ({ kernels: [d.kernel] }))
+stateRoute('/api/hostname',   Api.Hostname,   (d) => ({ hostname: d.hostname }))
+stateRoute('/api/ntp',        Api.Ntp,        (d) => ({ ntp: d.ntp }))
+stateRoute('/api/swap',       Api.Swap,       (d) => ({ swap: d }))
+stateRoute('/api/bootloader', Api.Bootloader, (d) => ({ bootloader_config: d }))
+stateRoute('/api/network',    Api.Network,    (d) => ({ network_config: { type: d.mode } }))
+stateRoute('/api/timezone',   Api.Timezone,   (d) => ({ timezone: d.timezone }))
 
-app.post('/api/hostname', (c) => {
-  setState({ hostname: parseSignals(c, Api.Hostname).hostname })
-  return patchPreview()
-})
-
-app.post('/api/ntp', (c) => {
-  setState({ ntp: parseSignals(c, Api.Ntp).ntp })
-  return patchPreview()
-})
-
-app.post('/api/swap', (c) => {
-  setState({ swap: parseSignals(c, Api.Swap) })
-  return patchPreview()
-})
-
-app.post('/api/bootloader', (c) => {
-  setState({ bootloader_config: parseSignals(c, Api.Bootloader) })
-  return patchPreview()
-})
-
-app.post('/api/network', (c) => {
-  setState({ network_config: { type: parseSignals(c, Api.Network).mode } })
-  return patchPreview()
-})
-
-app.post('/api/timezone', (c) => {
-  setState({ timezone: parseSignals(c, Api.Timezone).timezone })
-  return patchPreview()
-})
-
-app.post('/api/mirrors/toggle', async (c) => {
-  const name = c.req.query('name')
-  if (!name) return c.text('missing name', 400)
+app.post('/api/mirrors/toggle', (c) => {
+  const name = requiredQuery(c, 'name')
   const s = getState()
   const current = { ...(s.mirror_config?.mirror_regions ?? {}) }
   if (name in current) delete current[name]
@@ -280,20 +229,18 @@ app.post('/api/mirrors/toggle', async (c) => {
   })
 })
 
-app.get('/api/mirrors/list', async (c) => {
+app.get('/api/mirrors/list', (c) => {
   const needle = getSignal(c, 'q').trim().toLowerCase()
   const all = regions()
   const filtered = needle ? all.filter((name) => name.toLowerCase().includes(needle)) : all
-  const s = getState()
-  const checked = new Set(Object.keys(s.mirror_config?.mirror_regions ?? {}))
+  const checked = new Set(Object.keys(getState().mirror_config?.mirror_regions ?? {}))
   return ServerSentEventGenerator.stream((stream) => {
     stream.patchElements((<RegionListFragment items={filtered} checked={checked} />).toString())
   })
 })
 
 app.post('/api/packages/toggle', async (c) => {
-  const name = c.req.query('name')
-  if (!name) return c.text('missing name', 400)
+  const name = requiredQuery(c, 'name')
   const s = getState()
   const set = new Set(s.packages ?? [])
   if (set.has(name)) set.delete(name)
@@ -312,8 +259,7 @@ app.post('/api/packages/toggle', async (c) => {
       stream.patchElements((<PackageRowFragment p={entry} isChecked={isChecked} isSelected={showDetail} />).toString())
     }
     if (showDetail) {
-      const detail = await packageDetail(name)
-      stream.patchElements((<PackageDetailFragment detail={detail} />).toString())
+      stream.patchElements((<PackageDetailFragment detail={await packageDetail(name)} />).toString())
     }
     stream.patchElements(await previewFragment())
   })
@@ -322,14 +268,14 @@ app.post('/api/packages/toggle', async (c) => {
 app.get('/api/packages/list', async (c) => {
   const after = c.req.query('after') ?? ''
   const mode = c.req.query('mode') ?? 'outer'
-  const s = getState()
-  const installed = s.packages ?? []
-  const checked = new Set(installed)
-  const state = { checked, selectedName: getCurrentDetail() }
-
-  const q = getSignal(c, 'q')
-  const repos = getSignal(c, 'repos')
-  const page = await searchPackages({ q, after, repos, selected: checked })
+  const installed = getState().packages ?? []
+  const state = { checked: new Set(installed), selectedName: getCurrentDetail() }
+  const page = await searchPackages({
+    q: getSignal(c, 'q'),
+    repos: getSignal(c, 'repos'),
+    after,
+    selected: state.checked,
+  })
   return ServerSentEventGenerator.stream((stream) => {
     if (mode === 'append') {
       const rows = (<PackageRowsFragment items={page.items} state={state} />).toString()
@@ -343,13 +289,11 @@ app.get('/api/packages/list', async (c) => {
 })
 
 app.get('/api/packages/detail', async (c) => {
-  const name = c.req.query('name')
-  if (!name) return c.text('missing name', 400)
+  const name = requiredQuery(c, 'name')
   const prev = getCurrentDetail()
   const detail = await packageDetail(name)
   setCurrentDetail(detail ? name : null)
-  const s = getState()
-  const checked = new Set(s.packages ?? [])
+  const checked = new Set(getState().packages ?? [])
   const all = await loadPackages()
   return ServerSentEventGenerator.stream((stream) => {
     if (prev && prev !== name) {
@@ -370,30 +314,22 @@ app.get('/api/packages/detail', async (c) => {
 
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
 const parseGroups = (g: string): string[] => g.split(/[, ]+/).map((x) => x.trim()).filter(Boolean)
-const reload = () =>
-  ServerSentEventGenerator.stream(async (stream) => {
-    const s = getState()
-    const rootSet = s.root_enc_password !== null && s.root_enc_password !== undefined
-    const body = <UsersView rootSet={rootSet} users={s.users ?? []} />
-    stream.patchElements((<main id="page-content" class="content">{body}</main>).toString())
-    stream.patchElements(await previewFragment())
-    stream.patchSignals(JSON.stringify({ activeCat: 'users' }))
-    stream.executeScript("history.pushState({}, '', '/config/users')")
-  })
+
+const reloadUsers = (c: AppContext) => {
+  const s = getState()
+  const body = <UsersView rootSet={s.root_enc_password != null} users={s.users ?? []} />
+  return renderPage(c, 'users', body, '/config/users')
+}
 
 app.post('/api/users/root', async (c) => {
   const { root_password } = parseSignals(c, Api.RootPassword)
-  if (root_password) {
-    setState({ root_enc_password: await hashPassword(root_password) })
-  }
-  return reload()
+  if (root_password) setState({ root_enc_password: await hashPassword(root_password) })
+  return reloadUsers(c)
 })
 
 app.post('/api/users/save', async (c) => {
-  const original = c.req.query('original')
-  if (!original) return c.text('missing original', 400)
+  const original = requiredQuery(c, 'original')
   const fields = parseSignals(c, Api.UserFields(slug(original)))
-
   const s = getState()
   const prev = (s.users ?? []).find((u) => u.username === original)
   const enc_password = fields.password
@@ -407,7 +343,7 @@ app.post('/api/users/save', async (c) => {
     enc_password,
   })
   setState({ users: next })
-  return reload()
+  return reloadUsers(c)
 })
 
 app.post('/api/users/create', async (c) => {
@@ -428,20 +364,17 @@ app.post('/api/users/create', async (c) => {
       },
     ],
   })
-  return reload()
+  return reloadUsers(c)
 })
 
-app.post('/api/users/delete', async (c) => {
-  const name = c.req.query('name')
-  if (!name) return c.text('missing name', 400)
+app.post('/api/users/delete', (c) => {
+  const name = requiredQuery(c, 'name')
   const s = getState()
   setState({ users: (s.users ?? []).filter((u) => u.username !== name) })
-  return reload()
+  return reloadUsers(c)
 })
 
-app.get('/api/config.json', (c) => {
-  return c.json(ArchinstallConfig.parse(getState()))
-})
+app.get('/api/config.json', (c) => c.json(ArchinstallConfig.parse(getState())))
 
 import { serve, env as runtimeEnv } from './runtime'
 
