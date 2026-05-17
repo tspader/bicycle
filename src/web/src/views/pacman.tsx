@@ -11,6 +11,8 @@ export const PacmanView = ({ mirrors, packages }: {
     detail: PackageDetail | null
     selectedName: string | null
     initialPage: PackageList
+    availableRepos: string[]
+    selectedRepos: string[]
   }
 }) => (
   <Page heading="Pacman" subhead="Mirrors and packages.">

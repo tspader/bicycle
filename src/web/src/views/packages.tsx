@@ -1,38 +1,50 @@
 import { Page } from './layout'
-import { Field } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
-import { Signal } from '../components/signal'
 
 type Props = {
   installed: string[]
   detail: PackageDetail | null
   selectedName: string | null
   initialPage: PackageList
+  availableRepos: string[]
+  selectedRepos: string[]
 }
 
 export type PackageList = { items: PackageEntry[]; next: string | null; }
 
 export type RowState = { checked: Set<string>; selectedName: string | null }
 
-export const PackagesSection = ({ installed, detail, selectedName, initialPage }: Props) => {
+export const PackagesSection = ({ installed, detail, selectedName, initialPage, availableRepos, selectedRepos }: Props) => {
   const state: RowState = { checked: new Set(installed), selectedName }
+  const selected = new Set(selectedRepos)
   return (
     <Page heading="Packages">
       <div id="package-detail" class="card">
         <PackageDetailPanel detail={detail} />
       </div>
 
-      <Signal name="q">
-        <form class="form">
-          <div class="field-control">
-            <input class="combo" type="text"
-              placeholder="Filter..."
-              data-bind="q"
-              {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
-            />
-          </div>
-        </form>
-      </Signal>
+      <form class="form pkg-filters" data-signals={JSON.stringify({ q: '', repos: selectedRepos })}>
+        <input class="combo" type="text"
+          placeholder="Filter..."
+          data-bind="q"
+          {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
+        />
+        <div class="repo-filter">
+          {availableRepos.map((repo) => (
+            <label class="toggle">
+              <input
+                type="checkbox"
+                class="pkg-check"
+                value={repo}
+                checked={selected.has(repo)}
+                data-bind="repos"
+                data-on:change="@get('/api/packages/list')"
+              />
+              {repo}
+            </label>
+          ))}
+        </div>
+      </form>
 
       <div id="package-list" class="list">
         <PackageList page={initialPage} state={state} />
@@ -60,6 +72,8 @@ const PackageRow = ({ p, isChecked, isSelected }: { p: PackageEntry; isChecked: 
       </td>
       <td class="col-name">
         <span class="pkg-name">{p.name}</span>
+      </td>
+      <td class="col-repo">
         <span class="muted small"> {p.repo}</span>
       </td>
       <td class="col-version mono">{p.version}</td>
@@ -72,6 +86,7 @@ const PackageHeader = () => (
     <tr>
       <th class="col-check"></th>
       <th>Package</th>
+      <th class="col-repo">Repo</th>
       <th class="col-version">Version</th>
     </tr>
   </thead>

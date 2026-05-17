@@ -7,6 +7,7 @@ export const defaultSignals = {
   ntp: true,
   addingUser: false,
   activeCat: 'system' as CategoryId,
+  repos: [] as string[],
 }
 
 //export type Signal = Record<string, Jsonifiable>;

@@ -90,16 +90,23 @@ export const loadPackages = async (): Promise<PackageEntry[]> => {
 
 export type PackagePage = { items: PackageEntry[]; next: string | null }
 
+export const availableRepos = async (): Promise<string[]> => {
+  const all = await loadPackages()
+  return [...new Set(all.map((p) => p.repo))].sort()
+}
+
 export const searchPackages = async (opts: {
   q?: string
   after?: string
   limit?: number
   selected?: Set<string>
+  repos?: string[]
 }): Promise<PackagePage> => {
   const all = await loadPackages()
   const q = (opts.q ?? '').trim().toLowerCase()
   const limit = opts.limit ?? 50
   const selected = opts.selected ?? new Set<string>()
+  const repoFilter = opts.repos ? new Set(opts.repos) : null
 
   let phase: 's' | 'u' = 's'
   let after = ''
@@ -111,7 +118,9 @@ export const searchPackages = async (opts: {
     }
   }
 
-  const matched = q ? all.filter((p) => p.name.toLowerCase().includes(q)) : all
+  const matched = all.filter(
+    (p) => (!repoFilter || repoFilter.has(p.repo)) && (!q || p.name.toLowerCase().includes(q)),
+  )
   const sel: PackageEntry[] = []
   const uns: PackageEntry[] = []
   for (const p of matched) (selected.has(p.name) ? sel : uns).push(p)

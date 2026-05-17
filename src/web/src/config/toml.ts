@@ -67,7 +67,7 @@ const BicycleToml = z.object({
     })
     .optional(),
   user: z.array(BicycleUser).optional(),
-  packages: z.object({ extra: z.array(z.string()) }).optional(),
+  packages: z.record(z.string(), z.array(z.string())).optional(),
   pacman: z
     .object({
       color: z.boolean().optional(),
@@ -202,7 +202,7 @@ export const fromToml = (text: string): ArchinstallConfig => {
       enc_password: null,
     }))
   }
-  if (bike.packages) out.packages = bike.packages.extra
+  if (bike.packages) out.packages = Object.values(bike.packages).flat().sort()
   if (bike.network) out.network_config = { type: NET_MODE[bike.network.mode] }
 
   if (bike.pacman) {
@@ -227,7 +227,7 @@ export const fromToml = (text: string): ArchinstallConfig => {
   return ArchinstallConfig.parse(out)
 }
 
-export const toToml = (cfg: ArchinstallConfig): string => {
+export const toToml = (cfg: ArchinstallConfig, packageRepos: Record<string, string> = {}): string => {
   const bike: Record<string, unknown> = {}
 
   if (cfg.hostname || cfg.timezone || cfg.kernels || cfg.ntp !== undefined) {
@@ -282,7 +282,15 @@ export const toToml = (cfg: ArchinstallConfig): string => {
       groups: u.groups,
     }))
   }
-  if (cfg.packages && cfg.packages.length > 0) bike.packages = { extra: cfg.packages }
+  if (cfg.packages && cfg.packages.length > 0) {
+    const groups: Record<string, string[]> = {}
+    for (const name of cfg.packages) {
+      const repo = packageRepos[name] ?? 'extra'
+      ;(groups[repo] ??= []).push(name)
+    }
+    for (const list of Object.values(groups)) list.sort()
+    bike.packages = groups
+  }
   if (cfg.network_config) bike.network = { mode: NET_MODE_REVERSE[cfg.network_config.type] }
 
   if (cfg.pacman_config || cfg.mirror_config) {

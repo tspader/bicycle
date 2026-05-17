@@ -31,6 +31,7 @@ import {
   searchPackages,
   packageDetail,
   syncPacman,
+  availableRepos,
   KERNELS,
 } from './system'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
@@ -97,7 +98,9 @@ const LOADER_MAP = { 'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efi
 const renderPreviewHtml = async (): Promise<string> => {
   let toml: string
   try {
-    toml = toToml(getState())
+    const all = await loadPackages()
+    const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
+    toml = toToml(getState(), repos)
   } catch (e) {
     toml = `# preview unavailable\n# ${(e as Error).message}`
   }
@@ -170,9 +173,12 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
     }
     case 'pacman': {
       const q = getSignal(c, 'q')
+      const reposSig = getSignal(c, 'repos')
       const installed = s.packages ?? []
       const selected = Object.keys(s.mirror_config?.mirror_regions ?? {})
-      const page = await searchPackages({ q, selected: new Set(installed) })
+      const allRepos = await availableRepos()
+      const repos = reposSig.length === 0 ? allRepos : reposSig
+      const page = await searchPackages({ q, repos, selected: new Set(installed) })
       setCurrentDetail(null)
       return (
         <PacmanView
@@ -182,6 +188,8 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
             detail: null,
             selectedName: null,
             initialPage: { items: page.items, next: page.next },
+            availableRepos: allRepos,
+            selectedRepos: repos,
           }}
         />
       )
@@ -320,7 +328,8 @@ app.get('/api/packages/list', async (c) => {
   const state = { checked, selectedName: getCurrentDetail() }
 
   const q = getSignal(c, 'q')
-  const page = await searchPackages({ q, after, selected: checked })
+  const repos = getSignal(c, 'repos')
+  const page = await searchPackages({ q, after, repos, selected: checked })
   return ServerSentEventGenerator.stream((stream) => {
     if (mode === 'append') {
       const rows = (<PackageRowsFragment items={page.items} state={state} />).toString()
