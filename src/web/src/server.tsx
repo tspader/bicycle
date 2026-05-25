@@ -18,7 +18,11 @@ import {
   PackageMore,
   PackageDetailFragment,
 } from './views/packages'
-import { getCurrentDetail, setCurrentDetail, type CategoryId } from './ui-state'
+import {
+  getCurrentDetail, setCurrentDetail,
+  getSelectedPart, setSelectedPart,
+  type CategoryId,
+} from './ui-state'
 import {
   kbLayouts, locales, languages, encodings, timezones,
   regions, searchPackages, packageDetail, syncPacman, availableRepos,
@@ -153,6 +157,10 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
       const disks = await listDisks()
       const selected = s.disk_config?.device_modifications ?? []
       const enc = s.disk_config?.disk_encryption
+      const allObjIds = new Set(selected.flatMap((d) => d.partitions.map((p) => p.obj_id)))
+      const sel = getSelectedPart()
+      const validSel = sel && allObjIds.has(sel) ? sel : null
+      if (sel !== validSel) setSelectedPart(validSel)
       return (
         <DiskView
           disks={disks}
@@ -163,6 +171,7 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
             objIds: new Set(enc?.partitions ?? []),
           }}
           swap={sw}
+          selectedPartObjId={validSel}
         />
       )
     }
@@ -587,17 +596,35 @@ app.post('/api/disk/partition/save', (c) => {
     }
   })
   const built = buildPartitions(presetParts, device, machine)
+  // Preserve existing obj_ids across rebuild so selection + encryption tracking
+  // stay stable. buildPartitions assigns fresh UUIDs; map them back by index.
+  const remappedEncIds = [...built.encryptedObjIds]
+  for (let i = 0; i < built.partitions.length; i++) {
+    const oldId = parts[i]?.obj_id
+    if (!oldId) continue
+    const newId = built.partitions[i]!.obj_id
+    if (oldId === newId) continue
+    built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
+    const ei = remappedEncIds.indexOf(newId)
+    if (ei >= 0) remappedEncIds[ei] = oldId
+  }
   dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-  if (built.encryptedObjIds.length > 0) {
+  if (remappedEncIds.length > 0) {
     dc.disk_encryption = {
       encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-      partitions: built.encryptedObjIds,
+      partitions: remappedEncIds,
       lvm_volumes: [],
     }
   } else {
     dc.disk_encryption = undefined
   }
   setState({ disk_config: dc })
+  return reloadDisk(c)
+})
+
+app.post('/api/disk/partition/select', (c) => {
+  const objId = requiredQuery(c, 'objId')
+  setSelectedPart(objId)
   return reloadDisk(c)
 })
 

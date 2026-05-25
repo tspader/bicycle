@@ -414,38 +414,154 @@ a { color: inherit; text-decoration: none; }
 .chip-warn { background: #3a2a14; color: #f5d5b5; border-color: #5a3f1f; }
 
 .preset-row { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.chip-row { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: center; }
+.chip-row-tight { gap: var(--s-2); }
+.chip-enc { background: #14283a; color: #b5d5f5; border-color: #1f3f5a; }
 
-.partition-list { display: flex; flex-direction: column; gap: var(--s-3); }
-.partition-row { padding: var(--s-3); }
-.partition-head {
-  display: grid;
-  grid-template-columns: minmax(80px, 1fr) 100px 130px auto auto auto;
-  gap: var(--s-2);
+/* Disk panel: one card holds presets, editor, table, footer for a device. */
+.disk-panel {
+  padding: 0;
+  overflow: hidden;
+}
+.disk-panel-presets {
+  display: flex;
   align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-6);
+  border-bottom: 1px solid var(--border-1);
+  background: rgba(255, 255, 255, 0.015);
 }
-.p-mount { font-family: var(--font-mono); }
-.p-fs    { font-family: var(--font-mono); }
-.p-size  { font-family: var(--font-mono); }
-.p-expand {
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+.disk-panel-presets .field-label { flex-shrink: 0; }
+
+.partition-editor {
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-5) var(--s-6) var(--s-6);
+  border-bottom: 1px solid var(--border-1);
 }
-.partition-advanced {
-  margin-top: var(--s-3);
-  padding-top: var(--s-3);
-  border-top: 1px solid var(--border-2);
+.partition-editor-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--fg-faint);
+}
+
+.partition-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  min-width: 0;
+}
+.partition-form-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.partition-form-head .card-title { margin-bottom: 0; }
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-4) var(--s-5);
+}
+.field-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.field-grid .combo { max-width: none; }
+
+.partition-form-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-7);
+}
+.toggle-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.toggle-group .chip-row { padding-top: 2px; }
+
+/* Btrfs subvolume panel — full-width section under the scalar fields. */
+.subvol-panel {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--border-1);
+  margin-top: var(--s-2);
 }
-.chip-row { display: flex; flex-wrap: wrap; gap: var(--s-4); }
-.subvol-list { display: flex; flex-direction: column; gap: var(--s-2); }
-.subvol-row {
+.subvol-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.subvol-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg-strong);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+}
+.subvol-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+}
+.subvol-list {
   display: grid;
-  grid-template-columns: 1fr auto 1fr auto auto;
-  gap: var(--s-2);
+  grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr) 28px;
+  gap: var(--s-2) var(--s-3);
   align-items: center;
 }
-.sv-name, .sv-mount { font-family: var(--font-mono); }
-.disk-footer { color: var(--fg-muted); margin-top: var(--s-3); }
+.subvol-row {
+  display: contents;
+}
+.subvol-row-head > * { padding-bottom: var(--s-1); }
+.subvol-empty { padding: var(--s-4) 0; text-align: left; }
+.subvol-arrow { text-align: center; }
+.sv-name, .sv-mount { font-family: var(--font-mono); max-width: none; }
+
+/* Partition list table — lives inside the same disk-panel card as the editor. */
+.partition-table { table-layout: auto; margin: 0; }
+.partition-table thead th { padding-left: var(--s-6); }
+.partition-table thead th:first-child { padding-left: var(--s-6); }
+.partition-table thead th:last-child { padding-right: var(--s-6); }
+.partition-table tbody td { padding-left: var(--s-3); }
+.partition-table tbody td:first-child { padding-left: var(--s-6); }
+.partition-table tbody td:last-child { padding-right: var(--s-6); }
+.partition-table tbody tr.row { cursor: pointer; }
+.partition-table tbody tr.row:last-child td { border-bottom: 0; }
+.partition-table tbody tr.row.row-selected td {
+  background: rgba(23, 147, 209, 0.18);
+  color: var(--fg-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.partition-table tbody tr.row.row-selected:hover td { background: rgba(23, 147, 209, 0.22); }
+.partition-table .col-num   { width: 36px; text-align: right; }
+.partition-table .col-fs    { width: 80px; color: var(--fg-2); }
+.partition-table .col-size  { width: 110px; }
+.partition-table .col-enc   { width: 72px; }
+.partition-table .col-del   { width: 60px; }
+
+.partition-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-6);
+  border-top: 1px solid var(--border-1);
+}
+
+.btn-icon {
+  padding: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-md);
+  line-height: 1;
+}
+.btn-sm { padding: var(--s-1) var(--s-3); font-size: var(--text-xs); }
