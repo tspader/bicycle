@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test'
-import { fromToml, toToml, testMachine, DEFAULT_MIRROR_URL } from '../src/config'
+import { fromToml, toToml, testMachine, DEFAULT_MIRROR_URL, parseSize, sizeBytes, preflight, targetDevice } from '../src/config'
+import type { DiskInfo } from '../src/system'
 
 const ctx = () => testMachine({ disks: { '/dev/vda': 100 * 1024 ** 3 } }) // 100 GiB
 
@@ -188,6 +189,115 @@ test('rejects encrypt=true without [encryption] block', () => {
 test('rejects subvol on non-btrfs partition', () => {
   const bad = WITH_BTRFS_ENC.replace('fs    = "btrfs"', 'fs    = "ext4"')
   expect(() => fromToml(bad, ctx())).toThrow(/subvol requires fs="btrfs"/)
+})
+
+describe('parseSize', () => {
+  const GIB = 1024 ** 3
+
+  test.each([
+    ['1GiB', 1 * GIB],
+    ['1gib', 1 * GIB],
+    ['1GIB', 1 * GIB],
+    ['1GB',  1 * GIB],
+    ['1gb',  1 * GIB],
+    ['1G',   1 * GIB],
+    ['1g',   1 * GIB],
+    ['200GiB', 200 * GIB],
+    ['200gb',  200 * GIB],
+    ['  200 gb  ', 200 * GIB],
+    ['1.5GiB', 1.5 * GIB],
+    ['512MiB', 512 * 1024 ** 2],
+    ['512mb',  512 * 1024 ** 2],
+    ['1024KiB', 1024 * 1024],
+    ['1k', 1024],
+    ['100B', 100],
+    ['1TiB', 1024 ** 4],
+    ['2tb',  2 * 1024 ** 4],
+  ])('accepts %s', (input, expectedBytes) => {
+    expect(sizeBytes(parseSize(input))).toBe(expectedBytes)
+  })
+
+  test('normalizes to canonical IEC unit', () => {
+    expect(parseSize('200gb').unit).toBe('GiB')
+    expect(parseSize('1m').unit).toBe('MiB')
+    expect(parseSize('1k').unit).toBe('KiB')
+  })
+
+  test.each(['', '   ', '1', 'GiB', '1 ZiB', '1PB', '1xb', '1 fish', 'abc', '1.GiB', '-1GiB'])(
+    'rejects %s', (input) => {
+      expect(() => parseSize(input)).toThrow()
+    },
+  )
+
+  test('error message names the offending input', () => {
+    expect(() => parseSize('1 fish')).toThrow(/fish/)
+    expect(() => parseSize('garbage')).toThrow(/garbage/)
+  })
+})
+
+describe('preflight', () => {
+  const disks: DiskInfo[] = [
+    { path: '/dev/vda', model: 'vda', size: 100 * 1024 ** 3, sectorSize: 512, isBoot: false },
+  ]
+
+  const ready = () => {
+    const cfg = fromToml(MINIMAL.replace('size  = "20GiB"', 'size  = "rest"'), ctx())
+    return {
+      ...cfg,
+      users: [{ username: 's', sudo: true, groups: ['wheel'], enc_password: 'h' }],
+    }
+  }
+
+  test('passes on a complete config', () => {
+    expect(preflight(ready(), disks)).toEqual({ ok: true, problems: [] })
+  })
+
+  test('reports missing system fields', () => {
+    const cfg = ready()
+    delete cfg.hostname
+    delete cfg.timezone
+    cfg.kernels = []
+    delete cfg.locale_config
+    delete cfg.bootloader_config
+    const r = preflight(cfg, disks)
+    if (r.ok) throw new Error('expected failure')
+    expect(r.problems).toEqual(expect.arrayContaining([
+      expect.stringMatching(/hostname/),
+      expect.stringMatching(/timezone/),
+      expect.stringMatching(/kernel/),
+      expect.stringMatching(/locale/),
+      expect.stringMatching(/bootloader/),
+    ]))
+  })
+
+  test('requires a / mountpoint', () => {
+    const cfg = ready()
+    cfg.disk_config!.device_modifications[0]!.partitions = cfg.disk_config!.device_modifications[0]!.partitions
+      .filter((p) => p.mountpoint !== '/')
+    const r = preflight(cfg, disks)
+    if (r.ok) throw new Error('expected failure')
+    expect(r.problems.some((p) => p.includes('"/"'))).toBe(true)
+  })
+
+  test('requires a sudo user or root password', () => {
+    const cfg = ready()
+    cfg.users = []
+    cfg.root_enc_password = null
+    const r = preflight(cfg, disks)
+    if (r.ok) throw new Error('expected failure')
+    expect(r.problems.some((p) => p.toLowerCase().includes('sudo'))).toBe(true)
+  })
+
+  test('flags overflow', () => {
+    const small: DiskInfo[] = [{ path: '/dev/vda', model: 'vda', size: 10 * 1024 ** 3, sectorSize: 512, isBoot: false }]
+    const r = preflight(ready(), small)
+    if (r.ok) throw new Error('expected failure')
+    expect(r.problems.some((p) => /total .* B but disk is/.test(p))).toBe(true)
+  })
+
+  test('targetDevice returns the first wiping device', () => {
+    expect(targetDevice(ready())).toBe('/dev/vda')
+  })
 })
 
 describe('ArchinstallConfig schema', () => {

@@ -30,15 +30,17 @@ export const Layout = ({
   previewHtml,
   children,
 }: {
-  active: CategoryId
+  active: CategoryId | 'install'
   title?: string
   previewHtml: string
   children?: Child
 }) => {
   const nav = (id: CategoryId) =>
     `history.pushState({}, '', '/config/${id}'); $activeCat = '${id}'; @get('/config/${id}')`
+  const navInstall =
+    `history.pushState({}, '', '/install'); $activeCat = 'install'; @get('/install')`
 
-  const Sidebar = ({ active }: { active: CategoryId }) => (
+  const Sidebar = ({ active }: { active: CategoryId | 'install' }) => (
     <aside
       class="sidebar"
       data-signals={JSON.stringify({ q: '', activeCat: active })}
@@ -64,9 +66,14 @@ export const Layout = ({
         ))}
       </nav>
       <div class="sidebar-foot">
-        <button type="button" class="btn-install" disabled>
+        <a
+          href="/install"
+          class={`btn-install${active === 'install' ? ' btn-install-active' : ''}`}
+          data-class:btn-install-active="$activeCat === 'install'"
+          data-on:click__prevent={navInstall}
+        >
           Install
-        </button>
+        </a>
       </div>
     </aside>
   )

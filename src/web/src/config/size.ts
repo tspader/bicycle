@@ -18,12 +18,30 @@ export type Size = z.infer<typeof Size>
 
 export const DEFAULT_SECTOR: z.infer<typeof SectorSize> = { unit: 'B', value: 512 }
 
-const SIZE_RE = /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB|TiB)$/
+const SIZE_RE = /^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*$/
+
+// Accept common variants case-insensitively and normalize to canonical IEC.
+// Disk-sizing UIs and tools (parted, sgdisk, fdisk) treat MB/GB and MiB/GiB
+// interchangeably for layout purposes, so we follow suit rather than tripping
+// users up on a unit distinction that doesn't matter at this layer.
+const UNIT_ALIASES: Record<string, SizeUnit> = {
+  b: 'B',
+  k: 'KiB', kb: 'KiB', kib: 'KiB',
+  m: 'MiB', mb: 'MiB', mib: 'MiB',
+  g: 'GiB', gb: 'GiB', gib: 'GiB',
+  t: 'TiB', tb: 'TiB', tib: 'TiB',
+}
 
 export const parseSize = (s: string): Size => {
-  const m = SIZE_RE.exec(s.trim())
-  if (!m) throw new Error(`invalid size: ${JSON.stringify(s)}`)
-  return { unit: m[2] as SizeUnit, value: Number(m[1]), sector_size: DEFAULT_SECTOR }
+  const m = SIZE_RE.exec(s)
+  if (!m) {
+    throw new Error(`invalid size: ${JSON.stringify(s)} — expected a number with unit, e.g. "1GiB" or "512MiB"`)
+  }
+  const unit = UNIT_ALIASES[m[2]!.toLowerCase()]
+  if (!unit) {
+    throw new Error(`unknown size unit ${JSON.stringify(m[2])} in ${JSON.stringify(s)} — use B, KiB, MiB, GiB, or TiB`)
+  }
+  return { unit, value: Number(m[1]), sector_size: DEFAULT_SECTOR }
 }
 
 export const formatSize = (size: Size): string => `${size.value}${size.unit}`

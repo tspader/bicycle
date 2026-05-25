@@ -21,6 +21,8 @@ import {
 import {
   getCurrentDetail, setCurrentDetail,
   getOpenDisk, setOpenDisk,
+  getDiskError, setDiskError,
+  getInstall, setInstall, appendInstallLog,
   type CategoryId,
 } from './ui-state'
 import {
@@ -28,7 +30,9 @@ import {
   regions, searchPackages, packageDetail, syncPacman, availableRepos,
   loadPackages, listDisks,
 } from './system'
-import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, type PartitionConfig } from './config'
+import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, preflight, targetDevice, type PartitionConfig } from './config'
+import { InstallView } from './views/install'
+import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
 import { getState, setState } from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
@@ -116,7 +120,7 @@ const patchPreview = () =>
     stream.patchElements(await previewFragment())
   })
 
-const renderPage = async (c: AppContext, active: CategoryId, body: Child, pushUrl?: string) => {
+const renderPage = async (c: AppContext, active: CategoryId | 'install', body: Child, pushUrl?: string) => {
   const previewHtml = await renderPreviewHtml()
   if (!c.get('datastar')) {
     return c.html(
@@ -166,6 +170,7 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
           disks={disks}
           selected={selected}
           openDisk={validOpen}
+          error={getDiskError()}
           encryption={{
             type: enc?.encryption_type ?? 'luks',
             password: !!s.encryption_password,
@@ -455,8 +460,23 @@ const setEncryptedFlag = (
 app.post('/api/disk/open', (c) => {
   const device = c.req.query('device')
   setOpenDisk(device ?? null)
+  setDiskError(null)
   return reloadDisk(c)
 })
+
+// Run a partition-table mutation; on Error, stash the message for the next
+// render so the UI shows it inline instead of returning 4xx (which Datastar
+// would silently swallow) or 5xx (which crashes the request).
+const tryDiskMutation = (fn: () => void): boolean => {
+  try {
+    fn()
+    setDiskError(null)
+    return true
+  } catch (e) {
+    setDiskError((e as Error).message)
+    return false
+  }
+}
 
 const ensureDeviceModification = (
   dc: NonNullable<ArchinstallConfig['disk_config']>,
@@ -473,76 +493,80 @@ app.post('/api/disk/preset', (c) => {
   const id = requiredQuery(c, 'id')
   const preset = PRESETS[id as keyof typeof PRESETS]
   if (!preset) throw new HTTPException(400, { message: `unknown preset: ${id}` })
-  const s = getState()
-  const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
-  const dIdx = ensureDeviceModification(dc, device)
-  const built = buildPartitions(preset.parts, device, machine)
-  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-  if (built.encryptedObjIds.length > 0) {
-    const existing = new Set(dc.disk_encryption?.partitions ?? [])
-    for (const id of built.encryptedObjIds) existing.add(id)
-    dc.disk_encryption = {
-      encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-      partitions: [...existing],
-      lvm_volumes: [],
+  tryDiskMutation(() => {
+    const s = getState()
+    const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
+    const dIdx = ensureDeviceModification(dc, device)
+    const built = buildPartitions(preset.parts, device, machine)
+    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
+    if (built.encryptedObjIds.length > 0) {
+      const existing = new Set(dc.disk_encryption?.partitions ?? [])
+      for (const id of built.encryptedObjIds) existing.add(id)
+      dc.disk_encryption = {
+        encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
+        partitions: [...existing],
+        lvm_volumes: [],
+      }
+    } else {
+      dc.disk_encryption = recomputeEncryption(dc)
     }
-  } else {
-    dc.disk_encryption = recomputeEncryption(dc)
-  }
-  setState({ disk_config: dc })
+    setState({ disk_config: dc })
+  })
   return reloadDisk(c)
 })
 
 app.post('/api/disk/partition/add', (c) => {
   const device = requiredQuery(c, 'device')
-  const s = getState()
-  const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
-  const dIdx = ensureDeviceModification(dc, device)
-  const existing = dc.device_modifications[dIdx]!.partitions
-  const NEW_BYTES = 1024 * 1024 * 1024
-  const MIB = 1024 * 1024
-  const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
-  const presetParts = existing.map((p) => {
-    let size: string
-    if (p.original_size === 'rest') {
-      const remaining = p.size.value - NEW_BYTES
-      if (remaining < MIB) throw new HTTPException(400, { message: 'no space left to add another partition' })
-      size = `${Math.floor(remaining / MIB)}MiB`
+  tryDiskMutation(() => {
+    const s = getState()
+    const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
+    const dIdx = ensureDeviceModification(dc, device)
+    const existing = dc.device_modifications[dIdx]!.partitions
+    const NEW_BYTES = 1024 * 1024 * 1024
+    const MIB = 1024 * 1024
+    const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
+    const presetParts = existing.map((p) => {
+      let size: string
+      if (p.original_size === 'rest') {
+        const remaining = p.size.value - NEW_BYTES
+        if (remaining < MIB) throw new Error('no space left to add another partition')
+        size = `${Math.floor(remaining / MIB)}MiB`
+      } else {
+        size = p.original_size ?? `${p.size.value}${p.size.unit}`
+      }
+      return {
+        mount: p.mountpoint ?? '',
+        fs: p.fs_type,
+        size,
+        start: p.original_start,
+        flags: p.flags,
+        mount_options: p.mount_options,
+        subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
+        encrypt: prevEncrypted.has(p.obj_id),
+      }
+    })
+    presetParts.push({ mount: '/', fs: 'ext4', size: '1GiB', start: undefined, flags: [], mount_options: [], subvol: [], encrypt: false })
+    const built = buildPartitions(presetParts, device, machine)
+    const newToOldId = new Map<string, string>()
+    for (let i = 0; i < existing.length; i++) {
+      const oldId = existing[i]!.obj_id
+      const newId = built.partitions[i]!.obj_id
+      built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
+      newToOldId.set(newId, oldId)
+    }
+    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
+    const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
+    if (encIds.length > 0) {
+      dc.disk_encryption = {
+        encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
+        partitions: encIds,
+        lvm_volumes: [],
+      }
     } else {
-      size = p.original_size ?? `${p.size.value}${p.size.unit}`
+      dc.disk_encryption = undefined
     }
-    return {
-      mount: p.mountpoint ?? '',
-      fs: p.fs_type,
-      size,
-      start: p.original_start,
-      flags: p.flags,
-      mount_options: p.mount_options,
-      subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-      encrypt: prevEncrypted.has(p.obj_id),
-    }
+    setState({ disk_config: dc })
   })
-  presetParts.push({ mount: '/', fs: 'ext4', size: '1GiB', start: undefined, flags: [], mount_options: [], subvol: [], encrypt: false })
-  const built = buildPartitions(presetParts, device, machine)
-  const newToOldId = new Map<string, string>()
-  for (let i = 0; i < existing.length; i++) {
-    const oldId = existing[i]!.obj_id
-    const newId = built.partitions[i]!.obj_id
-    built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
-    newToOldId.set(newId, oldId)
-  }
-  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-  const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
-  if (encIds.length > 0) {
-    dc.disk_encryption = {
-      encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-      partitions: encIds,
-      lvm_volumes: [],
-    }
-  } else {
-    dc.disk_encryption = undefined
-  }
-  setState({ disk_config: dc })
   return reloadDisk(c)
 })
 
@@ -597,69 +621,71 @@ app.post('/api/disk/partition/save', (c) => {
   })
   if (!parsed.success) throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid' })
   const fields = parsed.data
-  const s = getState()
-  if (!s.disk_config) throw new HTTPException(400, { message: 'no disks selected' })
-  const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
-  const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
-  const parts = [...dc.device_modifications[dIdx]!.partitions]
-  const prev = parts[idx]
-  if (!prev) throw new HTTPException(404, { message: 'partition not found' })
+  tryDiskMutation(() => {
+    const s = getState()
+    if (!s.disk_config) throw new Error('no disks selected')
+    const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
+    const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
+    if (dIdx < 0) throw new Error(`device not selected: ${device}`)
+    const parts = [...dc.device_modifications[dIdx]!.partitions]
+    const prev = parts[idx]
+    if (!prev) throw new Error('partition not found')
 
-  // Re-resolve this partition by rebuilding the entire device's partitions
-  // (so cursor/start/rest math stays correct across siblings).
-  const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
-  const presetParts = parts.map((p, i) => {
-    if (i === idx) {
-      return {
-        mount: fields.mount,
-        fs: fields.fs,
-        size: fields.size,
-        start: fields.start,
-        flags: fields.flags,
-        mount_options: fields.mount_options.split(',').map((s) => s.trim()).filter(Boolean),
-        subvol: prev.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-        encrypt: fields.encrypt,
+    // Re-resolve this partition by rebuilding the entire device's partitions
+    // (so cursor/start/rest math stays correct across siblings).
+    const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
+    const presetParts = parts.map((p, i) => {
+      if (i === idx) {
+        return {
+          mount: fields.mount,
+          fs: fields.fs,
+          size: fields.size,
+          start: fields.start,
+          flags: fields.flags,
+          mount_options: fields.mount_options.split(',').map((s) => s.trim()).filter(Boolean),
+          subvol: prev.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
+          encrypt: fields.encrypt,
+        }
       }
+      return {
+        mount: p.mountpoint ?? '',
+        fs: p.fs_type,
+        size: p.original_size ?? `${p.size.value}${p.size.unit}`,
+        start: p.original_start,
+        flags: p.flags,
+        mount_options: p.mount_options,
+        subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
+        encrypt: prevEncrypted.has(p.obj_id),
+      }
+    })
+    const built = buildPartitions(presetParts, device, machine)
+    // Preserve existing obj_ids across rebuild so selection + encryption tracking
+    // stay stable. buildPartitions always assigns fresh UUIDs; replace them by
+    // index (length is preserved by construction).
+    const newToOldId = new Map<string, string>()
+    for (let i = 0; i < built.partitions.length; i++) {
+      const oldId = parts[i]?.obj_id
+      if (!oldId) continue
+      const newId = built.partitions[i]!.obj_id
+      built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
+      newToOldId.set(newId, oldId)
     }
-    return {
-      mount: p.mountpoint ?? '',
-      fs: p.fs_type,
-      size: p.original_size ?? `${p.size.value}${p.size.unit}`,
-      start: p.original_start,
-      flags: p.flags,
-      mount_options: p.mount_options,
-      subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-      encrypt: prevEncrypted.has(p.obj_id),
+    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
+    // The form is authoritative for which partitions are encrypted; do not fall
+    // back to recomputeEncryption() here, since the prior dc.disk_encryption still
+    // contains the obj_id the user just toggled off and would re-add it.
+    const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
+    if (encIds.length > 0) {
+      dc.disk_encryption = {
+        encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
+        partitions: encIds,
+        lvm_volumes: [],
+      }
+    } else {
+      dc.disk_encryption = undefined
     }
+    setState({ disk_config: dc })
   })
-  const built = buildPartitions(presetParts, device, machine)
-  // Preserve existing obj_ids across rebuild so selection + encryption tracking
-  // stay stable. buildPartitions always assigns fresh UUIDs; replace them by
-  // index (length is preserved by construction).
-  const newToOldId = new Map<string, string>()
-  for (let i = 0; i < built.partitions.length; i++) {
-    const oldId = parts[i]?.obj_id
-    if (!oldId) continue
-    const newId = built.partitions[i]!.obj_id
-    built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
-    newToOldId.set(newId, oldId)
-  }
-  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-  // The form is authoritative for which partitions are encrypted; do not fall
-  // back to recomputeEncryption() here, since the prior dc.disk_encryption still
-  // contains the obj_id the user just toggled off and would re-add it.
-  const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
-  if (encIds.length > 0) {
-    dc.disk_encryption = {
-      encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-      partitions: encIds,
-      lvm_volumes: [],
-    }
-  } else {
-    dc.disk_encryption = undefined
-  }
-  setState({ disk_config: dc })
   return reloadDisk(c)
 })
 
@@ -730,7 +756,185 @@ app.post('/api/disk/encryption-password', (c) => {
 
 app.get('/api/config.json', (c) => c.json(ArchinstallConfig.parse(getState())))
 
-import { serve, env as runtimeEnv } from './runtime'
+import { serve } from './runtime'
+
+// --- Install endpoints ------------------------------------------------------
+
+// Triple-gated wet mode. BICYCLE_WET=1 is the ONLY way the server omits
+// --dry-run; missing or any other value forces dry-run.
+const isWet = (): boolean => runtimeEnv.BICYCLE_WET === '1'
+
+// archinstall splits its input into config + creds. We hold everything in one
+// ArchinstallConfig at runtime; these two helpers carve it back out for the
+// JSON files that get passed via --config and --creds.
+const CRED_KEYS = ['users', 'root_enc_password', 'encryption_password'] as const
+const splitForArchinstall = (cfg: ArchinstallConfig) => {
+  const config: Record<string, unknown> = {}
+  const creds: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(cfg)) {
+    if ((CRED_KEYS as readonly string[]).includes(k)) {
+      if (v !== undefined && v !== null) creds[k] = v
+    } else {
+      if (v !== undefined) config[k] = v
+    }
+  }
+  return { config, creds }
+}
+
+const renderInstall = async (c: AppContext) => {
+  const s = getState()
+  const disks = await listDisks()
+  const pf = preflight(s, disks)
+  const view = (
+    <InstallView
+      preflight={pf}
+      device={targetDevice(s)}
+      mode={isWet() ? 'wet' : 'dry-run'}
+      install={getInstall()}
+    />
+  )
+  return renderPage(c, 'install', view, '/install')
+}
+
+app.get('/install', (c) => renderInstall(c))
+
+// Just the inner content for polling — same body the page already shows, but
+// patched into #page-content instead of full reload. No pushUrl here, otherwise
+// every 1s poll would push another /install entry onto history.
+app.get('/api/install/status', async (c) => {
+  const s = getState()
+  const disks = await listDisks()
+  const view = (
+    <InstallView
+      preflight={preflight(s, disks)}
+      device={targetDevice(s)}
+      mode={isWet() ? 'wet' : 'dry-run'}
+      install={getInstall()}
+    />
+  )
+  return renderPage(c, 'install', view)
+})
+
+app.post('/api/install/start', async (c) => {
+  // Claim the running slot synchronously BEFORE any await. Without this,
+  // two near-simultaneous POSTs both pass the check and both spawn archinstall.
+  const inst = getInstall()
+  if (inst.status === 'running') {
+    throw new HTTPException(409, { message: 'install already running' })
+  }
+  const s = getState()
+  const device = targetDevice(s)
+  if (!device) throw new HTTPException(400, { message: 'no target device' })
+
+  // Server-side enforcement of the type-to-confirm gate. The client form
+  // also disables the button until this matches, but a hand-crafted POST
+  // could skip the UI; reject here too.
+  const signals = (c.get('signals') ?? {}) as Record<string, unknown>
+  const typed = String(signals.wipe_typed ?? '')
+  if (typed !== device) {
+    throw new HTTPException(400, { message: `type ${device} to confirm wipe (got ${JSON.stringify(typed)})` })
+  }
+  if (!signals.confirm_install) {
+    throw new HTTPException(400, { message: 'install confirmation required' })
+  }
+
+  const wet = isWet()
+  const mode = wet ? 'wet' as const : 'dry-run' as const
+  // Take the running slot now so a parallel request loses the 409 check above.
+  setInstall({
+    status: 'running',
+    mode,
+    device,
+    log: '',
+    exitCode: null,
+    startedAt: Date.now(),
+    finishedAt: null,
+  })
+
+  try {
+    const disks = await listDisks()
+    const pf = preflight(s, disks)
+    if (!pf.ok) {
+      setInstall({ status: 'idle', startedAt: null })
+      throw new HTTPException(400, { message: pf.problems.join('; ') })
+    }
+    const { config, creds } = splitForArchinstall(s)
+    const configFile = '/tmp/bicycle-config.json'
+    const credsFile = '/tmp/bicycle-creds.json'
+    await Bun.write(configFile, JSON.stringify(config, null, 2))
+    await Bun.write(credsFile, JSON.stringify(creds, null, 2))
+
+    const args = ['archinstall', '--config', configFile, '--creds', credsFile, '--silent', '--script', 'guided']
+    if (!wet) args.push('--dry-run')
+    setInstall({ log: `$ ${args.join(' ')}\n` })
+
+    void runInstall(args)
+  } catch (e) {
+    if (e instanceof HTTPException) throw e
+    setInstall({ status: 'failure', exitCode: -1, finishedAt: Date.now() })
+    appendInstallLog(`start failed: ${(e as Error).message}\n`)
+  }
+
+  return renderInstall(c)
+})
+
+const runInstall = async (args: string[]): Promise<void> => {
+  let proc
+  try {
+    proc = runtimeSpawn(args, { stdout: 'pipe', stderr: 'pipe' })
+  } catch (e) {
+    appendInstallLog(`spawn failed: ${(e as Error).message}\n`)
+    setInstall({ status: 'failure', exitCode: -1, finishedAt: Date.now() })
+    return
+  }
+  const pump = async (stream: ReadableStream<Uint8Array> | null) => {
+    if (!stream) return
+    const reader = stream.getReader()
+    const dec = new TextDecoder()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      appendInstallLog(dec.decode(value, { stream: true }))
+    }
+  }
+  try {
+    await Promise.all([pump(proc.stdout), pump(proc.stderr)])
+    const code = await proc.exited
+    setInstall({
+      status: code === 0 ? 'success' : 'failure',
+      exitCode: code,
+      finishedAt: Date.now(),
+    })
+  } catch (e) {
+    appendInstallLog(`pump failed: ${(e as Error).message}\n`)
+    setInstall({ status: 'failure', exitCode: -1, finishedAt: Date.now() })
+  }
+}
+
+app.post('/api/install/reboot', (c) => {
+  if (!isWet()) throw new HTTPException(400, { message: 'reboot disabled in dry-run mode' })
+  if (getInstall().status !== 'success') {
+    throw new HTTPException(400, { message: 'reboot only after a successful install' })
+  }
+  runtimeSpawn(['systemctl', 'reboot'], { stdout: 'ignore', stderr: 'ignore' })
+  return c.body('')
+})
+
+app.post('/api/install/reset', (c) => {
+  if (getInstall().status === 'running') {
+    throw new HTTPException(409, { message: 'cannot reset while running' })
+  }
+  setInstall({
+    status: 'idle',
+    log: '',
+    exitCode: null,
+    startedAt: null,
+    finishedAt: null,
+  })
+  return renderInstall(c)
+})
+
+
 
 const start = async () => {
   syncPacman().then((res) => {

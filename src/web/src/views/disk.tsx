@@ -37,11 +37,12 @@ type Props = {
   disks: DiskInfo[]
   selected: DeviceModification[]
   openDisk: string | null
+  error: string | null
   encryption: { type: string; password: boolean; objIds: Set<string> }
   swap: Swap
 }
 
-export const DiskView = ({ disks, selected, openDisk, encryption, swap }: Props) => {
+export const DiskView = ({ disks, selected, openDisk, error, encryption, swap }: Props) => {
   const modByDevice = new Map(selected.map((m) => [m.device, m]))
   const open = openDisk ? disks.find((d) => d.path === openDisk) ?? null : null
   const openMod = open ? modByDevice.get(open.path) ?? null : null
@@ -56,6 +57,7 @@ export const DiskView = ({ disks, selected, openDisk, encryption, swap }: Props)
         <DiskPanel
           d={open}
           mod={openMod}
+          error={error}
           encryptedObjIds={encryption.objIds}
         />
       ) : null}
@@ -110,10 +112,11 @@ const DisksTable = ({
 )
 
 export const DiskPanel = ({
-  d, mod, encryptedObjIds,
+  d, mod, error, encryptedObjIds,
 }: {
   d: DiskInfo
   mod: DeviceModification | null
+  error: string | null
   encryptedObjIds: Set<string>
 }) => {
   const totalSize = d.size
@@ -121,8 +124,15 @@ export const DiskPanel = ({
   const explicitBytes = partitions
     .filter((p) => p.original_size !== 'rest')
     .reduce((acc, p) => acc + sizeBytes(p.size), 0)
-  const remaining = Math.max(0, totalSize - explicitBytes)
   const hasRest = partitions.some((p) => p.original_size === 'rest')
+  // "rest" needs at least 1MiB after the explicit partitions (matches the
+  // GPT-tail margin in buildPartitions). Without "rest", explicit may equal
+  // exactly the disk size.
+  const overflow = hasRest ? explicitBytes >= totalSize : explicitBytes > totalSize
+  const remaining = totalSize - explicitBytes
+  const footerLabel = overflow
+    ? `${formatBytes(explicitBytes)} allocated · over by ${formatBytes(-remaining)}`
+    : `${formatBytes(explicitBytes)} allocated · ${hasRest ? `${formatBytes(remaining)} for "rest"` : `${formatBytes(remaining)} remaining`}`
   return (
     <Section
       title={d.path}
@@ -143,6 +153,7 @@ export const DiskPanel = ({
             ))}
           </div>
         </div>
+        {error ? <div class="alert alert-danger">{error}</div> : null}
         <PartitionTable
           device={d.path}
           partitions={partitions}
@@ -156,9 +167,7 @@ export const DiskPanel = ({
           >
             + Add partition
           </button>
-          <span class="mono small muted">
-            {formatBytes(explicitBytes)} allocated · {hasRest ? `${formatBytes(remaining)} for "rest"` : `${formatBytes(remaining)} remaining`}
-          </span>
+          <span class={`mono small ${overflow ? 'warn' : 'muted'}`}>{footerLabel}</span>
         </div>
       </div>
     </Section>

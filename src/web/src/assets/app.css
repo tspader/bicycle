@@ -201,8 +201,63 @@ a { color: inherit; text-decoration: none; }
   cursor: pointer;
   transition: background var(--transition-fast);
 }
+.btn-install { text-decoration: none; text-align: center; display: block; }
 .btn-install:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-install:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-install:disabled, .btn-install[disabled] { opacity: 0.4; cursor: not-allowed; }
+.btn-install-active { box-shadow: inset 0 0 0 2px var(--fg-strong); }
+
+.install-mode-badge {
+  display: inline-block;
+  padding: var(--s-2) var(--s-3);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  margin-bottom: var(--s-4);
+  border: 1px solid;
+}
+.install-mode-dry  { background: #11251a; color: #b5e5c4; border-color: #1f5a36; }
+.install-mode-wet  { background: var(--danger-bg); color: var(--danger-fg); border-color: var(--danger-border); }
+
+.preflight-problems { margin: 0; padding-left: var(--s-5); color: var(--warn-fg); }
+.preflight-problems li { margin: var(--s-2) 0; }
+
+.install-progress { display: grid; gap: var(--s-3); }
+.install-log {
+  background: #050505;
+  color: var(--fg-1);
+  padding: var(--s-3);
+  border-radius: 4px;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.pill {
+  display: inline-block;
+  padding: 2px var(--s-3);
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--label-tracking);
+  background: var(--bg-input);
+  color: var(--fg-muted);
+  border: 1px solid var(--border-2);
+}
+.pill-info { background: #11253a; color: #b5d5f5; border-color: #1f3f5a; }
+.pill-ok { background: #11251a; color: #b5e5c4; border-color: #1f5a36; }
+.pill-danger { background: var(--danger-bg); color: var(--danger-fg); border-color: var(--danger-border); }
+
+.confirm-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.confirm-card { min-width: 360px; max-width: 520px; }
 
 .content {
   padding: var(--s-7) var(--s-7) var(--s-8);
@@ -301,7 +356,16 @@ a { color: inherit; text-decoration: none; }
 .detail-fields dd { color: var(--fg-1); }
 
 .muted { color: var(--fg-muted); }
+.warn { color: var(--warn-fg); }
 .small { font-size: var(--text-xs); }
+
+.alert {
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: var(--text-sm);
+}
+.alert-danger { background: var(--danger-bg); color: var(--danger-fg); border-color: var(--danger-border); }
 .mono { font-family: var(--font-mono); }
 .link { color: var(--accent); }
 .link:hover { text-decoration: underline; }
