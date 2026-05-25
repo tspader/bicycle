@@ -36,81 +36,99 @@ type Swap = { enabled: boolean; algorithm: 'zstd' | 'lzo-rle' | 'lzo' | 'lz4' | 
 type Props = {
   disks: DiskInfo[]
   selected: DeviceModification[]
+  openDisk: string | null
   encryption: { type: string; password: boolean; objIds: Set<string> }
   swap: Swap
 }
 
-export const DiskView = ({ disks, selected, encryption, swap }: Props) => (
-  <Page heading="Disk" subhead="Pick disks, lay out partitions, set encryption.">
-    <DisksSection disks={disks} selected={new Set(selected.map((d) => d.device))} />
-    {selected.map((d) => {
-      const info = disks.find((x) => x.path === d.device)
-      return (
+export const DiskView = ({ disks, selected, openDisk, encryption, swap }: Props) => {
+  const modByDevice = new Map(selected.map((m) => [m.device, m]))
+  const open = openDisk ? disks.find((d) => d.path === openDisk) ?? null : null
+  const openMod = open ? modByDevice.get(open.path) ?? null : null
+  return (
+    <Page heading="Disk" subhead="Pick disks, lay out partitions, set encryption.">
+      <Section title="Disks" subhead="Click a disk to configure partitions. Disks with partitions get wiped and installed onto.">
+        {disks.length === 0 ? (
+          <p class="empty">No disks detected.</p>
+        ) : (
+          <DisksTable disks={disks} modByDevice={modByDevice} openDisk={openDisk} />
+        )}
+      </Section>
+      {open ? (
         <DiskPanel
-          mod={d}
-          totalSize={info?.size ?? 0}
+          d={open}
+          mod={openMod}
           encryptedObjIds={encryption.objIds}
         />
-      )
-    })}
-    {encryption.objIds.size > 0 ? (
-      <EncryptionSection type={encryption.type} hasPassword={encryption.password} />
-    ) : null}
-    <SwapSection enabled={swap.enabled} algorithm={swap.algorithm} />
-  </Page>
-)
-
-export const DisksSection = ({
-  disks,
-  selected,
-}: {
-  disks: DiskInfo[]
-  selected: Set<string>
-}) => (
-  <Section title="Disks" subhead="Disks to install onto. Selected disks will be wiped.">
-    <div id="disk-list" class="disk-list">
-      {disks.length === 0 ? (
-        <p class="empty">No disks detected.</p>
-      ) : (
-        disks.map((d) => <DiskRow d={d} selected={selected.has(d.path)} />)
-      )}
-    </div>
-  </Section>
-)
-
-const DiskRow = ({ d, selected }: { d: DiskInfo; selected: boolean }) => {
-  const toggleUrl = `/api/disk/toggle?device=${encodeURIComponent(d.path)}`
-  return (
-    <div class="disk-row" data-on:click={`if(evt.target.closest('input')) return; @post('${toggleUrl}')`}>
-      <input
-        type="checkbox"
-        class="pkg-check"
-        checked={selected}
-        data-on:change={`@post('${toggleUrl}')`}
-      />
-      <span class="disk-path mono">{d.path}</span>
-      <span class="disk-model">{d.model}</span>
-      <span class="disk-size mono">{formatBytes(d.size)}</span>
-      <span class="muted small">{d.sectorSize}B sectors</span>
-      {d.isBoot ? <span class="chip chip-warn">boot medium</span> : null}
-    </div>
+      ) : null}
+      {encryption.objIds.size > 0 ? (
+        <EncryptionSection type={encryption.type} hasPassword={encryption.password} />
+      ) : null}
+      <SwapSection enabled={swap.enabled} algorithm={swap.algorithm} />
+    </Page>
   )
 }
 
-export const DiskPanel = ({
-  mod, totalSize, encryptedObjIds,
+const DisksTable = ({
+  disks, modByDevice, openDisk,
 }: {
-  mod: DeviceModification
-  totalSize: number
+  disks: DiskInfo[]
+  modByDevice: Map<string, DeviceModification>
+  openDisk: string | null
+}) => (
+  <table class="table disks-table">
+    <thead>
+      <tr>
+        <th>Path</th>
+        <th>Model</th>
+        <th class="col-size">Size</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {disks.map((d) => {
+        const mod = modByDevice.get(d.path) ?? null
+        const isOpen = openDisk === d.path
+        const openUrl = `/api/disk/open?${isOpen ? '' : `device=${encodeURIComponent(d.path)}`}`
+        const count = mod?.partitions.length ?? 0
+        return (
+          <tr
+            class={`row disks-row${isOpen ? ' row-selected' : ''}`}
+            data-on:click={`@post('${openUrl}')`}
+          >
+            <td class="mono">{d.path}</td>
+            <td>{d.model}</td>
+            <td class="col-size mono">{formatBytes(d.size)}</td>
+            <td class="muted small">
+              {count === 0 ? 'not configured' : `${count} partition${count === 1 ? '' : 's'} · wipes disk`}
+              {d.isBoot ? <span class="chip chip-warn" style="margin-left: var(--s-2)">boot medium</span> : null}
+            </td>
+          </tr>
+        )
+      })}
+    </tbody>
+  </table>
+)
+
+export const DiskPanel = ({
+  d, mod, encryptedObjIds,
+}: {
+  d: DiskInfo
+  mod: DeviceModification | null
   encryptedObjIds: Set<string>
 }) => {
-  const explicitBytes = mod.partitions
+  const totalSize = d.size
+  const partitions = mod?.partitions ?? []
+  const explicitBytes = partitions
     .filter((p) => p.original_size !== 'rest')
     .reduce((acc, p) => acc + sizeBytes(p.size), 0)
   const remaining = Math.max(0, totalSize - explicitBytes)
-  const hasRest = mod.partitions.some((p) => p.original_size === 'rest')
+  const hasRest = partitions.some((p) => p.original_size === 'rest')
   return (
-    <Section title={mod.device} subhead={`GPT · wipe · ${formatBytes(totalSize)}`}>
+    <Section
+      title={d.path}
+      subhead={`${d.model} · GPT · ${formatBytes(totalSize)}`}
+    >
       <div class="disk-panel card">
         <div class="disk-panel-presets">
           <span class="field-label">Presets</span>
@@ -119,7 +137,7 @@ export const DiskPanel = ({
               <button
                 type="button"
                 class="btn btn-sm"
-                data-on:click={`@post('/api/disk/preset?device=${encodeURIComponent(mod.device)}&id=${id}')`}
+                data-on:click={`@post('/api/disk/preset?device=${encodeURIComponent(d.path)}&id=${id}')`}
               >
                 {p.label}
               </button>
@@ -127,15 +145,15 @@ export const DiskPanel = ({
           </div>
         </div>
         <PartitionTable
-          device={mod.device}
-          partitions={mod.partitions}
+          device={d.path}
+          partitions={partitions}
           encryptedObjIds={encryptedObjIds}
         />
         <div class="partition-footer">
           <button
             type="button"
             class="btn"
-            data-on:click={`@post('/api/disk/partition/add?device=${encodeURIComponent(mod.device)}')`}
+            data-on:click={`@post('/api/disk/partition/add?device=${encodeURIComponent(d.path)}')`}
           >
             + Add partition
           </button>

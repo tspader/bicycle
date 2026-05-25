@@ -20,6 +20,7 @@ import {
 } from './views/packages'
 import {
   getCurrentDetail, setCurrentDetail,
+  getOpenDisk, setOpenDisk,
   type CategoryId,
 } from './ui-state'
 import {
@@ -157,10 +158,14 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
       const disks = await listDisks()
       const selected = s.disk_config?.device_modifications ?? []
       const enc = s.disk_config?.disk_encryption
+      const open = getOpenDisk()
+      const validOpen = open && disks.some((d) => d.path === open) ? open : null
+      if (open !== validOpen) setOpenDisk(validOpen)
       return (
         <DiskView
           disks={disks}
           selected={selected}
+          openDisk={validOpen}
           encryption={{
             type: enc?.encryption_type ?? 'luks',
             password: !!s.encryption_password,
@@ -447,20 +452,21 @@ const setEncryptedFlag = (
   }
 }
 
-app.post('/api/disk/toggle', (c) => {
-  const device = requiredQuery(c, 'device')
-  const s = getState()
-  const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
-  const idx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (idx >= 0) {
-    dc.device_modifications.splice(idx, 1)
-  } else {
-    dc.device_modifications.push({ device, wipe: true, partitions: [] })
-  }
-  dc.disk_encryption = recomputeEncryption(dc)
-  setState({ disk_config: dc.device_modifications.length > 0 ? dc : undefined })
+app.post('/api/disk/open', (c) => {
+  const device = c.req.query('device')
+  setOpenDisk(device ?? null)
   return reloadDisk(c)
 })
+
+const ensureDeviceModification = (
+  dc: NonNullable<ArchinstallConfig['disk_config']>,
+  device: string,
+): number => {
+  const idx = dc.device_modifications.findIndex((d) => d.device === device)
+  if (idx >= 0) return idx
+  dc.device_modifications.push({ device, wipe: true, partitions: [] })
+  return dc.device_modifications.length - 1
+}
 
 app.post('/api/disk/preset', (c) => {
   const device = requiredQuery(c, 'device')
@@ -468,10 +474,8 @@ app.post('/api/disk/preset', (c) => {
   const preset = PRESETS[id as keyof typeof PRESETS]
   if (!preset) throw new HTTPException(400, { message: `unknown preset: ${id}` })
   const s = getState()
-  if (!s.disk_config) throw new HTTPException(400, { message: 'no disks selected' })
-  const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
-  const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
+  const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
+  const dIdx = ensureDeviceModification(dc, device)
   const built = buildPartitions(preset.parts, device, machine)
   dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
   if (built.encryptedObjIds.length > 0) {
@@ -492,10 +496,8 @@ app.post('/api/disk/preset', (c) => {
 app.post('/api/disk/partition/add', (c) => {
   const device = requiredQuery(c, 'device')
   const s = getState()
-  if (!s.disk_config) throw new HTTPException(400, { message: 'no disks selected' })
-  const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
-  const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
+  const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
+  const dIdx = ensureDeviceModification(dc, device)
   const existing = dc.device_modifications[dIdx]!.partitions
   const NEW_BYTES = 1024 * 1024 * 1024
   const MIB = 1024 * 1024
@@ -554,9 +556,13 @@ app.post('/api/disk/partition/delete', (c) => {
   if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
   const partitions = [...dc.device_modifications[dIdx]!.partitions]
   partitions.splice(idx, 1)
-  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions }
+  if (partitions.length === 0) {
+    dc.device_modifications.splice(dIdx, 1)
+  } else {
+    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions }
+  }
   dc.disk_encryption = recomputeEncryption(dc)
-  setState({ disk_config: dc })
+  setState({ disk_config: dc.device_modifications.length > 0 ? dc : undefined })
   return reloadDisk(c)
 })
 
