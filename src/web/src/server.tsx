@@ -35,6 +35,7 @@ import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig } from './config'
 import { hashPassword } from './auth'
 import { Api } from './api'
+import { sigSlug } from './slug'
 import appCssPath from "./assets/app.css" with { type: "file" }
 import datastarPath from "./assets/datastar.js" with { type: "file" }
 import faviconPath from "./assets/favicon.ico" with { type: "file" }
@@ -469,8 +470,8 @@ app.post('/api/disk/toggle', (c) => {
 
 app.post('/api/disk/preset', (c) => {
   const device = requiredQuery(c, 'device')
-  const id = requiredQuery(c, 'id') as keyof typeof PRESETS
-  const preset = PRESETS[id]
+  const id = requiredQuery(c, 'id')
+  const preset = PRESETS[id as keyof typeof PRESETS]
   if (!preset) throw new HTTPException(400, { message: `unknown preset: ${id}` })
   const s = getState()
   if (!s.disk_config) throw new HTTPException(400, { message: 'no disks selected' })
@@ -528,10 +529,9 @@ app.post('/api/disk/partition/delete', (c) => {
   return reloadDisk(c)
 })
 
-const sigSlug = (s: string): string => s.replace(/[^a-z0-9]/gi, '_').replace(/^_+/, '')
-
 const PartitionSave = z.object({
-  mount: z.string().min(1),
+  // Mount may be empty: swap and bare LUKS containers have no mountpoint.
+  mount: z.string(),
   fs: FsType,
   size: z.string().min(1),
   start: z.string().optional(),
@@ -571,6 +571,7 @@ app.post('/api/disk/partition/save', (c) => {
 
   // Re-resolve this partition by rebuilding the entire device's partitions
   // (so cursor/start/rest math stays correct across siblings).
+  const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
   const presetParts = parts.map((p, i) => {
     if (i === idx) {
       return {
@@ -592,27 +593,30 @@ app.post('/api/disk/partition/save', (c) => {
       flags: p.flags,
       mount_options: p.mount_options,
       subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-      encrypt: dc.disk_encryption?.partitions.includes(p.obj_id) ?? false,
+      encrypt: prevEncrypted.has(p.obj_id),
     }
   })
   const built = buildPartitions(presetParts, device, machine)
   // Preserve existing obj_ids across rebuild so selection + encryption tracking
-  // stay stable. buildPartitions assigns fresh UUIDs; map them back by index.
-  const remappedEncIds = [...built.encryptedObjIds]
+  // stay stable. buildPartitions always assigns fresh UUIDs; replace them by
+  // index (length is preserved by construction).
+  const newToOldId = new Map<string, string>()
   for (let i = 0; i < built.partitions.length; i++) {
     const oldId = parts[i]?.obj_id
     if (!oldId) continue
     const newId = built.partitions[i]!.obj_id
-    if (oldId === newId) continue
     built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
-    const ei = remappedEncIds.indexOf(newId)
-    if (ei >= 0) remappedEncIds[ei] = oldId
+    newToOldId.set(newId, oldId)
   }
   dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-  if (remappedEncIds.length > 0) {
+  // The form is authoritative for which partitions are encrypted; do not fall
+  // back to recomputeEncryption() here, since the prior dc.disk_encryption still
+  // contains the obj_id the user just toggled off and would re-add it.
+  const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
+  if (encIds.length > 0) {
     dc.disk_encryption = {
       encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-      partitions: remappedEncIds,
+      partitions: encIds,
       lvm_volumes: [],
     }
   } else {

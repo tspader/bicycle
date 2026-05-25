@@ -46,6 +46,7 @@ export const DeviceModification = z.object({
   wipe: z.boolean(),
   partitions: z.array(PartitionConfig),
 })
+export type DeviceModification = z.infer<typeof DeviceModification>
 
 export const EncryptionType = z.enum(['no_encryption', 'luks', 'lvm_on_luks', 'luks_on_lvm'])
 export type EncryptionType = z.infer<typeof EncryptionType>

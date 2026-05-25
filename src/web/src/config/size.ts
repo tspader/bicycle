@@ -27,3 +27,9 @@ export const parseSize = (s: string): Size => {
 }
 
 export const formatSize = (size: Size): string => `${size.value}${size.unit}`
+
+export const UNIT_BYTES: Record<SizeUnit, number> = {
+  B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3, TiB: 1024 ** 4,
+}
+
+export const sizeBytes = (size: Size): number => size.value * UNIT_BYTES[size.unit]

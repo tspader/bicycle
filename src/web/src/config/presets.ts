@@ -1,5 +1,5 @@
 import type { PartitionConfig } from './schema'
-import { DEFAULT_SECTOR, parseSize } from './size'
+import { DEFAULT_SECTOR, parseSize, sizeBytes } from './size'
 import type { MachineCtx } from './machine'
 
 // Each preset is a list of bicycle-shape partitions (size as a string, no
@@ -105,22 +105,18 @@ export const buildPartitions = (
       startBytes = cursor
     }
 
-    let sizeBytes: number
+    let bytes: number
     if (p.size === 'rest') {
       const totalBytes = ctx.diskSize(device)
       const usableEnd = totalBytes - MIB // GPT backup tail
       const restBytes = usableEnd - startBytes
       if (restBytes <= 0) throw new Error(`no space left for "rest" partition ${p.mount}`)
-      sizeBytes = restBytes - (restBytes % MIB)
+      bytes = restBytes - (restBytes % MIB)
     } else {
-      const s = parseSize(p.size)
-      const mul: Record<typeof s.unit, number> = {
-        B: 1, KiB: 1024, MiB: MIB, GiB: 1024 ** 3, TiB: 1024 ** 4,
-      }
-      sizeBytes = s.value * mul[s.unit]
+      bytes = sizeBytes(parseSize(p.size))
     }
 
-    cursor = startBytes + sizeBytes
+    cursor = startBytes + bytes
     const obj_id = ctx.uuid()
     if (p.encrypt) encryptedObjIds.push(obj_id)
 
@@ -132,7 +128,7 @@ export const buildPartitions = (
       mountpoint: p.mount,
       flags: p.flags ?? [],
       start: { unit: 'B', value: startBytes, sector_size: DEFAULT_SECTOR },
-      size: { unit: 'B', value: sizeBytes, sector_size: DEFAULT_SECTOR },
+      size: { unit: 'B', value: bytes, sector_size: DEFAULT_SECTOR },
       btrfs: (p.subvol ?? []).map((s) => ({ name: s.name, mountpoint: s.mount ?? null })),
       dev_path: null,
       mount_options: p.mount_options ?? [],

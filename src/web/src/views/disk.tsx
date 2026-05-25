@@ -1,10 +1,9 @@
 import { Page, Section, Field } from './layout'
 import { SwapSection } from './swap'
-import { PRESETS, type PresetId } from '../config'
-import type { ArchinstallConfig, PartitionConfig, PartitionFlag, FsType } from '../config'
+import { PRESETS, sizeBytes, type PresetId } from '../config'
+import type { DeviceModification, PartitionConfig, PartitionFlag, FsType } from '../config'
 import type { DiskInfo } from '../system'
-
-type DeviceMod = NonNullable<ArchinstallConfig['disk_config']>['device_modifications'][number]
+import { sigSlug } from '../slug'
 
 const FS_OPTIONS: FsType[] = ['fat32', 'ext4', 'btrfs', 'xfs', 'f2fs', 'linux-swap']
 const FLAG_OPTIONS: PartitionFlag[] = ['boot', 'esp', 'swap']
@@ -30,22 +29,13 @@ const formatBytes = (n: number): string => {
   return `${n} B`
 }
 
-const slug = (s: string): string => s.replace(/[^a-z0-9]/gi, '_').replace(/^_+/, '')
-
-const sizeBytes = (p: PartitionConfig): number => {
-  const mul: Record<typeof p.size.unit, number> = {
-    B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3, TiB: 1024 ** 4,
-  }
-  return p.size.value * mul[p.size.unit]
-}
-
 const formatSize = (p: PartitionConfig): string => `${p.size.value}${p.size.unit}`
 
 type Swap = { enabled: boolean; algorithm: 'zstd' | 'lzo-rle' | 'lzo' | 'lz4' | 'lz4hc' }
 
 type Props = {
   disks: DiskInfo[]
-  selected: DeviceMod[]
+  selected: DeviceModification[]
   encryption: { type: string; password: boolean; objIds: Set<string> }
   swap: Swap
   selectedPartObjId: string | null
@@ -112,18 +102,18 @@ const DiskRow = ({ d, selected }: { d: DiskInfo; selected: boolean }) => {
 export const DiskPanel = ({
   mod, totalSize, encryptedObjIds, selectedPartObjId,
 }: {
-  mod: DeviceMod
+  mod: DeviceModification
   totalSize: number
   encryptedObjIds: Set<string>
   selectedPartObjId: string | null
 }) => {
   const explicitBytes = mod.partitions
     .filter((p) => p.original_size !== 'rest')
-    .reduce((acc, p) => acc + sizeBytes(p), 0)
+    .reduce((acc, p) => acc + sizeBytes(p.size), 0)
   const remaining = Math.max(0, totalSize - explicitBytes)
   const hasRest = mod.partitions.some((p) => p.original_size === 'rest')
   const selectedIdx = mod.partitions.findIndex((p) => p.obj_id === selectedPartObjId)
-  const selected = selectedIdx >= 0 ? mod.partitions[selectedIdx]! : null
+  const selected = mod.partitions.find((p) => p.obj_id === selectedPartObjId) ?? null
   return (
     <Section title={mod.device} subhead={`GPT · wipe · ${formatBytes(totalSize)}`}>
       <div class="disk-panel card">
@@ -141,29 +131,21 @@ export const DiskPanel = ({
             ))}
           </div>
         </div>
-        <div class="partition-editor">
-          {selected ? (
-            <PartitionDetail
-              device={mod.device}
-              idx={selectedIdx}
-              p={selected}
-              isFirst={selectedIdx === 0}
-              isEncrypted={encryptedObjIds.has(selected.obj_id)}
-            />
-          ) : (
-            <p class="partition-editor-empty muted">
-              {mod.partitions.length === 0
-                ? 'No partitions. Pick a preset, or add one below.'
-                : 'Select a partition to edit it.'}
-            </p>
-          )}
-        </div>
         <PartitionTable
           device={mod.device}
           partitions={mod.partitions}
           encryptedObjIds={encryptedObjIds}
           selectedPartObjId={selectedPartObjId}
         />
+        {selected ? (
+          <PartitionDetail
+            device={mod.device}
+            idx={selectedIdx}
+            p={selected}
+            isFirst={selectedIdx === 0}
+            isEncrypted={encryptedObjIds.has(selected.obj_id)}
+          />
+        ) : null}
         <div class="partition-footer">
           <button
             type="button"
@@ -269,7 +251,7 @@ const PartitionDetail = ({
   isFirst: boolean
   isEncrypted: boolean
 }) => {
-  const sl = `${slug(device)}_p${idx}`
+  const sl = `${sigSlug(device)}_p${idx}`
   const signals: Record<string, unknown> = {
     [`${sl}_mount`]: p.mountpoint ?? '',
     [`${sl}_fs`]: p.fs_type,
@@ -285,15 +267,15 @@ const PartitionDetail = ({
   const save = `@post('${saveUrl}')`
   const isBtrfs = p.fs_type === 'btrfs'
   return (
-    <form class="partition-form" data-signals={JSON.stringify(signals)}>
-      <header class="partition-form-head">
+    <form class="partition-editor" data-signals={JSON.stringify(signals)}>
+      <header class="partition-editor-head">
         <h3 class="card-title">
           Partition {idx + 1}
           {p.mountpoint ? <span class="muted small"> {p.mountpoint}</span> : null}
         </h3>
         {p.original_size === 'rest' ? <span class="chip">fills disk</span> : null}
       </header>
-      <div class="field-grid field-grid-3">
+      <div class="partition-editor-fields">
         <Field label="Mount" htmlFor={`${sl}-mount`}>
           <input
             id={`${sl}-mount`} class="combo" type="text"
@@ -331,10 +313,7 @@ const PartitionDetail = ({
             data-on:change={save}
           />
         </Field>
-      </div>
-      <div class="partition-form-toggles">
-        <div class="toggle-group">
-          <span class="field-label">Flags</span>
+        <Field label="Flags">
           <div class="chip-row">
             {FLAG_OPTIONS.map((f) => (
               <label class="toggle">
@@ -348,9 +327,8 @@ const PartitionDetail = ({
               </label>
             ))}
           </div>
-        </div>
-        <div class="toggle-group">
-          <span class="field-label">Encrypt</span>
+        </Field>
+        <Field label="Encrypt">
           <label class="toggle">
             <input
               type="checkbox" data-bind={`${sl}_encrypt`} checked={isEncrypted}
@@ -358,7 +336,7 @@ const PartitionDetail = ({
             />
             <span data-text={`$${sl}_encrypt ? 'On' : 'Off'`} />
           </label>
-        </div>
+        </Field>
       </div>
       {isBtrfs ? <SubvolPanel device={device} idx={idx} subvols={p.btrfs} /> : null}
     </form>
@@ -382,19 +360,18 @@ const SubvolPanel = ({
           data-on:click={`@post('${addUrl}')`}
         >+ Add subvolume</button>
       </header>
-      <div class="subvol-scroll">
-        {subvols.length === 0 ? (
-          <p class="muted small subvol-empty">No subvolumes.</p>
-        ) : (
-          <div class="subvol-list">
-            <div class="subvol-row subvol-row-head">
-              <span class="field-label">Name</span>
-              <span />
-              <span class="field-label">Mount</span>
-              <span />
-            </div>
-            {subvols.map((sv, sIdx) => {
-              const sl = `${slug(device)}_p${idx}_sv${sIdx}`
+      {subvols.length === 0 ? (
+        <p class="muted small subvol-empty">No subvolumes.</p>
+      ) : (
+        <div class="subvol-list">
+          <div class="subvol-row subvol-row-head">
+            <span class="field-label">Name</span>
+            <span />
+            <span class="field-label">Mount</span>
+            <span />
+          </div>
+          {subvols.map((sv, sIdx) => {
+              const sl = `${sigSlug(device)}_p${idx}_sv${sIdx}`
               const saveUrl = `/api/disk/partition/subvol/save?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
               const delUrl = `/api/disk/partition/subvol/delete?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
               const signals = { [`${sl}_name`]: sv.name, [`${sl}_mount`]: sv.mountpoint ?? '' }
@@ -420,9 +397,8 @@ const SubvolPanel = ({
                 </div>
               )
             })}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   )
 }

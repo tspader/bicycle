@@ -1,7 +1,7 @@
 import { parse as parseTomlText, stringify as stringifyToml } from 'smol-toml'
 import { z } from 'zod'
 import { ArchinstallConfig, FsType, PartitionFlag, Kernel, Bootloader, EncryptionType } from './schema'
-import { Size, DEFAULT_SECTOR, parseSize, formatSize } from './size'
+import { Size, DEFAULT_SECTOR, parseSize, formatSize, sizeBytes } from './size'
 import { MachineCtx } from './machine'
 
 const MIB = 1024 ** 2
@@ -121,17 +121,6 @@ const NET_MODE: Record<z.infer<typeof BicycleToml>['network'] extends infer T ? 
 const NET_MODE_REVERSE: Record<'iso' | 'nm', 'iso' | 'networkmanager'> = {
   iso: 'iso',
   nm: 'networkmanager',
-}
-
-const sizeBytes = (s: Size): number => {
-  const mul: Record<Size['unit'], number> = {
-    B: 1,
-    KiB: 1024,
-    MiB: 1024 ** 2,
-    GiB: 1024 ** 3,
-    TiB: 1024 ** 4,
-  }
-  return s.value * mul[s.unit]
 }
 
 const addBytes = (a: Size, bytes: number): Size => {
