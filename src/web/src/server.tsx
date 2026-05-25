@@ -20,7 +20,6 @@ import {
 } from './views/packages'
 import {
   getCurrentDetail, setCurrentDetail,
-  getSelectedPart, setSelectedPart,
   type CategoryId,
 } from './ui-state'
 import {
@@ -158,10 +157,6 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
       const disks = await listDisks()
       const selected = s.disk_config?.device_modifications ?? []
       const enc = s.disk_config?.disk_encryption
-      const allObjIds = new Set(selected.flatMap((d) => d.partitions.map((p) => p.obj_id)))
-      const sel = getSelectedPart()
-      const validSel = sel && allObjIds.has(sel) ? sel : null
-      if (sel !== validSel) setSelectedPart(validSel)
       return (
         <DiskView
           disks={disks}
@@ -172,7 +167,6 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
             objIds: new Set(enc?.partitions ?? []),
           }}
           swap={sw}
-          selectedPartObjId={validSel}
         />
       )
     }
@@ -502,17 +496,50 @@ app.post('/api/disk/partition/add', (c) => {
   const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
   const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
   if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
-  const built = buildPartitions(
-    [{ mount: '/', fs: 'ext4', size: '1GiB' }],
-    device,
-    machine,
-  )
   const existing = dc.device_modifications[dIdx]!.partitions
-  const restIdx = existing.findIndex((p) => p.original_size === 'rest')
-  const partitions = restIdx < 0
-    ? [...existing, ...built.partitions]
-    : [...existing.slice(0, restIdx), ...built.partitions, ...existing.slice(restIdx)]
-  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions }
+  const NEW_BYTES = 1024 * 1024 * 1024
+  const MIB = 1024 * 1024
+  const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
+  const presetParts = existing.map((p) => {
+    let size: string
+    if (p.original_size === 'rest') {
+      const remaining = p.size.value - NEW_BYTES
+      if (remaining < MIB) throw new HTTPException(400, { message: 'no space left to add another partition' })
+      size = `${Math.floor(remaining / MIB)}MiB`
+    } else {
+      size = p.original_size ?? `${p.size.value}${p.size.unit}`
+    }
+    return {
+      mount: p.mountpoint ?? '',
+      fs: p.fs_type,
+      size,
+      start: p.original_start,
+      flags: p.flags,
+      mount_options: p.mount_options,
+      subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
+      encrypt: prevEncrypted.has(p.obj_id),
+    }
+  })
+  presetParts.push({ mount: '/', fs: 'ext4', size: '1GiB', start: undefined, flags: [], mount_options: [], subvol: [], encrypt: false })
+  const built = buildPartitions(presetParts, device, machine)
+  const newToOldId = new Map<string, string>()
+  for (let i = 0; i < existing.length; i++) {
+    const oldId = existing[i]!.obj_id
+    const newId = built.partitions[i]!.obj_id
+    built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
+    newToOldId.set(newId, oldId)
+  }
+  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
+  const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
+  if (encIds.length > 0) {
+    dc.disk_encryption = {
+      encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
+      partitions: encIds,
+      lvm_volumes: [],
+    }
+  } else {
+    dc.disk_encryption = undefined
+  }
   setState({ disk_config: dc })
   return reloadDisk(c)
 })
@@ -627,12 +654,6 @@ app.post('/api/disk/partition/save', (c) => {
     dc.disk_encryption = undefined
   }
   setState({ disk_config: dc })
-  return reloadDisk(c)
-})
-
-app.post('/api/disk/partition/select', (c) => {
-  const objId = requiredQuery(c, 'objId')
-  setSelectedPart(objId)
   return reloadDisk(c)
 })
 

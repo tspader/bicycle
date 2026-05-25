@@ -319,6 +319,8 @@ a { color: inherit; text-decoration: none; }
 .btn:hover { background: var(--bg-row-hover); }
 .btn-danger { background: var(--danger-bg); color: var(--danger-fg); border-color: var(--danger-border); }
 .btn-danger:hover { background: var(--danger-bg-hover); }
+.btn-icon.btn-danger { background: transparent; border-color: transparent; color: var(--fg-faint); }
+.btn-icon.btn-danger:hover { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg); }
 .btn-link { color: var(--fg-muted); padding: var(--s-2) var(--s-3); font-size: var(--text-sm); }
 .btn-link:hover { color: var(--fg-1); }
 
@@ -453,61 +455,19 @@ a { color: inherit; text-decoration: none; }
 }
 .disk-panel-presets .field-label { flex-shrink: 0; }
 
-/* Partition detail editor — appears below the partition table when a row is selected. */
-.partition-editor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-5);
-  padding: var(--s-5) var(--s-6) var(--s-6);
-  border-top: 1px solid var(--border-1);
+/* Btrfs subvolumes — rendered as a nested table in an expanded row beneath each btrfs partition. */
+.subvol-expand-row > td {
+  padding: var(--s-3) var(--s-6) var(--s-4) var(--s-8);
   background: var(--row-stripe);
-}
-.partition-editor-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--s-3);
-}
-.partition-editor-head .card-title { margin-bottom: 0; }
-.partition-editor-fields {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-.partition-editor-fields .field {
-  display: grid;
-  grid-template-columns: var(--label-w) minmax(0, 1fr);
-  align-items: center;
-  gap: var(--s-4);
-}
-.partition-editor-fields .field-label { margin: 0; }
-
-/* Btrfs subvolume panel — full-width sub-section below the partition fields. */
-.subvol-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-  padding-top: var(--s-4);
-  border-top: 1px solid var(--border-1);
-}
-.subvol-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-3);
-}
-.subvol-title {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--fg-strong);
-  letter-spacing: var(--label-tracking);
-  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-1);
 }
 .subvol-table { max-width: 720px; }
 .subvol-table .subvol-col-name { width: 40%; }
 .subvol-table .col-del { width: 40px; text-align: right; }
-.subvol-empty { padding: var(--s-2) 0; }
+.subvol-table tbody tr:last-child td { border-bottom: 0; }
+.subvol-add-row { cursor: pointer; color: var(--fg-muted); }
+.subvol-add-row:hover td { background: var(--bg-row-hover); color: var(--fg-2); }
+.subvol-add-row td { font-family: var(--font-mono); font-size: var(--text-sm); }
 .cell-input {
   width: 100%;
   background: transparent;
@@ -523,27 +483,20 @@ a { color: inherit; text-decoration: none; }
 .cell-input:hover { border-color: var(--border-2); }
 .cell-input:focus { outline: none; border-color: var(--accent); background: var(--bg-input); }
 
-/* Partition list table — lives inside the same disk-panel card as the editor. */
+/* Partition list table — inline-editable rows; cell inputs handle hover/focus styling. */
 .partition-table { table-layout: auto; margin: 0; }
 .partition-table thead th:first-child,
 .partition-table tbody td:first-child { padding-left: var(--s-6); }
 .partition-table thead th:last-child,
 .partition-table tbody td:last-child { padding-right: var(--s-6); }
-.partition-table tbody tr.row { cursor: pointer; }
-.partition-table tbody tr.row:last-child td { border-bottom: 0; }
-.partition-table tbody tr.row.row-selected td {
-  background: var(--row-selected-bg);
-  color: var(--fg-strong);
-}
-.partition-table tbody tr.row.row-selected td:first-child {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.partition-table tbody tr.row.row-selected:hover td { background: var(--row-selected-hover-bg); }
+.partition-table tbody tr.partition-row:hover td { background: transparent; }
+.partition-table td { padding: var(--s-1) var(--s-2); }
 .partition-table .col-num   { width: 36px; text-align: right; }
-.partition-table .col-fs    { width: 80px; color: var(--fg-2); }
+.partition-table .col-fs    { width: 110px; }
 .partition-table .col-size  { width: 110px; }
-.partition-table .col-enc   { width: 72px; }
-.partition-table .col-del   { width: 60px; }
+.partition-table .col-start { width: 90px; }
+.partition-table .col-flag  { width: 52px; text-align: center; }
+.partition-table .col-del   { width: 44px; text-align: right; }
 
 .partition-footer {
   display: flex;
