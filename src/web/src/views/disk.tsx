@@ -47,13 +47,11 @@ export const DiskView = ({ disks, selected, openDisk, encryption, swap }: Props)
   const openMod = open ? modByDevice.get(open.path) ?? null : null
   return (
     <Page heading="Disk" subhead="Pick disks, lay out partitions, set encryption.">
-      <Section title="Disks" subhead="Click a disk to configure partitions. Disks with partitions get wiped and installed onto.">
-        {disks.length === 0 ? (
-          <p class="empty">No disks detected.</p>
-        ) : (
-          <DisksTable disks={disks} modByDevice={modByDevice} openDisk={openDisk} />
-        )}
-      </Section>
+      {disks.length === 0 ? (
+        <p class="empty">No disks detected.</p>
+      ) : (
+        <DisksTable disks={disks} modByDevice={modByDevice} openDisk={openDisk} />
+      )}
       {open ? (
         <DiskPanel
           d={open}
@@ -83,6 +81,7 @@ const DisksTable = ({
         <th>Model</th>
         <th class="col-size">Size</th>
         <th>Status</th>
+        <th class="col-boot">Boot</th>
       </tr>
     </thead>
     <tbody>
@@ -100,9 +99,9 @@ const DisksTable = ({
             <td>{d.model}</td>
             <td class="col-size mono">{formatBytes(d.size)}</td>
             <td class="muted small">
-              {count === 0 ? 'not configured' : `${count} partition${count === 1 ? '' : 's'} · wipes disk`}
-              {d.isBoot ? <span class="chip chip-warn" style="margin-left: var(--s-2)">boot medium</span> : null}
+              {count === 0 ? 'unchanged' : `${count} partition${count === 1 ? '' : 's'}`}
             </td>
+            <td class="col-boot muted">{d.isBoot ? 'yes' : 'no'}</td>
           </tr>
         )
       })}
@@ -180,15 +179,14 @@ const PartitionTable = ({
     <table class="table partition-table">
       <thead>
         <tr>
-          <th class="col-num">#</th>
+          <th class="col-del" />
           <th>Mount</th>
           <th class="col-fs">FS</th>
           <th class="col-size">Size</th>
           <th class="col-start">Start</th>
-          <th>Mount options</th>
           {FLAG_OPTIONS.map((f) => <th class="col-flag">{f}</th>)}
           <th class="col-flag">enc</th>
-          <th class="col-del" />
+          <th>Mount options</th>
         </tr>
       </thead>
       <tbody>
@@ -241,7 +239,13 @@ const PartitionRow = ({
   const save = `@post('${saveUrl}')`
   return (
     <tr class="row partition-row" data-signals={JSON.stringify(signals)}>
-      <td class="col-num mono muted">{idx + 1}</td>
+      <td class="col-del">
+        <button
+          type="button" class="btn btn-icon btn-danger"
+          title="Delete partition"
+          data-on:click={`@post('${delUrl}')`}
+        >×</button>
+      </td>
       <td>
         <input
           class="cell-input" type="text"
@@ -272,13 +276,6 @@ const PartitionRow = ({
           />
         ) : <span class="muted">—</span>}
       </td>
-      <td>
-        <input
-          class="cell-input" type="text"
-          data-bind={`${sl}_mount_options`} placeholder="compress=zstd, noatime"
-          data-on:change={save}
-        />
-      </td>
       {FLAG_OPTIONS.map((f) => (
         <td class="col-flag">
           <input
@@ -293,12 +290,12 @@ const PartitionRow = ({
           checked={isEncrypted} data-on:change={save}
         />
       </td>
-      <td class="col-del">
-        <button
-          type="button" class="btn btn-icon btn-danger"
-          title="Delete partition"
-          data-on:click={`@post('${delUrl}')`}
-        >×</button>
+      <td>
+        <input
+          class="cell-input" type="text"
+          data-bind={`${sl}_mount_options`} placeholder="..."
+          data-on:change={save}
+        />
       </td>
     </tr>
   )

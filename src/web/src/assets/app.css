@@ -411,6 +411,7 @@ a { color: inherit; text-decoration: none; }
 .disks-table tbody tr.row.row-selected td { background: var(--row-selected-bg); color: var(--fg-strong); }
 .disks-table tbody tr.row.row-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .disks-table tbody tr.row.row-selected:hover td { background: var(--row-selected-hover-bg); }
+.disks-table .col-boot { width: 60px; }
 .chip {
   display: inline-block;
   padding: var(--s-0) var(--s-3);
