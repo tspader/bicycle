@@ -1,8 +1,12 @@
 import { parse as parseTomlText, stringify as stringifyToml } from 'smol-toml'
 import { z } from 'zod'
-import { ArchinstallConfig, FsType, PartitionFlag, Kernel, Bootloader } from './schema'
+import { ArchinstallConfig, FsType, PartitionFlag, Kernel, Bootloader, EncryptionType } from './schema'
 import { Size, DEFAULT_SECTOR, parseSize, formatSize } from './size'
-import { randomUUID } from 'node:crypto'
+import { MachineCtx } from './machine'
+
+const MIB = 1024 ** 2
+
+export const DEFAULT_MIRROR_URL = 'https://geo.mirror.pkgbuild.com/$repo/os/$arch'
 
 const LoaderName = z.enum(['systemd-boot', 'grub', 'efistub', 'limine', 'refind'])
 const LOADER_TO_ARCHINSTALL: Record<z.infer<typeof LoaderName>, z.infer<typeof Bootloader>> = {
@@ -15,26 +19,34 @@ const LOADER_TO_ARCHINSTALL: Record<z.infer<typeof LoaderName>, z.infer<typeof B
 const ARCHINSTALL_TO_LOADER: Record<z.infer<typeof Bootloader>, z.infer<typeof LoaderName>> =
   Object.fromEntries(Object.entries(LOADER_TO_ARCHINSTALL).map(([k, v]) => [v, k])) as never
 
+const BicycleSubvol = z.object({
+  name: z.string().min(1),
+  mount: z.string().min(1).optional(),
+}).strict()
+
 const BicyclePartition = z.object({
   mount: z.string().min(1),
   fs: FsType,
   size: z.string().min(1),
   start: z.string().min(1).optional(),
   flags: z.array(PartitionFlag).optional(),
-})
+  mount_options: z.array(z.string().min(1)).optional(),
+  subvol: z.array(BicycleSubvol).optional(),
+  encrypt: z.boolean().optional(),
+}).strict()
 
 const BicycleDisk = z.object({
   device: z.string().min(1),
   wipe: z.boolean(),
   table: z.enum(['gpt', 'mbr']),
   partition: z.array(BicyclePartition).min(1),
-})
+}).strict()
 
 const BicycleUser = z.object({
   name: z.string().min(1),
   sudo: z.boolean(),
   groups: z.array(z.string()),
-})
+}).strict()
 
 const BicycleToml = z.object({
   core: z
@@ -44,6 +56,7 @@ const BicycleToml = z.object({
       kernels: z.array(Kernel).min(1),
       ntp: z.boolean(),
     })
+    .strict()
     .optional(),
   locale: z
     .object({
@@ -51,6 +64,7 @@ const BicycleToml = z.object({
       language: z.string().min(1),
       encoding: z.string().min(1),
     })
+    .strict()
     .optional(),
   boot: z
     .object({
@@ -58,6 +72,7 @@ const BicycleToml = z.object({
       uki: z.boolean(),
       removable: z.boolean(),
     })
+    .strict()
     .optional(),
   disk: z.array(BicycleDisk).optional(),
   swap: z
@@ -65,6 +80,7 @@ const BicycleToml = z.object({
       enabled: z.boolean(),
       algorithm: z.enum(['zstd', 'lzo-rle', 'lzo', 'lz4', 'lz4hc']),
     })
+    .strict()
     .optional(),
   user: z.array(BicycleUser).optional(),
   packages: z.record(z.string(), z.array(z.string())).optional(),
@@ -77,29 +93,34 @@ const BicycleToml = z.object({
           regions: z.array(z.string()).min(1),
           custom: z.array(z.string().url()).optional(),
         })
+        .strict()
         .optional(),
     })
+    .strict()
     .optional(),
   network: z
     .object({
-      mode: z.enum(['iso', 'networkmanager', 'iwd', 'manual']),
+      mode: z.enum(['iso', 'networkmanager']),
     })
+    .strict()
+    .optional(),
+  encryption: z
+    .object({
+      type: z.enum(['luks', 'lvm_on_luks', 'luks_on_lvm']),
+    })
+    .strict()
     .optional(),
 }).strict()
 export type BicycleToml = z.infer<typeof BicycleToml>
 
-const NET_MODE: Record<z.infer<typeof BicycleToml>['network'] extends infer T ? T extends { mode: infer M } ? M : never : never, 'iso' | 'nm' | 'nm_iwd' | 'manual'> = {
+const NET_MODE: Record<z.infer<typeof BicycleToml>['network'] extends infer T ? T extends { mode: infer M } ? M : never : never, 'iso' | 'nm'> = {
   iso: 'iso',
   networkmanager: 'nm',
-  iwd: 'nm_iwd',
-  manual: 'manual',
 }
 
-const NET_MODE_REVERSE: Record<'iso' | 'nm' | 'nm_iwd' | 'manual', 'iso' | 'networkmanager' | 'iwd' | 'manual'> = {
+const NET_MODE_REVERSE: Record<'iso' | 'nm', 'iso' | 'networkmanager'> = {
   iso: 'iso',
   nm: 'networkmanager',
-  nm_iwd: 'iwd',
-  manual: 'manual',
 }
 
 const sizeBytes = (s: Size): number => {
@@ -109,9 +130,7 @@ const sizeBytes = (s: Size): number => {
     MiB: 1024 ** 2,
     GiB: 1024 ** 3,
     TiB: 1024 ** 4,
-    Percent: 0,
   }
-  if (s.unit === 'Percent') throw new Error('cannot resolve Percent size to bytes')
   return s.value * mul[s.unit]
 }
 
@@ -120,7 +139,7 @@ const addBytes = (a: Size, bytes: number): Size => {
   return { unit: 'B', value: total, sector_size: DEFAULT_SECTOR }
 }
 
-export const fromToml = (text: string): ArchinstallConfig => {
+export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
   const raw = parseTomlText(text)
   const bike = BicycleToml.parse(raw)
   const out: ArchinstallConfig = {}
@@ -149,58 +168,98 @@ export const fromToml = (text: string): ArchinstallConfig => {
   }
 
   if (bike.disk) {
+    const encryptedObjIds: string[] = []
+    const device_modifications = bike.disk.map((d) => {
+      const last = d.partition.length - 1
+      let cursor: Size | null = null
+      return {
+        device: d.device,
+        wipe: d.wipe,
+        partitions: d.partition.map((p, i) => {
+          if (p.fs !== 'btrfs' && p.subvol && p.subvol.length > 0) {
+            throw new Error(`disk ${d.device} partition ${p.mount}: subvol requires fs="btrfs"`)
+          }
+          if (p.size === 'rest' && i !== last) {
+            throw new Error(`disk ${d.device} partition ${p.mount}: "rest" is only allowed on the last partition`)
+          }
+          let start: Size
+          if (p.start) {
+            start = parseSize(p.start)
+          } else if (i === 0) {
+            throw new Error(`disk ${d.device}: first partition must specify start`)
+          } else if (cursor === null) {
+            throw new Error(`disk ${d.device}: cannot derive start`)
+          } else {
+            start = cursor
+          }
+          let size: Size
+          if (p.size === 'rest') {
+            const totalBytes = ctx.diskSize(d.device)
+            // Leave 1 MiB at the tail for the GPT backup header, then align down.
+            const usableEnd = d.table === 'gpt' ? totalBytes - MIB : totalBytes
+            const restBytes = usableEnd - sizeBytes(start)
+            if (restBytes <= 0) {
+              throw new Error(`disk ${d.device}: no space left for "rest" partition ${p.mount}`)
+            }
+            const aligned = restBytes - (restBytes % MIB)
+            size = { unit: 'B', value: aligned, sector_size: DEFAULT_SECTOR }
+          } else {
+            size = parseSize(p.size)
+          }
+          cursor = addBytes(start, sizeBytes(size))
+          const obj_id = ctx.uuid()
+          if (p.encrypt) encryptedObjIds.push(obj_id)
+          return {
+            obj_id,
+            status: 'create' as const,
+            type: 'primary' as const,
+            fs_type: p.fs,
+            mountpoint: p.mount,
+            flags: p.flags ?? [],
+            start,
+            size,
+            btrfs: (p.subvol ?? []).map((s) => ({ name: s.name, mountpoint: s.mount ?? null })),
+            dev_path: null,
+            mount_options: p.mount_options ?? [],
+            original_size: p.size,
+            ...(p.start ? { original_start: p.start } : {}),
+          }
+        }),
+      }
+    })
+
+    const wantsEncryption = encryptedObjIds.length > 0
+    if (wantsEncryption && !bike.encryption) {
+      throw new Error('partitions marked encrypt=true require an [encryption] block')
+    }
+    if (bike.encryption && !wantsEncryption) {
+      throw new Error('[encryption] block requires at least one partition with encrypt=true')
+    }
+
     out.disk_config = {
       config_type: 'manual_partitioning',
       btrfs_options: { snapshot_config: null },
-      device_modifications: bike.disk.map((d) => {
-        let cursor: Size | null = null
-        return {
-          device: d.device,
-          wipe: d.wipe,
-          partitions: d.partition.map((p, i) => {
-            const size = parseSize(p.size)
-            let start: Size
-            if (p.start) {
-              start = parseSize(p.start)
-            } else if (i === 0) {
-              throw new Error(`disk ${d.device}: first partition must specify start`)
-            } else if (cursor === null) {
-              throw new Error(`disk ${d.device}: cannot derive start after a non-byte-sized partition`)
-            } else {
-              start = cursor
-            }
-            if (size.unit !== 'Percent') {
-              cursor = addBytes(start, sizeBytes(size))
-            } else {
-              cursor = null
-            }
-            return {
-              obj_id: randomUUID(),
-              status: 'create' as const,
-              type: 'primary' as const,
-              fs_type: p.fs,
-              mountpoint: p.mount,
-              flags: p.flags ?? [],
-              start,
-              size,
-              btrfs: [],
-              dev_path: null,
-              mount_options: [],
-            }
-          }),
-        }
-      }),
+      device_modifications,
+      ...(bike.encryption
+        ? {
+            disk_encryption: {
+              encryption_type: bike.encryption.type as EncryptionType,
+              partitions: encryptedObjIds,
+              lvm_volumes: [],
+            },
+          }
+        : {}),
     }
+  } else if (bike.encryption) {
+    throw new Error('[encryption] block requires at least one [[disk]]')
   }
 
   if (bike.swap) out.swap = bike.swap
   if (bike.user) {
-    out.users = bike.user.map((u) => ({
-      username: u.name,
-      sudo: u.sudo,
-      groups: u.groups,
-      enc_password: null,
-    }))
+    // BicycleToml has no password field; users from TOML can't be applied without a password.
+    if (bike.user.length > 0) {
+      throw new Error('user accounts in TOML are not supported (passwords cannot be expressed safely in checked-in config)')
+    }
   }
   if (bike.packages) out.packages = Object.values(bike.packages).flat().sort()
   if (bike.network) out.network_config = { type: NET_MODE[bike.network.mode] }
@@ -214,7 +273,7 @@ export const fromToml = (text: string): ArchinstallConfig => {
     }
     if (bike.pacman.mirrors) {
       const regions: Record<string, string[]> = {}
-      for (const r of bike.pacman.mirrors.regions) regions[r] = []
+      for (const r of bike.pacman.mirrors.regions) regions[r] = [DEFAULT_MIRROR_URL]
       out.mirror_config = {
         mirror_regions: regions,
         custom_servers: (bike.pacman.mirrors.custom ?? []).map((url) => ({ url })),
@@ -256,22 +315,34 @@ export const toToml = (cfg: ArchinstallConfig, packageRepos: Record<string, stri
   }
 
   if (cfg.disk_config) {
+    const encryptedSet = new Set(cfg.disk_config.disk_encryption?.partitions ?? [])
     bike.disk = cfg.disk_config.device_modifications.map((d) => ({
       device: d.device,
       wipe: d.wipe,
       table: 'gpt',
       partition: d.partitions.map((p, i) => {
-        const isLast = i === d.partitions.length - 1
         const out: Record<string, unknown> = {
           mount: p.mountpoint ?? '',
           fs: p.fs_type,
-          size: formatSize(p.size, { isLast }),
+          size: p.original_size ?? formatSize(p.size),
         }
-        if (i === 0) out.start = formatSize(p.start)
+        if (i === 0) out.start = p.original_start ?? formatSize(p.start)
         if (p.flags.length > 0) out.flags = p.flags
+        if (p.mount_options.length > 0) out.mount_options = p.mount_options
+        if (p.btrfs.length > 0) {
+          out.subvol = p.btrfs.map((s) => {
+            const sv: Record<string, unknown> = { name: s.name }
+            if (s.mountpoint) sv.mount = s.mountpoint
+            return sv
+          })
+        }
+        if (encryptedSet.has(p.obj_id)) out.encrypt = true
         return out
       }),
     }))
+    if (cfg.disk_config.disk_encryption && cfg.disk_config.disk_encryption.encryption_type !== 'no_encryption') {
+      bike.encryption = { type: cfg.disk_config.disk_encryption.encryption_type }
+    }
   }
 
   if (cfg.swap) bike.swap = cfg.swap

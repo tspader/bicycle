@@ -9,10 +9,18 @@ const LOADER_TO_BOOTLOADER = {
   refind: 'Refind',
 } as const satisfies Record<string, z.infer<typeof BootloaderEnum>>
 
-const UserFieldsBase = z.object({
+const userFieldsShape = {
   username: z.string().min(1).max(32),
   sudo: z.boolean(),
   groups: z.string(),
+} as const
+
+const UserCreateFields = z.object({
+  ...userFieldsShape,
+  password: z.string().min(1, 'password required'),
+})
+const UserUpdateFields = z.object({
+  ...userFieldsShape,
   password: z.string(),
 })
 
@@ -52,13 +60,13 @@ export namespace Api {
       removable: v.removable,
     }))
 
-  export const Network = z.object({ mode: z.enum(['iso', 'nm', 'nm_iwd', 'manual']) })
+  export const Network = z.object({ mode: z.enum(['iso', 'nm']) })
 
   export const Timezone = z.object({ timezone: z.string().min(1) })
 
   export const RootPassword = z.object({ root_password: z.string() })
 
-  export const UserFields = (prefix: string) =>
+  export const UserFields = (prefix: string, mode: 'create' | 'update') =>
     z.preprocess((signals) => {
       const s = (signals ?? {}) as Record<string, unknown>
       return {
@@ -67,5 +75,5 @@ export namespace Api {
         groups: s[`${prefix}_groups`],
         password: s[`${prefix}_password`],
       }
-    }, UserFieldsBase)
+    }, mode === 'create' ? UserCreateFields : UserUpdateFields)
 }

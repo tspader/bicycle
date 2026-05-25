@@ -4,7 +4,7 @@
   "scripts": {
     "start": "bun run src/server.tsx",
     "dev": "bun --hot run src/server.tsx",
-    "smoke": "bun run tools/smoke.ts"
+    "test": "bun test"
   },
   "dependencies": {
     "@starfederation/datastar": "^1.0.0-beta.11",

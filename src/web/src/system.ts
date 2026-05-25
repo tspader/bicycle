@@ -180,6 +180,59 @@ export const packageDetail = async (name: string): Promise<PackageDetail | null>
   }
 }
 
+export type DiskInfo = {
+  path: string
+  model: string
+  size: number
+  sectorSize: number
+  isBoot: boolean
+}
+
+const bootSourceDevices = async (): Promise<Set<string>> => {
+  const out = new Set<string>()
+  for (const mnt of ['/run/archiso/bootmnt', '/']) {
+    const src = (await runText(['findmnt', '-n', '-o', 'SOURCE', mnt])).trim()
+    if (!src) continue
+    const parent = (await runText(['lsblk', '-ndo', 'PKNAME', src])).trim()
+    out.add(parent ? `/dev/${parent}` : src)
+  }
+  return out
+}
+
+type LsblkRaw = {
+  blockdevices?: Array<{
+    name?: string
+    size?: number
+    model?: string | null
+    'log-sec'?: number
+    type?: string
+  }>
+}
+
+export const listDisks = async (): Promise<DiskInfo[]> => {
+  const text = await runText(['lsblk', '-bdJno', 'NAME,SIZE,MODEL,LOG-SEC,TYPE'])
+  let parsed: LsblkRaw = {}
+  try {
+    parsed = JSON.parse(text) as LsblkRaw
+  } catch {
+    return []
+  }
+  const boot = await bootSourceDevices()
+  const out: DiskInfo[] = []
+  for (const d of parsed.blockdevices ?? []) {
+    if (d.type !== 'disk' || !d.name || typeof d.size !== 'number') continue
+    const path = `/dev/${d.name}`
+    out.push({
+      path,
+      model: (d.model ?? '').trim() || 'Unknown',
+      size: d.size,
+      sectorSize: d['log-sec'] ?? 512,
+      isBoot: boot.has(path),
+    })
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path))
+}
+
 export const syncPacman = async (): Promise<{ ok: boolean; error?: string }> => {
   try {
     const proc = spawn(['pacman', '-Sy', '--noconfirm'], {

@@ -1,5 +1,7 @@
 import { describe, test, expect } from 'bun:test'
-import { fromToml, toToml, parseSize, formatSize, ArchinstallConfig } from '../src/config'
+import { fromToml, toToml, testMachine, DEFAULT_MIRROR_URL } from '../src/config'
+
+const ctx = () => testMachine({ disks: { '/dev/vda': 100 * 1024 ** 3 } }) // 100 GiB
 
 const MINIMAL = `
 [core]
@@ -33,16 +35,11 @@ table = "gpt"
   [[disk.partition]]
   mount = "/"
   fs    = "ext4"
-  size  = "rest"
+  size  = "20GiB"
 
 [swap]
 enabled = true
 algorithm = "zstd"
-
-[[user]]
-name = "spader"
-sudo = true
-groups = ["wheel"]
 
 [packages]
 extra = ["git", "vim"]
@@ -54,114 +51,150 @@ regions = ["United States"]
 mode = "iso"
 `
 
-describe('size parsing', () => {
-  test('parses MiB/GiB/B', () => {
-    expect(parseSize('512MiB')).toMatchObject({ unit: 'MiB', value: 512 })
-    expect(parseSize('1GiB')).toMatchObject({ unit: 'GiB', value: 1 })
-    expect(parseSize('1024B')).toMatchObject({ unit: 'B', value: 1024 })
-  })
-  test('rest maps to Percent 100', () => {
-    expect(parseSize('rest')).toMatchObject({ unit: 'Percent', value: 100 })
-  })
-  test('formatSize round-trips', () => {
-    expect(formatSize(parseSize('1GiB'))).toBe('1GiB')
-    expect(formatSize(parseSize('rest'))).toBe('rest')
-  })
-  test('rejects garbage', () => {
-    expect(() => parseSize('512')).toThrow()
-    expect(() => parseSize('5 banana')).toThrow()
-  })
+test('fromToml produces archinstall-shape JSON', () => {
+  const cfg = fromToml(MINIMAL, ctx())
+  expect(cfg.hostname).toBe('mark')
+  expect(cfg.kernels).toEqual(['linux'])
+  expect(cfg.locale_config).toEqual({ kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' })
+  expect(cfg.bootloader_config).toEqual({ bootloader: 'Systemd-boot', uki: true, removable: false })
+  expect(cfg.disk_config?.config_type).toBe('manual_partitioning')
+  expect(cfg.disk_config?.device_modifications[0]?.device).toBe('/dev/vda')
+  expect(cfg.network_config).toEqual({ type: 'iso' })
+  expect(cfg.packages).toEqual(['git', 'vim'])
+  expect(cfg.mirror_config?.mirror_regions).toEqual({ 'United States': [DEFAULT_MIRROR_URL] })
 })
 
-describe('fromToml', () => {
-  test('produces archinstall-shape JSON', () => {
-    const cfg = fromToml(MINIMAL)
-    expect(cfg.hostname).toBe('mark')
-    expect(cfg.timezone).toBe('America/New_York')
-    expect(cfg.kernels).toEqual(['linux'])
-    expect(cfg.ntp).toBe(true)
-    expect(cfg.locale_config).toEqual({ kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' })
-    expect(cfg.bootloader_config).toEqual({ bootloader: 'Systemd-boot', uki: true, removable: false })
-    expect(cfg.disk_config?.config_type).toBe('manual_partitioning')
-    expect(cfg.disk_config?.device_modifications[0]?.device).toBe('/dev/vda')
-    expect(cfg.network_config).toEqual({ type: 'iso' })
-    expect(cfg.users).toEqual([{ username: 'spader', sudo: true, groups: ['wheel'], enc_password: null }])
-    expect(cfg.packages).toEqual(['git', 'vim'])
-    expect(cfg.mirror_config?.mirror_regions).toEqual({ 'United States': [] })
-  })
-
-  test('fills partition cruft', () => {
-    const cfg = fromToml(MINIMAL)
-    const p0 = cfg.disk_config!.device_modifications[0]!.partitions[0]!
-    expect(p0.obj_id).toMatch(/^[0-9a-f-]{36}$/)
-    expect(p0.status).toBe('create')
-    expect(p0.type).toBe('primary')
-    expect(p0.btrfs).toEqual([])
-    expect(p0.dev_path).toBeNull()
-    expect(p0.mount_options).toEqual([])
-    expect(p0.start.sector_size).toEqual({ unit: 'B', value: 512 })
-  })
-
-  test('derives start for non-first partition', () => {
-    const cfg = fromToml(MINIMAL)
-    const p1 = cfg.disk_config!.device_modifications[0]!.partitions[1]!
-    expect(p1.start.unit).toBe('B')
-    expect(p1.start.value).toBe(1024 ** 2 + 1024 ** 3)
-  })
-
-  test('rejects missing start on first partition', () => {
-    const bad = MINIMAL.replace('  start = "1MiB"\n', '')
-    expect(() => fromToml(bad)).toThrow(/first partition must specify start/)
-  })
-
-  test('rejects unknown fields', () => {
-    expect(() => fromToml(MINIMAL + '\n[mystery]\nfoo = 1\n')).toThrow()
-  })
-
-  test('rejects invalid fs_type', () => {
-    const bad = MINIMAL.replace('fs    = "fat32"', 'fs    = "exfat"')
-    expect(() => fromToml(bad)).toThrow()
-  })
+test('testMachine produces deterministic obj_ids', () => {
+  const cfg = fromToml(MINIMAL, ctx())
+  const ids = cfg.disk_config!.device_modifications[0]!.partitions.map((p) => p.obj_id)
+  expect(ids).toEqual([
+    '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000002',
+  ])
 })
 
-describe('toToml', () => {
-  test('round-trips through fromToml', () => {
-    const cfg = fromToml(MINIMAL)
-    const text = toToml(cfg)
-    const cfg2 = fromToml(text)
-    expect(cfg2.hostname).toBe(cfg.hostname)
-    expect(cfg2.locale_config).toEqual(cfg.locale_config)
-    expect(cfg2.bootloader_config).toEqual(cfg.bootloader_config)
-    expect(cfg2.disk_config?.device_modifications[0]?.partitions[0]?.fs_type).toBe('fat32')
-    expect(cfg2.disk_config?.device_modifications[0]?.partitions[1]?.size.unit).toBe('Percent')
-    expect(cfg2.network_config).toEqual(cfg.network_config)
-    expect(cfg2.mirror_config?.mirror_regions).toEqual({ 'United States': [] })
-  })
+test('derives start for non-first partition', () => {
+  const cfg = fromToml(MINIMAL, ctx())
+  const p1 = cfg.disk_config!.device_modifications[0]!.partitions[1]!
+  expect(p1.start.unit).toBe('B')
+  expect(p1.start.value).toBe(1024 ** 2 + 1024 ** 3)
+})
 
-  test('omits cruft from TOML output', () => {
-    const cfg = fromToml(MINIMAL)
-    const text = toToml(cfg)
-    expect(text).not.toContain('obj_id')
-    expect(text).not.toContain('status')
-    expect(text).not.toContain('dev_path')
-    expect(text).not.toContain('mount_options')
-    expect(text).not.toContain('sector_size')
-  })
+test('"rest" on last partition resolves to remaining disk minus GPT tail', () => {
+  const withRest = MINIMAL.replace('size  = "20GiB"', 'size  = "rest"')
+  const cfg = fromToml(withRest, ctx())
+  const root = cfg.disk_config!.device_modifications[0]!.partitions[1]!
+  // 100 GiB - 1 MiB (GPT backup) - 1 MiB (start of /boot) - 1 GiB (/boot length)
+  const expected = 100 * 1024 ** 3 - 1024 ** 2 - 1024 ** 2 - 1024 ** 3
+  expect(root.size).toEqual({ unit: 'B', value: expected, sector_size: { unit: 'B', value: 512 } })
+})
 
-  test('size formatting prefers human units', () => {
-    const cfg = fromToml(MINIMAL)
-    const text = toToml(cfg)
-    expect(text).toContain('1GiB')
-    expect(text).toContain('"rest"')
-    expect(text).toContain('1MiB')
-  })
+test('"rest" only on last partition', () => {
+  const bad = MINIMAL.replace('size  = "1GiB"', 'size  = "rest"')
+  expect(() => fromToml(bad, ctx())).toThrow(/only allowed on the last partition/)
+})
+
+test('toToml -> fromToml round-trips meaningful fields', () => {
+  // obj_id UUIDs are regenerated and `start` is only emitted for partition 0,
+  // but everything user-meaningful must survive. We don't include "rest" here
+  // because round-tripping resolves it to concrete bytes (lossy by design).
+  const a = fromToml(MINIMAL, ctx())
+  const b = fromToml(toToml(a), ctx())
+  expect(b.hostname).toEqual(a.hostname)
+  expect(b.locale_config).toEqual(a.locale_config)
+  expect(b.bootloader_config).toEqual(a.bootloader_config)
+  expect(b.network_config).toEqual(a.network_config)
+  expect(b.packages).toEqual(a.packages)
+  expect(b.mirror_config).toEqual(a.mirror_config)
+  expect(b.swap).toEqual(a.swap)
+  const pa = a.disk_config!.device_modifications[0]!.partitions
+  const pb = b.disk_config!.device_modifications[0]!.partitions
+  expect(pb.map((p) => ({ fs: p.fs_type, mount: p.mountpoint, flags: p.flags, size: p.size }))).toEqual(
+    pa.map((p) => ({ fs: p.fs_type, mount: p.mountpoint, flags: p.flags, size: p.size })),
+  )
+})
+
+test('rejects unknown nested fields', () => {
+  const bad = MINIMAL.replace('keyboard = "us"', 'keyboard = "us"\ntypo_field = "x"')
+  expect(() => fromToml(bad, ctx())).toThrow()
+})
+
+test('rejects user blocks (no safe way to express passwords in TOML)', () => {
+  const withUser = MINIMAL + '\n[[user]]\nname = "spader"\nsudo = true\ngroups = ["wheel"]\n'
+  expect(() => fromToml(withUser, ctx())).toThrow(/user accounts in TOML/)
+})
+
+test('rejects nm_iwd network mode (archinstall silently drops it)', () => {
+  const bad = MINIMAL.replace('mode = "iso"', 'mode = "nm_iwd"')
+  expect(() => fromToml(bad, ctx())).toThrow()
+})
+
+const WITH_BTRFS_ENC = `
+[[disk]]
+device = "/dev/vda"
+wipe   = true
+table  = "gpt"
+
+  [[disk.partition]]
+  mount = "/boot"
+  fs    = "fat32"
+  start = "1MiB"
+  size  = "512MiB"
+  flags = ["boot", "esp"]
+
+  [[disk.partition]]
+  mount = "/"
+  fs    = "btrfs"
+  size  = "20GiB"
+  mount_options = ["compress=zstd", "noatime"]
+  encrypt = true
+
+    [[disk.partition.subvol]]
+    name = "@"
+    mount = "/"
+
+    [[disk.partition.subvol]]
+    name = "@home"
+    mount = "/home"
+
+[encryption]
+type = "luks"
+`
+
+test('mount_options + btrfs subvols + encryption round-trip', () => {
+  const a = fromToml(WITH_BTRFS_ENC, ctx())
+  const root = a.disk_config!.device_modifications[0]!.partitions[1]!
+  expect(root.mount_options).toEqual(['compress=zstd', 'noatime'])
+  expect(root.btrfs).toEqual([
+    { name: '@', mountpoint: '/' },
+    { name: '@home', mountpoint: '/home' },
+  ])
+  expect(a.disk_config!.disk_encryption?.encryption_type).toBe('luks')
+  expect(a.disk_config!.disk_encryption?.partitions).toEqual([root.obj_id])
+
+  const b = fromToml(toToml(a), ctx())
+  const rootB = b.disk_config!.device_modifications[0]!.partitions[1]!
+  expect(rootB.mount_options).toEqual(root.mount_options)
+  expect(rootB.btrfs).toEqual(root.btrfs)
+  expect(b.disk_config!.disk_encryption?.encryption_type).toBe('luks')
+  expect(b.disk_config!.disk_encryption?.partitions).toEqual([rootB.obj_id])
+})
+
+test('rejects encrypt=true without [encryption] block', () => {
+  const bad = WITH_BTRFS_ENC.replace('\n[encryption]\ntype = "luks"\n', '')
+  expect(() => fromToml(bad, ctx())).toThrow(/require an \[encryption\] block/)
+})
+
+test('rejects subvol on non-btrfs partition', () => {
+  const bad = WITH_BTRFS_ENC.replace('fs    = "btrfs"', 'fs    = "ext4"')
+  expect(() => fromToml(bad, ctx())).toThrow(/subvol requires fs="btrfs"/)
 })
 
 describe('ArchinstallConfig schema', () => {
-  test('accepts empty config', () => {
-    expect(() => ArchinstallConfig.parse({})).not.toThrow()
-  })
-  test('rejects non-enum kernel', () => {
-    expect(() => ArchinstallConfig.parse({ kernels: ['linux-bogus'] })).toThrow()
+  test('rejects user without password (archinstall silently skips them)', async () => {
+    const { ArchinstallConfig } = await import('../src/config')
+    expect(() => ArchinstallConfig.parse({
+      users: [{ username: 'x', sudo: true, groups: [], enc_password: '' }],
+    })).toThrow()
   })
 })

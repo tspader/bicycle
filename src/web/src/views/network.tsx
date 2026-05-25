@@ -3,8 +3,6 @@ import { Field, Section } from './layout'
 const MODES = [
   { id: 'iso', label: 'Copy ISO config' },
   { id: 'nm', label: 'NetworkManager' },
-  { id: 'nm_iwd', label: 'NetworkManager (iwd)' },
-  { id: 'manual', label: 'Manual (not yet)' },
 ] as const
 
 export const NetworkSection = ({ mode }: { mode: (typeof MODES)[number]['id'] }) => (

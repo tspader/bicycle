@@ -142,6 +142,7 @@ const AddUserSlot = () => {
             type="password"
             data-bind="new_password"
             placeholder="••••••"
+            required
           />
         </Field>
         <Field label="Sudo" htmlFor="new-sudo">

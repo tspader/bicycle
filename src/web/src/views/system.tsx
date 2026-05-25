@@ -14,7 +14,7 @@ type Props = {
     encodings: string[]
   }
   time: { zone: string; zones: string[]; ntp: boolean }
-  network: { mode: 'iso' | 'nm' | 'nm_iwd' | 'manual' }
+  network: { mode: 'iso' | 'nm' }
 }
 
 export const SystemView = ({ hostname, locale, time, network }: Props) => (
