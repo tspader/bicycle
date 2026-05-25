@@ -4,3 +4,4 @@
 - Prefer to use TypeScript for scripts and utilities, not Bash
 - Never use FC or PropsWithChildren for functional components
 - Put any intermediate artifacts (e.g. Playwright screenshots) in .llm/playwright/
+- Prefer existing semantic tokens instead of making up new ones

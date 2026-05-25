@@ -507,7 +507,11 @@ app.post('/api/disk/partition/add', (c) => {
     device,
     machine,
   )
-  const partitions = [...dc.device_modifications[dIdx]!.partitions, ...built.partitions]
+  const existing = dc.device_modifications[dIdx]!.partitions
+  const restIdx = existing.findIndex((p) => p.original_size === 'rest')
+  const partitions = restIdx < 0
+    ? [...existing, ...built.partitions]
+    : [...existing.slice(0, restIdx), ...built.partitions, ...existing.slice(restIdx)]
   dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions }
   setState({ disk_config: dc })
   return reloadDisk(c)

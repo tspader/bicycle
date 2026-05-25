@@ -363,41 +363,49 @@ const SubvolPanel = ({
       {subvols.length === 0 ? (
         <p class="muted small subvol-empty">No subvolumes.</p>
       ) : (
-        <div class="subvol-list">
-          <div class="subvol-row subvol-row-head">
-            <span class="field-label">Name</span>
-            <span />
-            <span class="field-label">Mount</span>
-            <span />
-          </div>
-          {subvols.map((sv, sIdx) => {
+        <table class="table subvol-table">
+          <thead>
+            <tr>
+              <th class="subvol-col-name">Name</th>
+              <th>Mount</th>
+              <th class="col-del" />
+            </tr>
+          </thead>
+          <tbody>
+            {subvols.map((sv, sIdx) => {
               const sl = `${sigSlug(device)}_p${idx}_sv${sIdx}`
               const saveUrl = `/api/disk/partition/subvol/save?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
               const delUrl = `/api/disk/partition/subvol/delete?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
               const signals = { [`${sl}_name`]: sv.name, [`${sl}_mount`]: sv.mountpoint ?? '' }
               const save = `@post('${saveUrl}')`
               return (
-                <div class="subvol-row" data-signals={JSON.stringify(signals)}>
-                  <input
-                    class="combo sv-name" type="text"
-                    data-bind={`${sl}_name`} placeholder="@home"
-                    data-on:change={save}
-                  />
-                  <span class="muted subvol-arrow">→</span>
-                  <input
-                    class="combo sv-mount" type="text"
-                    data-bind={`${sl}_mount`} placeholder="/home"
-                    data-on:change={save}
-                  />
-                  <button
-                    type="button" class="btn btn-icon btn-danger"
-                    title="Delete subvolume"
-                    data-on:click={`@post('${delUrl}')`}
-                  >×</button>
-                </div>
+                <tr class="row subvol-row" data-signals={JSON.stringify(signals)}>
+                  <td class="subvol-col-name">
+                    <input
+                      class="cell-input" type="text"
+                      data-bind={`${sl}_name`} placeholder="@home"
+                      data-on:change={save}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      class="cell-input" type="text"
+                      data-bind={`${sl}_mount`} placeholder="/home"
+                      data-on:change={save}
+                    />
+                  </td>
+                  <td class="col-del">
+                    <button
+                      type="button" class="btn btn-icon btn-danger"
+                      title="Delete subvolume"
+                      data-on:click={`@post('${delUrl}')`}
+                    >×</button>
+                  </td>
+                </tr>
               )
             })}
-        </div>
+          </tbody>
+        </table>
       )}
     </section>
   )
