@@ -10,9 +10,10 @@
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",
+    "@spader/zargs": "catalog:",
+    "age-encryption": "catalog:",
     "hono": "catalog:",
-    "yargs": "catalog:",
-    "@spader/zargs": "catalog:"
+    "yargs": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",

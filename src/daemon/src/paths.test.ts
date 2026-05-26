@@ -1,0 +1,52 @@
+import { test, expect, beforeEach, afterEach } from "bun:test";
+import { paths } from "./paths";
+
+let savedEtc: string | undefined;
+let savedVar: string | undefined;
+let savedRun: string | undefined;
+
+beforeEach(() => {
+  savedEtc = process.env.BICYCLE_ETC;
+  savedVar = process.env.BICYCLE_VAR;
+  savedRun = process.env.BICYCLE_RUN;
+});
+
+afterEach(() => {
+  process.env.BICYCLE_ETC = savedEtc;
+  process.env.BICYCLE_VAR = savedVar;
+  process.env.BICYCLE_RUN = savedRun;
+});
+
+test("etc paths follow BICYCLE_ETC", () => {
+  process.env.BICYCLE_ETC = "/tmp/x";
+  expect(paths.etc.root).toBe("/tmp/x");
+  expect(paths.etc.bicycleToml).toBe("/tmp/x/bicycle.toml");
+  expect(paths.etc.ageKey).toBe("/tmp/x/age.key");
+  expect(paths.etc.recipients).toBe("/tmp/x/recipients");
+  expect(paths.etc.files).toBe("/tmp/x/files");
+  expect(paths.etc.secrets).toBe("/tmp/x/secrets");
+  expect(paths.etc.secret("db/password")).toBe("/tmp/x/secrets/db/password.age");
+  expect(paths.etc.apps).toBe("/tmp/x/apps");
+  expect(paths.etc.app("foo").config).toBe("/tmp/x/apps/foo/config.yml");
+});
+
+test("state paths follow BICYCLE_VAR", () => {
+  process.env.BICYCLE_VAR = "/tmp/y";
+  expect(paths.state.root).toBe("/tmp/y");
+  expect(paths.state.apps).toBe("/tmp/y/apps");
+  expect(paths.state.app("foo").data).toBe("/tmp/y/apps/foo/data");
+  expect(paths.state.cache.catalog("foo", "abc")).toBe("/tmp/y/cache/catalog/foo/abc");
+});
+
+test("run paths follow BICYCLE_RUN", () => {
+  process.env.BICYCLE_RUN = "/tmp/z";
+  expect(paths.run.root).toBe("/tmp/z");
+  expect(paths.run.reconcileLock).toBe("/tmp/z/reconcile.lock");
+});
+
+test("getters re-read env on each access (no stale cache)", () => {
+  process.env.BICYCLE_ETC = "/tmp/a";
+  expect(paths.etc.bicycleToml).toBe("/tmp/a/bicycle.toml");
+  process.env.BICYCLE_ETC = "/tmp/b";
+  expect(paths.etc.bicycleToml).toBe("/tmp/b/bicycle.toml");
+});

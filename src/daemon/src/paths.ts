@@ -4,9 +4,15 @@ import { env } from "./env";
 export const paths = {
   get etc() {
     const etc = env.ETC;
+    const secrets = path.join(etc, "secrets");
     return {
       root: etc,
       bicycleToml: path.join(etc, "bicycle.toml"),
+      ageKey: path.join(etc, "age.key"),
+      recipients: path.join(etc, "recipients"),
+      files: path.join(etc, "files"),
+      secrets,
+      secret: (addr: string) => path.join(secrets, `${addr}.age`),
       apps: path.join(etc, "apps"),
       app: (name: string) => ({
         root: path.join(etc, "apps", name),
