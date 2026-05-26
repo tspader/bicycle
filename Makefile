@@ -51,15 +51,20 @@ build:
 CACHE_DIR := .cache
 ISO       := $(CACHE_DIR)/installer.iso
 
-.PHONY: iso vm vm-stop vm-ssh vm-sync vm-console installer-help installer-clean
+.PHONY: iso pkg vm vm-stop vm-ssh vm-sync vm-console installer-help installer-clean
 
 installer-help:
 	@echo "make iso         - build the custom Arch live ISO"
+	@echo "make pkg         - build the bicycle pacman package only"
 
 iso: $(ISO)
 
 $(ISO):
 	tools/build-iso.sh
+
+pkg:
+	bun tools/pkg.ts
+	@ls build/pkg/*.pkg.tar.zst
 
 installer-clean:
 	rm -rf $(CACHE_DIR)

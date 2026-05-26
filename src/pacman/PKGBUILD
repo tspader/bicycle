@@ -1,0 +1,20 @@
+pkgname=bicycle
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Declarative Arch-native machine and container provisioner"
+arch=('x86_64')
+url="https://github.com/spader/bicycle"
+license=('MIT')
+depends=('docker' 'docker-compose' 'git')
+options=(!strip !debug)
+
+package() {
+  install -Dm755 "$startdir/bicycle" \
+    "$pkgdir/usr/bin/bicycle"
+  install -Dm644 "$startdir/files/bicycle.service" \
+    "$pkgdir/usr/lib/systemd/system/bicycle.service"
+  install -Dm644 "$startdir/files/bicycle-reconcile.service" \
+    "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.service"
+  install -Dm644 "$startdir/files/bicycle.toml.example" \
+    "$pkgdir/etc/bicycle/bicycle.toml.example"
+}

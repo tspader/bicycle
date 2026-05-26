@@ -7,7 +7,7 @@
 # pre-populated so the live system has no first-boot install cost.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${WORK:-/tmp/bicycle-iso}"
 CACHE="$REPO/.cache"
 OVERLAY="$REPO/iso-overlay"
@@ -19,11 +19,12 @@ EXTRA_PACKAGES=(
   openssh
 )
 
-for cmd in mkarchiso bun rsync; do
+for cmd in mkarchiso bun rsync makepkg; do
   command -v "$cmd" >/dev/null || { echo "missing: $cmd"; exit 1; }
 done
 [ -d "$REPO/src/installer" ] || { echo "missing $REPO/src/installer"; exit 1; }
 [ -d "$REPO/src/shared" ]    || { echo "missing $REPO/src/shared"; exit 1; }
+[ -d "$REPO/src/pacman" ]    || { echo "missing $REPO/src/pacman"; exit 1; }
 [ -d "$OVERLAY" ]            || { echo "missing $OVERLAY"; exit 1; }
 [ -d /usr/share/archiso/configs/releng ] || {
   echo "archiso releng profile missing — pacman -S archiso"; exit 1;
@@ -32,6 +33,9 @@ done
 # Pre-install JS deps so the live ISO carries node_modules. Run as the invoking
 # user, not as root, so the resulting files are owned correctly for dev sync.
 (cd "$REPO" && bun install)
+
+(cd "$REPO" && bun tools/pkg.ts)
+PKG_OUT="$REPO/build/pkg"
 
 if [ "$EUID" -ne 0 ]; then
   exec sudo --preserve-env=WORK,USER "$0" "$@"
@@ -76,6 +80,9 @@ chmod 600 "$WORK"/airootfs/root/.ssh/authorized_keys
 install -d "$WORK"/airootfs/etc/systemd/system/multi-user.target.wants
 ln -sf /etc/systemd/system/installer-web.service \
   "$WORK"/airootfs/etc/systemd/system/multi-user.target.wants/installer-web.service
+
+install -d "$WORK"/airootfs/root/bicycle-pkg
+cp "$PKG_OUT"/bicycle-*.pkg.tar.zst "$WORK"/airootfs/root/bicycle-pkg/
 
 mkarchiso -v -w "$WORK/work" -o "$WORK/out" "$WORK"
 
