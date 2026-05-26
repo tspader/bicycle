@@ -4,7 +4,9 @@ import { z } from 'zod'
 import { CATEGORIES, Layout, Preview } from './views/layout'
 import type { Child } from 'hono/jsx'
 import { codeToHtml } from 'shiki'
-import { toToml, DEFAULT_MIRROR_URL } from './config'
+import { toToml, DEFAULT_MIRROR_URL, fromToml } from './config'
+import { randomUUID } from 'node:crypto'
+import { rmSync, readFileSync } from 'node:fs'
 import { SystemView } from './views/system'
 import { DiskView } from './views/disk'
 import { PacmanView } from './views/pacman'
@@ -32,9 +34,10 @@ import {
 } from './system'
 import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, preflight, targetDevice, type PartitionConfig } from './config'
 import { InstallView } from './views/install'
+import { ImportView } from './views/import'
 import { existsSync } from 'node:fs'
 import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
-import { getState, setState } from './state'
+import { getState, setState, replaceState } from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig } from './config'
@@ -210,6 +213,8 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
         />
       )
     }
+    case 'import':
+      return <ImportView />
   }
 }
 
@@ -237,6 +242,91 @@ stateRoute('/api/swap',       Api.Swap,       (d) => ({ swap: d }))
 stateRoute('/api/bootloader', Api.Bootloader, (d) => ({ bootloader_config: d }))
 stateRoute('/api/network',    Api.Network,    (d) => ({ network_config: { type: d.mode } }))
 stateRoute('/api/timezone',   Api.Timezone,   (d) => ({ timezone: d.timezone }))
+
+const ImportGitSignals = z.object({
+  import_git_url: z.string().min(1, 'repository URL required'),
+  import_git_user: z.string().optional().default(''),
+  import_git_pass: z.string().optional().default(''),
+})
+
+const ImportTomlBody = z.object({ toml: z.string().min(1) })
+
+const applyImportToml = (text: string): void => {
+  const cfg = fromToml(text, liveMachine())
+  replaceState(cfg)
+}
+
+app.post('/api/import/git', (c) =>
+  ServerSentEventGenerator.stream(async (stream) => {
+    const announce = (status: string, error: string) =>
+      stream.patchSignals(JSON.stringify({ import_status: status, import_error: error }))
+    try {
+      const sig = ImportGitSignals.parse(c.get('signals') ?? {})
+      let url: URL
+      try {
+        url = new URL(sig.import_git_url.trim())
+      } catch {
+        throw new Error('invalid URL')
+      }
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        throw new Error('only http(s) URLs are supported on the install medium (no SSH keys)')
+      }
+      if (sig.import_git_user) url.username = encodeURIComponent(sig.import_git_user)
+      if (sig.import_git_pass) url.password = encodeURIComponent(sig.import_git_pass)
+
+      const tmp = `/tmp/bicycle-import-${randomUUID()}`
+      const safeUrl = sig.import_git_url.trim()
+      try {
+        const res = Bun.spawnSync(
+          ['git', 'clone', '--depth=1', '--single-branch', url.toString(), tmp],
+          {
+            env: {
+              ...runtimeEnv,
+              GIT_TERMINAL_PROMPT: '0',
+              GIT_ASKPASS: '/bin/true',
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        )
+        if (res.exitCode !== 0) {
+          const raw = new TextDecoder().decode(res.stderr) || 'git clone failed'
+          const sanitized = raw
+            .replaceAll(url.toString(), safeUrl)
+            .replaceAll(sig.import_git_pass || ' ', '***')
+          const tail = sanitized.trim().split('\n').slice(-2).join(' ').slice(0, 400)
+          throw new Error(tail || 'git clone failed')
+        }
+        const tomlPath = `${tmp}/.bicycle/machine.toml`
+        if (!existsSync(tomlPath)) {
+          throw new Error('.bicycle/machine.toml not found in repository root')
+        }
+        const text = readFileSync(tomlPath, 'utf8')
+        applyImportToml(text)
+      } finally {
+        try { rmSync(tmp, { recursive: true, force: true }) } catch {}
+      }
+      announce(`Imported from ${safeUrl}`, '')
+      stream.patchSignals(JSON.stringify({ import_git_url: '', import_git_user: '', import_git_pass: '' }))
+      stream.patchElements(await previewFragment())
+    } catch (e) {
+      announce('', (e as Error).message || 'import failed')
+    }
+  }),
+)
+
+app.post('/api/import/toml', (c) => {
+  const parsed = ImportTomlBody.safeParse(c.get('signals') ?? {})
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid body' })
+  }
+  try {
+    applyImportToml(parsed.data.toml)
+  } catch (e) {
+    throw new HTTPException(400, { message: (e as Error).message })
+  }
+  return c.json({ ok: true })
+})
 
 app.post('/api/mirrors/toggle', (c) => {
   const name = requiredQuery(c, 'name')

@@ -25,3 +25,7 @@ export const getState = (): Readonly<ArchinstallConfig> => state
 export const setState = (patch: Partial<ArchinstallConfig>): void => {
   state = { ...state, ...patch }
 }
+
+export const replaceState = (next: ArchinstallConfig): void => {
+  state = next
+}

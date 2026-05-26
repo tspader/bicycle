@@ -120,9 +120,10 @@ test('rejects unknown nested fields', () => {
   expect(() => fromToml(bad, ctx())).toThrow()
 })
 
-test('rejects user blocks (no safe way to express passwords in TOML)', () => {
+test('drops user blocks on import (passwords cannot be expressed in TOML)', () => {
   const withUser = MINIMAL + '\n[[user]]\nname = "spader"\nsudo = true\ngroups = ["wheel"]\n'
-  expect(() => fromToml(withUser, ctx())).toThrow(/user accounts in TOML/)
+  const cfg = fromToml(withUser, ctx())
+  expect(cfg.users).toBeUndefined()
 })
 
 test('rejects nm_iwd network mode (archinstall silently drops it)', () => {

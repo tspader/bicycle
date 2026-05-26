@@ -51,5 +51,5 @@ export const appendInstallLog = (chunk: string): void => {
   install = { ...install, log: install.log + chunk }
 }
 
-export type CategoryId = 'system' | 'users' | 'disk' | 'pacman' | 'boot'
+export type CategoryId = 'system' | 'users' | 'disk' | 'pacman' | 'boot' | 'import'
 

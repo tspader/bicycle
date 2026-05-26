@@ -10,6 +10,7 @@ export const CATEGORIES: Category[] = [
   { id: 'disk', label: 'Disk' },
   { id: 'pacman', label: 'Pacman' },
   { id: 'boot', label: 'Boot' },
+  { id: 'import', label: 'Import' },
 ]
 
 const matchExpr = (label: string): string => {

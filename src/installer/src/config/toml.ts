@@ -90,7 +90,7 @@ const BicycleToml = z.object({
       parallel_downloads: z.number().int().nonnegative().optional(),
       mirrors: z
         .object({
-          regions: z.array(z.string()).min(1),
+          regions: z.array(z.string()),
           custom: z.array(z.string().url()).optional(),
         })
         .strict()
@@ -244,12 +244,6 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
   }
 
   if (bike.swap) out.swap = bike.swap
-  if (bike.user) {
-    // BicycleToml has no password field; users from TOML can't be applied without a password.
-    if (bike.user.length > 0) {
-      throw new Error('user accounts in TOML are not supported (passwords cannot be expressed safely in checked-in config)')
-    }
-  }
   if (bike.packages) out.packages = Object.values(bike.packages).flat().sort()
   if (bike.network) out.network_config = { type: NET_MODE[bike.network.mode] }
 
