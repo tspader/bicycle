@@ -10,7 +10,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK:-/tmp/bicycle-iso}"
 CACHE="$REPO/.cache"
 OVERLAY="$REPO/iso-overlay"
-BINARY="$REPO/src/web/dist/bicycle"
+BINARY="$REPO/src/installer/dist/bicycle"
 OUT="$CACHE/installer.iso"
 
 EXTRA_PACKAGES=(

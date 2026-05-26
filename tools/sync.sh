@@ -10,7 +10,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLeve
 
 rsync -a --delete --exclude='node_modules' \
   -e "ssh -p $VM_PORT ${SSH_OPTS[*]}" \
-  "$REPO/src/web/" \
+  "$REPO/src/installer/" \
   "root@$VM_HOST:/root/web/"
 
 ssh -p "$VM_PORT" "${SSH_OPTS[@]}" "root@$VM_HOST" 'systemctl restart installer-web'
