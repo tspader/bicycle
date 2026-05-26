@@ -10,9 +10,7 @@
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",
-    "@hono/standard-validator": "catalog:",
-    "hono": "catalog:",
-    "zod": "catalog:"
+    "hono": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
