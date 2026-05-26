@@ -4,6 +4,7 @@ import { withLock } from "../lock";
 import { paths } from "../paths";
 
 const reconcile = async () => {
+  await reconcilers.files.reconcile();
   await reconcilers.network.reconcile();
   await reconcilers.app.reconcile();
 };

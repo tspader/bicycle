@@ -13,4 +13,7 @@ export const env = {
   get AGE_KEY(): string {
     return process.env.AGE_KEY ?? path.join(this.ETC, "age.key");
   },
+  get HOST_ROOT(): string {
+    return process.env.BICYCLE_HOST_ROOT ?? "/";
+  },
 };

@@ -2,6 +2,7 @@ import { $ } from "bun";
 import fs from "fs";
 import { paths } from "../paths";
 import * as config from "../config";
+import * as secrets from "../secrets";
 import { ensure as ensureRepo } from "./git";
 
 const reconcileApp = async (name: string, catalogUrl: string) => {
@@ -30,7 +31,11 @@ const reconcileApp = async (name: string, catalogUrl: string) => {
   const fileArgs = ["-f", stateApp.compose];
   if (fs.existsSync(etcApp.compose)) fileArgs.push("-f", etcApp.compose);
 
-  const env = { ...process.env, ...(cfg.env ?? {}) };
+  const appEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(cfg.env ?? {})) {
+    appEnv[k] = await secrets.interpolate(v);
+  }
+  const env = { ...process.env, ...appEnv };
 
   await $`docker compose ${fileArgs} --project-directory ${etcApp.root} -p ${name} up -d`
     .env(env);
