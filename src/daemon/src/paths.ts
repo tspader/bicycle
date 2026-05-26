@@ -15,6 +15,13 @@ export const paths = {
       }),
     };
   },
+  get run() {
+    const run = env.RUN;
+    return {
+      root: run,
+      reconcileLock: path.join(run, "reconcile.lock"),
+    };
+  },
   get state() {
     const state = env.VAR;
     return {

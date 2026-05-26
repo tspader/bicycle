@@ -992,7 +992,7 @@ app.post('/api/install/start', async (c) => {
     if (!wet) args.push('--dry-run')
     setInstall({ log: `$ ${args.join(' ')}\n` })
 
-    void runInstall(args)
+    void runInstall(args, wet)
   } catch (e) {
     if (e instanceof HTTPException) throw e
     setInstall({ status: 'failure', exitCode: -1, finishedAt: Date.now() })
@@ -1002,37 +1002,68 @@ app.post('/api/install/start', async (c) => {
   return renderInstall(c)
 })
 
-const runInstall = async (args: string[]): Promise<void> => {
+const pump = async (stream: ReadableStream<Uint8Array> | null) => {
+  if (!stream) return
+  const reader = stream.getReader()
+  const dec = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    appendInstallLog(dec.decode(value, { stream: true }))
+  }
+}
+
+const runStep = async (label: string, args: string[]): Promise<number> => {
+  appendInstallLog(`\n$ ${label}\n`)
   let proc
   try {
     proc = runtimeSpawn(args, { stdout: 'pipe', stderr: 'pipe' })
   } catch (e) {
     appendInstallLog(`spawn failed: ${(e as Error).message}\n`)
-    setInstall({ status: 'failure', exitCode: -1, finishedAt: Date.now() })
-    return
-  }
-  const pump = async (stream: ReadableStream<Uint8Array> | null) => {
-    if (!stream) return
-    const reader = stream.getReader()
-    const dec = new TextDecoder()
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      appendInstallLog(dec.decode(value, { stream: true }))
-    }
+    return -1
   }
   try {
     await Promise.all([pump(proc.stdout), pump(proc.stderr)])
-    const code = await proc.exited
-    setInstall({
-      status: code === 0 ? 'success' : 'failure',
-      exitCode: code,
-      finishedAt: Date.now(),
-    })
+    return await proc.exited
   } catch (e) {
     appendInstallLog(`pump failed: ${(e as Error).message}\n`)
-    setInstall({ status: 'failure', exitCode: -1, finishedAt: Date.now() })
+    return -1
   }
+}
+
+const postArchinstall = async (): Promise<number> => {
+  const installPkg = `
+set -e
+pkg=$(ls /root/bicycle-pkg/bicycle-*.pkg.tar.zst | head -1)
+name=$(basename "$pkg")
+cp "$pkg" /mnt/root/
+arch-chroot /mnt pacman -U --noconfirm "/root/$name"
+`.trim()
+  const steps: Array<[string, string[]]> = [
+    ['install bicycle pkg into target', ['sh', '-c', installPkg]],
+    ['enable docker + bicycle services', ['arch-chroot', '/mnt', 'systemctl', 'enable', 'docker.service', 'bicycle-boot.service', 'bicycle-reconcile.timer']],
+  ]
+  for (const [label, args] of steps) {
+    const code = await runStep(label, args)
+    if (code !== 0) return code
+  }
+  return 0
+}
+
+const runInstall = async (args: string[], wet: boolean): Promise<void> => {
+  const code = await runStep(args.join(' '), args)
+  if (code !== 0) {
+    setInstall({ status: 'failure', exitCode: code, finishedAt: Date.now() })
+    return
+  }
+  if (wet) {
+    const postCode = await postArchinstall()
+    if (postCode !== 0) {
+      setInstall({ status: 'failure', exitCode: postCode, finishedAt: Date.now() })
+      return
+    }
+  }
+  setInstall({ status: 'success', exitCode: 0, finishedAt: Date.now() })
 }
 
 app.post('/api/install/reboot', (c) => {

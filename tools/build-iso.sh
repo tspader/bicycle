@@ -7,7 +7,7 @@
 # pre-populated so the live system has no first-boot install cost.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK:-/tmp/bicycle-iso}"
 CACHE="$REPO/.cache"
 OVERLAY="$REPO/iso-overlay"
@@ -30,14 +30,11 @@ done
   echo "archiso releng profile missing — pacman -S archiso"; exit 1;
 }
 
-# Pre-install JS deps so the live ISO carries node_modules. Run as the invoking
-# user, not as root, so the resulting files are owned correctly for dev sync.
-(cd "$REPO" && bun install)
-
-(cd "$REPO" && bun tools/pkg.ts)
 PKG_OUT="$REPO/build/pkg"
 
 if [ "$EUID" -ne 0 ]; then
+  (cd "$REPO" && bun install)
+  (cd "$REPO" && bun tools/src/pkg.ts)
   exec sudo --preserve-env=WORK,USER "$0" "$@"
 fi
 

@@ -63,7 +63,7 @@ $(ISO):
 	tools/build-iso.sh
 
 pkg:
-	bun tools/pkg.ts
+	bun tools/src/pkg.ts
 	@ls build/pkg/*.pkg.tar.zst
 
 installer-clean:

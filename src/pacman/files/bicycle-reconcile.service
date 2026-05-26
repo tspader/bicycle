@@ -1,11 +1,6 @@
 [Unit]
-Description=Bicycle: reconcile all app stacks to desired state
-After=docker.service
-Requires=docker.service
+Description=Bicycle: reconcile all state to desired
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/bicycle reconcile
-
-[Install]
-WantedBy=multi-user.target

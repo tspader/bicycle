@@ -11,10 +11,12 @@ options=(!strip !debug)
 package() {
   install -Dm755 "$startdir/bicycle" \
     "$pkgdir/usr/bin/bicycle"
-  install -Dm644 "$startdir/files/bicycle.service" \
-    "$pkgdir/usr/lib/systemd/system/bicycle.service"
   install -Dm644 "$startdir/files/bicycle-reconcile.service" \
     "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.service"
+  install -Dm644 "$startdir/files/bicycle-reconcile.timer" \
+    "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.timer"
+  install -Dm644 "$startdir/files/bicycle-boot.service" \
+    "$pkgdir/usr/lib/systemd/system/bicycle-boot.service"
   install -Dm644 "$startdir/files/bicycle.toml.example" \
     "$pkgdir/etc/bicycle/bicycle.toml.example"
 }
