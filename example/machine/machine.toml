@@ -1,0 +1,50 @@
+[core]
+hostname = "spum-cannon"
+timezone = "UTC"
+kernels = [ "linux" ]
+ntp = true
+
+[locale]
+keyboard = "us"
+language = "en_US.UTF-8"
+encoding = "UTF-8"
+
+[boot]
+loader = "systemd-boot"
+uki = true
+removable = false
+
+[[disk]]
+device = "/dev/vda"
+wipe = true
+table = "gpt"
+
+[[disk.partition]]
+mount = "/boot"
+fs = "fat32"
+size = "512MiB"
+start = "1MiB"
+flags = [ "boot", "esp" ]
+
+[[disk.partition]]
+mount = "/"
+fs = "ext4"
+size = "29182MiB"
+
+[swap]
+enabled = true
+algorithm = "zstd"
+
+[[user]]
+name = "spader"
+sudo = true
+groups = [ "wheel" ]
+
+[packages]
+extra = [ "git", "lsd" ]
+
+[network]
+mode = "iso"
+
+[pacman.mirrors]
+regions = ["United States"]

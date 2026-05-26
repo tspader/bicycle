@@ -1,0 +1,5 @@
+[machine]
+hostname = "box.lan"
+
+[catalog]
+url = "https://github.com/spader/bicycle-catalog"
