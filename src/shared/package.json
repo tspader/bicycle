@@ -1,0 +1,24 @@
+{
+  "name": "@bicycle/shared",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./findings": "./src/findings.ts",
+    "./policy": "./src/policy.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "catalog:",
+    "hono": "catalog:",
+    "@hono/standard-validator": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

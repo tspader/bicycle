@@ -12,3 +12,7 @@
 /src/installer/.playwright-mcp
 **/*.png
 src/installer/*.png
+/node_modules
+/src/daemon/node_modules
+/src/installer/tsconfig.tsbuildinfo
+/src/shared/node_modules

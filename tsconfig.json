@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "src/shared" },
+    { "path": "src/installer" },
+    { "path": "src/daemon" }
+  ]
+}

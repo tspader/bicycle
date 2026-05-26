@@ -1,5 +1,6 @@
 import type { Child } from 'hono/jsx'
 import type { CategoryId } from '../ui-state';
+import type { Warning } from '../config/preflight'
 
 
 type Category = { id: CategoryId; label: string }
@@ -19,21 +20,58 @@ const matchExpr = (label: string): string => {
 }
 
 export const Preview = ({ html }: { html: string }) => (
-  <aside id="config-preview" class="preview">
+  <section id="config-preview" class="preview">
     <div class="preview-head">bicycle.toml</div>
     <div class="preview-body" dangerouslySetInnerHTML={{ __html: html }} />
-  </aside>
+  </section>
+)
+
+export const Warnings = ({ items }: { items: Warning[] }) => (
+  <section id="config-warnings" class="warnings">
+    {items.length === 0 ? null : (
+      <>
+        <div class="warnings-head">Warnings</div>
+        <ul class="warnings-list">
+          {items.map((w) => {
+            const target = w.category ? `/config/${w.category}` : null
+            const nav = target
+              ? `history.pushState({}, '', '${target}'); $activeCat = '${w.category}'; @get('${target}')`
+              : null
+            const content = (
+              <>
+                <span class={`warnings-dot warnings-dot-${w.severity}`} aria-hidden="true" />
+                <span class="warnings-msg">{w.message}</span>
+              </>
+            )
+            return (
+              <li class={`warnings-item warnings-item-${w.severity}`}>
+                {target ? (
+                  <a class="warnings-link" href={target} data-on:click__prevent={nav!}>
+                    {content}
+                  </a>
+                ) : (
+                  <span class="warnings-link">{content}</span>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      </>
+    )}
+  </section>
 )
 
 export const Layout = ({
   active,
   title = 'Bicycle',
   previewHtml,
+  warnings,
   children,
 }: {
   active: CategoryId | 'install'
   title?: string
   previewHtml: string
+  warnings: Warning[]
   children?: Child
 }) => {
   const nav = (id: CategoryId) =>
@@ -89,12 +127,36 @@ export const Layout = ({
         <link rel="stylesheet" href="/static/app.css" />
         <script type="module" src="/static/datastar.js" />
         <script dangerouslySetInnerHTML={{ __html: `addEventListener('popstate',()=>location.reload());` }} />
+        <script dangerouslySetInnerHTML={{ __html: `
+          (function(){
+            var mo=null, atBottom=true, el=null;
+            function attach(node){
+              if(mo) mo.disconnect();
+              el=node; atBottom=true; node.scrollTop=node.scrollHeight;
+              node.addEventListener('scroll',function(){
+                atBottom = node.scrollTop + node.clientHeight >= node.scrollHeight - 8;
+              });
+              mo = new MutationObserver(function(){
+                if(atBottom) node.scrollTop = node.scrollHeight;
+              });
+              mo.observe(node, {subtree:true, childList:true, characterData:true});
+            }
+            setInterval(function(){
+              var node = document.getElementById('install-log');
+              if(node && node !== el) attach(node);
+              else if(!node && el){ if(mo) mo.disconnect(); mo=null; el=null; }
+            }, 400);
+          })();
+        ` }} />
       </head>
       <body>
         <div class="shell">
           <Sidebar active={active} />
           <main id="page-content" class="content">{children}</main>
-          <Preview html={previewHtml} />
+          <aside class="sidecar">
+            <Warnings items={warnings} />
+            <Preview html={previewHtml} />
+          </aside>
         </div>
       </body>
     </html>

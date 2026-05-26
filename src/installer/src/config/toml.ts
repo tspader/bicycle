@@ -183,15 +183,20 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
           }
           let size: Size
           if (p.size === 'rest') {
-            const totalBytes = ctx.diskSize(d.device)
-            // Leave 1 MiB at the tail for the GPT backup header, then align down.
-            const usableEnd = d.table === 'gpt' ? totalBytes - MIB : totalBytes
-            const restBytes = usableEnd - sizeBytes(start)
-            if (restBytes <= 0) {
-              throw new Error(`disk ${d.device}: no space left for "rest" partition ${p.mount}`)
+            let totalBytes: number | null = null
+            try { totalBytes = ctx.diskSize(d.device) } catch { totalBytes = null }
+            if (totalBytes === null) {
+              size = { unit: 'B', value: MIB, sector_size: DEFAULT_SECTOR }
+            } else {
+              const usableEnd = d.table === 'gpt' ? totalBytes - MIB : totalBytes
+              const restBytes = usableEnd - sizeBytes(start)
+              if (restBytes <= 0) {
+                size = { unit: 'B', value: totalBytes, sector_size: DEFAULT_SECTOR }
+              } else {
+                const aligned = restBytes - (restBytes % MIB)
+                size = { unit: 'B', value: aligned, sector_size: DEFAULT_SECTOR }
+              }
             }
-            const aligned = restBytes - (restBytes % MIB)
-            size = { unit: 'B', value: aligned, sector_size: DEFAULT_SECTOR }
           } else {
             size = parseSize(p.size)
           }

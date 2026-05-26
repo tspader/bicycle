@@ -1,6 +1,19 @@
 import { Page, Section } from './layout'
 import type { InstallState } from '../ui-state'
 
+const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]/g
+
+export const collapseTerminal = (s: string): string => {
+  const clean = s.replace(ANSI_RE, '').replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+  return clean
+    .split('\n')
+    .map((line) => {
+      const i = line.lastIndexOf('\r')
+      return i >= 0 ? line.slice(i + 1) : line
+    })
+    .join('\n')
+}
+
 type Props = {
   preflight: { ok: boolean; problems: string[] }
   device: string | null
@@ -109,47 +122,52 @@ const IdleView = ({
   )
 }
 
-const ProgressView = ({ install }: { install: InstallState }) => {
+const ProgressView = ({ install }: { install: InstallState }) => (
+  <Section title="Install progress" subhead={`mode: ${install.mode}`}>
+    <ProgressCard install={install} />
+  </Section>
+)
+
+export const ProgressCard = ({ install }: { install: InstallState }) => {
   const running = install.status === 'running'
   const succeeded = install.status === 'success'
   const failed = install.status === 'failure'
   const pollAttr = running
-    ? { 'data-on-interval__duration.1s': "@get('/api/install/status')" }
+    ? { 'data-on-interval__duration.500ms': "@get('/api/install/tick')" }
     : {}
+  const text = collapseTerminal(install.log) || '(no output yet)'
   return (
-    <Section
-      title={`Status: ${install.status}`}
-      subhead={`mode: ${install.mode}${install.exitCode != null ? ` · exit ${install.exitCode}` : ''}`}
-    >
-      <div class="card install-progress" {...pollAttr}>
+    <div id="install-progress" class="card install-progress" {...pollAttr}>
+      <div class="install-status-row">
         <StatusPill status={install.status} />
-        <pre class="install-log mono small" id="install-log">{install.log || '(no output yet)'}</pre>
-        {succeeded ? (
-          <div class="form-actions">
-            <button
-              type="button"
-              class="btn btn-danger"
-              data-on:click="confirm('Reboot now?') && @post('/api/install/reboot')"
-            >
-              Reboot
-            </button>
-            <span class="muted small">Remove the install media before rebooting.</span>
-          </div>
-        ) : null}
-        {failed ? (
-          <div class="form-actions">
-            <button
-              type="button"
-              class="btn"
-              data-on:click="@post('/api/install/reset')"
-            >
-              Dismiss
-            </button>
-            <span class="muted small">See /var/log/archinstall/install.log on the host.</span>
-          </div>
-        ) : null}
+        {install.exitCode != null ? <span class="muted small mono">exit {install.exitCode}</span> : null}
       </div>
-    </Section>
+      <pre class="install-log mono small" id="install-log">{text}</pre>
+      {succeeded ? (
+        <div class="form-actions">
+          <button
+            type="button"
+            class="btn btn-danger"
+            data-on:click="confirm('Reboot now?') && @post('/api/install/reboot')"
+          >
+            Reboot
+          </button>
+          <span class="muted small">Remove the install media before rebooting.</span>
+        </div>
+      ) : null}
+      {failed ? (
+        <div class="form-actions">
+          <button
+            type="button"
+            class="btn"
+            data-on:click="@post('/api/install/reset')"
+          >
+            Dismiss
+          </button>
+          <span class="muted small">See /var/log/archinstall/install.log on the host.</span>
+        </div>
+      ) : null}
+    </div>
   )
 }
 

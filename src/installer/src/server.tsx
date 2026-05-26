@@ -1,7 +1,7 @@
 import { Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
-import { CATEGORIES, Layout, Preview } from './views/layout'
+import { CATEGORIES, Layout, Preview, Warnings } from './views/layout'
 import type { Child } from 'hono/jsx'
 import { codeToHtml } from 'shiki'
 import { toToml, DEFAULT_MIRROR_URL, fromToml } from './config'
@@ -32,8 +32,8 @@ import {
   regions, searchPackages, packageDetail, syncPacman, availableRepos,
   loadPackages, listDisks,
 } from './system'
-import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, preflight, targetDevice, type PartitionConfig } from './config'
-import { InstallView } from './views/install'
+import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, preflight, deriveWarnings, targetDevice, type PartitionConfig } from './config'
+import { InstallView, ProgressCard } from './views/install'
 import { ImportView } from './views/import'
 import { existsSync } from 'node:fs'
 import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
@@ -116,25 +116,45 @@ const renderPreviewHtml = async (): Promise<string> => {
   return codeToHtml(toml, { lang: 'toml', theme: 'github-dark-default' })
 }
 
-const previewFragment = async (): Promise<string> =>
-  (<Preview html={await renderPreviewHtml()} />).toString()
+const renderSidecar = async () => {
+  const [previewHtml, disks] = await Promise.all([renderPreviewHtml(), listDisks()])
+  const warnings = deriveWarnings(getState(), disks)
+  return { previewHtml, warnings }
+}
+
+const sidecarFragments = async (): Promise<[string, string]> => {
+  const { previewHtml, warnings } = await renderSidecar()
+  return [
+    (<Preview html={previewHtml} />).toString(),
+    (<Warnings items={warnings} />).toString(),
+  ]
+}
+
+const patchSidecarInto = async (
+  stream: { patchElements: (s: string) => void },
+): Promise<void> => {
+  const [preview, warnings] = await sidecarFragments()
+  stream.patchElements(preview)
+  stream.patchElements(warnings)
+}
 
 const patchPreview = () =>
   ServerSentEventGenerator.stream(async (stream) => {
-    stream.patchElements(await previewFragment())
+    await patchSidecarInto(stream)
   })
 
 const renderPage = async (c: AppContext, active: CategoryId | 'install', body: Child, pushUrl?: string) => {
-  const previewHtml = await renderPreviewHtml()
+  const { previewHtml, warnings } = await renderSidecar()
   if (!c.get('datastar')) {
     return c.html(
       <SignalProvider value={c.get('signals')}>
-        <Layout active={active} previewHtml={previewHtml}>{body}</Layout>
+        <Layout active={active} previewHtml={previewHtml} warnings={warnings}>{body}</Layout>
       </SignalProvider>,
     )
   }
   return ServerSentEventGenerator.stream((stream) => {
     stream.patchElements((<Preview html={previewHtml} />).toString())
+    stream.patchElements((<Warnings items={warnings} />).toString())
     stream.patchElements((<main id="page-content" class="content">{body}</main>).toString())
     stream.patchSignals(JSON.stringify({ activeCat: active }))
     if (pushUrl) stream.executeScript(`history.pushState({}, '', '${pushUrl}')`)
@@ -308,7 +328,7 @@ app.post('/api/import/git', (c) =>
       }
       announce(`Imported from ${safeUrl}`, '')
       stream.patchSignals(JSON.stringify({ import_git_url: '', import_git_user: '', import_git_pass: '' }))
-      stream.patchElements(await previewFragment())
+      await patchSidecarInto(stream)
     } catch (e) {
       announce('', (e as Error).message || 'import failed')
     }
@@ -345,7 +365,7 @@ app.post('/api/mirrors/toggle', (c) => {
   const isChecked = name in current
   return ServerSentEventGenerator.stream(async (stream) => {
     stream.patchElements((<RegionRowFragment name={name} isChecked={isChecked} />).toString())
-    stream.patchElements(await previewFragment())
+    await patchSidecarInto(stream)
   })
 })
 
@@ -381,7 +401,7 @@ app.post('/api/packages/toggle', async (c) => {
     if (showDetail) {
       stream.patchElements((<PackageDetailFragment detail={await packageDetail(name)} />).toString())
     }
-    stream.patchElements(await previewFragment())
+    await patchSidecarInto(stream)
   })
 })
 
@@ -890,6 +910,17 @@ const renderInstall = async (c: AppContext) => {
 }
 
 app.get('/install', (c) => renderInstall(c))
+
+app.get('/api/install/tick', (c) => {
+  const inst = getInstall()
+  const prevStatus = c.req.query('s')
+  if (prevStatus && prevStatus !== inst.status) {
+    return renderInstall(c)
+  }
+  return ServerSentEventGenerator.stream((stream) => {
+    stream.patchElements((<ProgressCard install={inst} />).toString())
+  })
+})
 
 // Just the inner content for polling — same body the page already shows, but
 // patched into #page-content instead of full reload. No pushUrl here, otherwise
