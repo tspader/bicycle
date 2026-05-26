@@ -23,8 +23,8 @@ export const setDiskError = (msg: string | null): void => {
 export type InstallStatus = 'idle' | 'running' | 'success' | 'failure'
 export type InstallState = {
   status: InstallStatus
-  // 'dry-run' unless the server was started with BICYCLE_WET=1 — this is the
-  // last-mile guard against accidentally wiping a real disk during dev.
+  // 'dry-run' unless the server is running inside the archiso live environment
+  // (/run/archiso/bootmnt present) — last-mile guard against wiping a real disk.
   mode: 'dry-run' | 'wet'
   device: string
   log: string

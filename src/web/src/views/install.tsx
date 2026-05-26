@@ -11,7 +11,7 @@ type Props = {
 export const InstallView = ({ preflight, device, mode, install }: Props) => {
   const sub = mode === 'wet'
     ? 'WET MODE: archinstall will write to disk.'
-    : 'Dry-run: archinstall will not touch disks (set BICYCLE_WET=1 on the server to enable real installs).'
+    : 'Dry-run: archinstall will not touch disks (only the archiso live environment enables real installs).'
   return (
     <Page heading="Install" subhead={sub}>
       <ModeBadge mode={mode} />

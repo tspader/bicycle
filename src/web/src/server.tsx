@@ -32,6 +32,7 @@ import {
 } from './system'
 import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, preflight, targetDevice, type PartitionConfig } from './config'
 import { InstallView } from './views/install'
+import { existsSync } from 'node:fs'
 import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
 import { getState, setState } from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
@@ -760,9 +761,11 @@ import { serve } from './runtime'
 
 // --- Install endpoints ------------------------------------------------------
 
-// Triple-gated wet mode. BICYCLE_WET=1 is the ONLY way the server omits
-// --dry-run; missing or any other value forces dry-run.
-const isWet = (): boolean => runtimeEnv.BICYCLE_WET === '1'
+// Wet mode is gated on running inside the archiso live environment.
+// /run/archiso/bootmnt is created by archiso's initramfs and cannot exist on
+// an installed host, so a stray invocation on a dev machine is forced to
+// --dry-run no matter what env/args are set.
+const isWet = (): boolean => existsSync('/run/archiso/bootmnt')
 
 // archinstall splits its input into config + creds. We hold everything in one
 // ArchinstallConfig at runtime; these two helpers carve it back out for the
