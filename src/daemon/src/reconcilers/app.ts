@@ -4,13 +4,6 @@ import { paths } from "../paths";
 import * as config from "../config";
 import { ensure as ensureRepo } from "./git";
 
-const ensureNetwork = async () => {
-  const result = await $`docker network inspect bicycle`.quiet().nothrow();
-  if (result.exitCode !== 0) {
-    await $`docker network create bicycle`.quiet();
-  }
-};
-
 const reconcileApp = async (name: string, catalogUrl: string) => {
   const etcApp = paths.etc.app(name);
   if (!fs.existsSync(etcApp.config)) return;
@@ -47,7 +40,6 @@ const reconcileApp = async (name: string, catalogUrl: string) => {
 
 export const reconcile = async (): Promise<void> => {
   const cfg = config.bicycle();
-  await ensureNetwork();
 
   if (!fs.existsSync(paths.etc.apps)) return;
 

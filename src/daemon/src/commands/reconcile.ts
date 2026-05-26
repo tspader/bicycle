@@ -1,7 +1,12 @@
 import type { Command } from "@spader/zargs";
-import { reconcile } from "../reconcilers/app";
+import * as reconcilers from "../reconcilers";
 import { withLock } from "../lock";
 import { paths } from "../paths";
+
+const reconcile = async () => {
+  await reconcilers.network.reconcile();
+  await reconcilers.app.reconcile();
+};
 
 export const command: Command = {
   description: "Reconcile all state to desired and exit",
