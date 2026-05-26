@@ -1,16 +1,3 @@
-# Bicycle machine specification.
-#
-# Copy to /etc/bicycle/bicycle.toml and edit before enabling bicycle.service.
-
-[machine]
-hostname = "box.lan"
-
 [catalog]
-# Public catalog of app templates. Cloned to /var/lib/bicycle/catalog.
-url = "https://github.com/spader/bicycle-catalog"
+url = "https://github.com/tspader/bikeshop"
 ref = "main"
-
-[bootstrap]
-# Catalog apps to install on first boot if not already present.
-# Order matters — these come up before user apps, in declared order.
-required = ["caddy", "dockge"]
