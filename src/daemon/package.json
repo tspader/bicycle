@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",
-    "hono": "catalog:"
+    "hono": "catalog:",
+    "yargs": "catalog:",
+    "@spader/zargs": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",

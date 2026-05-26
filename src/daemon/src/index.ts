@@ -1,16 +1,19 @@
-import { Hono } from "hono";
+#!/usr/bin/env bun
 
-const app = new Hono();
+import { build, type Cli } from "@spader/zargs";
+import { serve, reconcile } from "./commands/index";
 
-app.get("/healthz", (c) => c.text("ok"));
+const raw = await Bun.file(new URL("../package.json", import.meta.url)).json() as { version?: unknown };
+const version = typeof raw.version === "string" ? raw.version : undefined;
 
-const port = Number(process.env.PORT ?? 7777);
-const hostname = process.env.HOST ?? "127.0.0.1";
-
-console.log(`bicycle daemon listening on http://${hostname}:${port}`);
-
-export default {
-  port,
-  hostname,
-  fetch: app.fetch,
+const def: Cli = {
+  name: "bicycle",
+  description: "Just like one",
+  version,
+  commands: {
+    serve,
+    reconcile,
+  },
 };
+
+build(def).parse();

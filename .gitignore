@@ -6,6 +6,7 @@ build
 dist
 node_modules
 *.png
+*.tsbuildinfo
 /compile_commands.json
 /example/user_configuration.json
 /example/user_credentials.json

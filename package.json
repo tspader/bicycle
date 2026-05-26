@@ -13,7 +13,9 @@
       "typescript": "^5",
       "hono": "^4.11.5",
       "zod": "^4.4.3",
-      "@hono/standard-validator": "^0.2.2"
+      "@hono/standard-validator": "^0.2.2",
+      "yargs": "^18.0.0",
+      "@spader/zargs": "^1.2.0"
     }
   },
   "scripts": {
