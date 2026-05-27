@@ -1,8 +1,14 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
+import { $ } from "bun";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import * as manifest from "./manifest";
+
+const hasDockerCompose = await (async () => {
+  const r = await $`docker compose version`.quiet().nothrow();
+  return r.exitCode === 0;
+})();
 
 let tmp: string;
 let savedVar: string | undefined;
@@ -54,6 +60,33 @@ env:
 test("load: rejects non-mapping top-level", () => {
   const p = writeManifest("a", "- 1\n- 2\n");
   expect(() => manifest.load(p)).toThrow(/must be a YAML mapping/);
+});
+
+test("load: rejects unknown top-level key (typo catch)", () => {
+  const p = writeManifest("a", "datas: []\n");
+  expect(() => manifest.load(p)).toThrow(/unknown key "datas"/);
+});
+
+test("load: rejects unknown key inside services.<svc>", () => {
+  const p = writeManifest("a", "services:\n  db:\n    dat:\n      - path: /x\n");
+  expect(() => manifest.load(p)).toThrow(/services\.db: unknown key "dat"/);
+});
+
+test("load: rejects unknown key inside data entry", () => {
+  const p = writeManifest("a", `
+services:
+  db:
+    data:
+      - path: /x
+        owner: "1:1"
+        mod: "0755"
+`);
+  expect(() => manifest.load(p)).toThrow(/services\.db\.data\[0\]: unknown key "mod"/);
+});
+
+test("load: rejects unknown key inside env", () => {
+  const p = writeManifest("a", "env:\n  requried: [X]\n");
+  expect(() => manifest.load(p)).toThrow(/env: unknown key "requried"/);
 });
 
 test("parseOwner: valid uid:gid", () => {
@@ -193,3 +226,68 @@ test("validateEnv: optional is informational only", () => {
     manifest.validateEnv({ optional: ["X"] }, {}, "x"),
   ).not.toThrow();
 });
+
+const runComposeConfig = async (base: string, override: string): Promise<any> => {
+  const r = await $`docker compose -f ${base} -f ${override} config --format json`.quiet().nothrow();
+  if (r.exitCode !== 0) {
+    throw new Error(`compose config failed: ${r.stderr.toString()}`);
+  }
+  return JSON.parse(r.stdout.toString());
+};
+
+test.skipIf(!hasDockerCompose)(
+  "integration: docker compose merges generated override into base",
+  async () => {
+    const base = path.join(tmp, "compose.yml");
+    const override = path.join(tmp, "override.yml");
+    fs.writeFileSync(base, `
+name: bicycle-test-merge
+services:
+  app:
+    image: alpine:3
+    command: ["true"]
+    volumes:
+      - /etc/hostname:/etc/hostname:ro
+`);
+    const out = manifest.generateOverride([
+      { service: "app", hostPath: "/tmp/bicycle-test-merge/data", containerPath: "/data" },
+    ]);
+    fs.writeFileSync(override, out!);
+
+    const merged = await runComposeConfig(base, override);
+    const targets = merged.services.app.volumes.map((v: any) => v.target);
+    expect(targets).toContain("/etc/hostname");
+    expect(targets).toContain("/data");
+
+    const dataVol = merged.services.app.volumes.find((v: any) => v.target === "/data");
+    expect(dataVol.type).toBe("bind");
+    expect(dataVol.source).toBe("/tmp/bicycle-test-merge/data");
+  },
+);
+
+test.skipIf(!hasDockerCompose)(
+  "integration: override across multiple services merges per-service",
+  async () => {
+    const base = path.join(tmp, "compose.yml");
+    const override = path.join(tmp, "override.yml");
+    fs.writeFileSync(base, `
+name: bicycle-test-multi
+services:
+  web:
+    image: alpine:3
+    command: ["true"]
+  db:
+    image: alpine:3
+    command: ["true"]
+`);
+    const out = manifest.generateOverride([
+      { service: "web", hostPath: "/tmp/bicycle-test-multi/web", containerPath: "/srv" },
+      { service: "db", hostPath: "/tmp/bicycle-test-multi/db", containerPath: "/var/lib/db" },
+    ]);
+    fs.writeFileSync(override, out!);
+
+    const merged = await runComposeConfig(base, override);
+    expect(merged.services.web.volumes.map((v: any) => v.target)).toContain("/srv");
+    expect(merged.services.db.volumes.map((v: any) => v.target)).toContain("/var/lib/db");
+  },
+);

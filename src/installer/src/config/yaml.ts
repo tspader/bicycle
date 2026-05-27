@@ -1,6 +1,9 @@
-import { parse as parseTomlText, stringify as stringifyToml } from 'smol-toml'
-import { z } from 'zod'
-import { ArchinstallConfig, FsType, PartitionFlag, Kernel, Bootloader, EncryptionType } from './schema'
+import {
+  BicycleConfig,
+  LoaderName,
+  type EncryptionKind,
+} from '@bicycle/shared'
+import { ArchinstallConfig, Bootloader, EncryptionType } from './schema'
 import { Size, DEFAULT_SECTOR, parseSize, formatSize, sizeBytes } from './size'
 import { MachineCtx } from './machine'
 
@@ -8,112 +11,18 @@ const MIB = 1024 ** 2
 
 export const DEFAULT_MIRROR_URL = 'https://geo.mirror.pkgbuild.com/$repo/os/$arch'
 
-const LoaderName = z.enum(['systemd-boot', 'grub', 'efistub', 'limine', 'refind'])
-const LOADER_TO_ARCHINSTALL: Record<z.infer<typeof LoaderName>, z.infer<typeof Bootloader>> = {
+const LOADER_TO_ARCHINSTALL: Record<LoaderName, Bootloader> = {
   'systemd-boot': 'Systemd-boot',
   grub: 'Grub',
   efistub: 'Efistub',
   limine: 'Limine',
   refind: 'Refind',
 }
-const ARCHINSTALL_TO_LOADER: Record<z.infer<typeof Bootloader>, z.infer<typeof LoaderName>> =
-  Object.fromEntries(Object.entries(LOADER_TO_ARCHINSTALL).map(([k, v]) => [v, k])) as never
+const ARCHINSTALL_TO_LOADER: Record<Bootloader, LoaderName> = Object.fromEntries(
+  Object.entries(LOADER_TO_ARCHINSTALL).map(([k, v]) => [v, k]),
+) as never
 
-const BicycleSubvol = z.object({
-  name: z.string().min(1),
-  mount: z.string().min(1).optional(),
-}).strict()
-
-const BicyclePartition = z.object({
-  mount: z.string().min(1),
-  fs: FsType,
-  size: z.string().min(1),
-  start: z.string().min(1).optional(),
-  flags: z.array(PartitionFlag).optional(),
-  mount_options: z.array(z.string().min(1)).optional(),
-  subvol: z.array(BicycleSubvol).optional(),
-  encrypt: z.boolean().optional(),
-}).strict()
-
-const BicycleDisk = z.object({
-  device: z.string().min(1),
-  wipe: z.boolean(),
-  table: z.enum(['gpt', 'mbr']),
-  partition: z.array(BicyclePartition).min(1),
-}).strict()
-
-const BicycleUser = z.object({
-  name: z.string().min(1),
-  sudo: z.boolean(),
-  groups: z.array(z.string()),
-}).strict()
-
-const BicycleToml = z.object({
-  core: z
-    .object({
-      hostname: z.string().min(1),
-      timezone: z.string().min(1),
-      kernels: z.array(Kernel).min(1),
-      ntp: z.boolean(),
-    })
-    .strict()
-    .optional(),
-  locale: z
-    .object({
-      keyboard: z.string().min(1),
-      language: z.string().min(1),
-      encoding: z.string().min(1),
-    })
-    .strict()
-    .optional(),
-  boot: z
-    .object({
-      loader: LoaderName,
-      uki: z.boolean(),
-      removable: z.boolean(),
-    })
-    .strict()
-    .optional(),
-  disk: z.array(BicycleDisk).optional(),
-  swap: z
-    .object({
-      enabled: z.boolean(),
-      algorithm: z.enum(['zstd', 'lzo-rle', 'lzo', 'lz4', 'lz4hc']),
-    })
-    .strict()
-    .optional(),
-  user: z.array(BicycleUser).optional(),
-  packages: z.record(z.string(), z.array(z.string())).optional(),
-  pacman: z
-    .object({
-      color: z.boolean().optional(),
-      parallel_downloads: z.number().int().nonnegative().optional(),
-      mirrors: z
-        .object({
-          regions: z.array(z.string()),
-          custom: z.array(z.string().url()).optional(),
-        })
-        .strict()
-        .optional(),
-    })
-    .strict()
-    .optional(),
-  network: z
-    .object({
-      mode: z.enum(['iso', 'networkmanager']),
-    })
-    .strict()
-    .optional(),
-  encryption: z
-    .object({
-      type: z.enum(['luks', 'lvm_on_luks', 'luks_on_lvm']),
-    })
-    .strict()
-    .optional(),
-}).strict()
-export type BicycleToml = z.infer<typeof BicycleToml>
-
-const NET_MODE: Record<z.infer<typeof BicycleToml>['network'] extends infer T ? T extends { mode: infer M } ? M : never : never, 'iso' | 'nm'> = {
+const NET_MODE: Record<'iso' | 'networkmanager', 'iso' | 'nm'> = {
   iso: 'iso',
   networkmanager: 'nm',
 }
@@ -123,14 +32,24 @@ const NET_MODE_REVERSE: Record<'iso' | 'nm', 'iso' | 'networkmanager'> = {
   nm: 'networkmanager',
 }
 
+export type RetainedDoc = {
+  catalog?: BicycleConfig['catalog']
+  systemd?: BicycleConfig['systemd']
+}
+
+export type YamlImport = {
+  config: ArchinstallConfig
+  retained: RetainedDoc
+}
+
 const addBytes = (a: Size, bytes: number): Size => {
   const total = sizeBytes(a) + bytes
   return { unit: 'B', value: total, sector_size: DEFAULT_SECTOR }
 }
 
-export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
-  const raw = parseTomlText(text)
-  const bike = BicycleToml.parse(raw)
+export const fromYaml = (text: string, ctx: MachineCtx): YamlImport => {
+  const raw = Bun.YAML.parse(text)
+  const bike = BicycleConfig.parse(raw)
   const out: ArchinstallConfig = {}
 
   if (bike.core) {
@@ -156,20 +75,21 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
     }
   }
 
-  if (bike.disk) {
+  if (bike.disks) {
     const encryptedObjIds: string[] = []
-    const device_modifications = bike.disk.map((d) => {
-      const last = d.partition.length - 1
+    const device_modifications = bike.disks.map((d) => {
+      const last = d.partitions.length - 1
       let cursor: Size | null = null
       return {
         device: d.device,
         wipe: d.wipe,
-        partitions: d.partition.map((p, i) => {
-          if (p.fs !== 'btrfs' && p.subvol && p.subvol.length > 0) {
-            throw new Error(`disk ${d.device} partition ${p.mount}: subvol requires fs="btrfs"`)
+        partitions: d.partitions.map((p, i) => {
+          const label = p.mount ?? `#${i}`
+          if (p.fs !== 'btrfs' && p.subvolumes && p.subvolumes.length > 0) {
+            throw new Error(`disk ${d.device} partition ${label}: subvolumes requires fs="btrfs"`)
           }
           if (p.size === 'rest' && i !== last) {
-            throw new Error(`disk ${d.device} partition ${p.mount}: "rest" is only allowed on the last partition`)
+            throw new Error(`disk ${d.device} partition ${label}: "rest" is only allowed on the last partition`)
           }
           let start: Size
           if (p.start) {
@@ -208,11 +128,11 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
             status: 'create' as const,
             type: 'primary' as const,
             fs_type: p.fs,
-            mountpoint: p.mount,
+            mountpoint: p.mount ?? null,
             flags: p.flags ?? [],
             start,
             size,
-            btrfs: (p.subvol ?? []).map((s) => ({ name: s.name, mountpoint: s.mount ?? null })),
+            btrfs: (p.subvolumes ?? []).map((s) => ({ name: s.name, mountpoint: s.mount ?? null })),
             dev_path: null,
             mount_options: p.mount_options ?? [],
             original_size: p.size,
@@ -224,10 +144,10 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
 
     const wantsEncryption = encryptedObjIds.length > 0
     if (wantsEncryption && !bike.encryption) {
-      throw new Error('partitions marked encrypt=true require an [encryption] block')
+      throw new Error('partitions marked encrypt=true require an `encryption` block')
     }
     if (bike.encryption && !wantsEncryption) {
-      throw new Error('[encryption] block requires at least one partition with encrypt=true')
+      throw new Error('`encryption` block requires at least one partition with encrypt=true')
     }
 
     out.disk_config = {
@@ -245,7 +165,7 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
         : {}),
     }
   } else if (bike.encryption) {
-    throw new Error('[encryption] block requires at least one [[disk]]')
+    throw new Error('`encryption` block requires at least one `disks` entry')
   }
 
   if (bike.swap) out.swap = bike.swap
@@ -271,10 +191,20 @@ export const fromToml = (text: string, ctx: MachineCtx): ArchinstallConfig => {
     }
   }
 
-  return ArchinstallConfig.parse(out)
+  return {
+    config: ArchinstallConfig.parse(out),
+    retained: {
+      ...(bike.catalog ? { catalog: bike.catalog } : {}),
+      ...(bike.systemd ? { systemd: bike.systemd } : {}),
+    },
+  }
 }
 
-export const toToml = (cfg: ArchinstallConfig, packageRepos: Record<string, string> = {}): string => {
+export const toYaml = (
+  cfg: ArchinstallConfig,
+  retained: RetainedDoc = {},
+  packageRepos: Record<string, string> = {},
+): string => {
   const bike: Record<string, unknown> = {}
 
   if (cfg.hostname || cfg.timezone || cfg.kernels || cfg.ntp !== undefined) {
@@ -304,21 +234,21 @@ export const toToml = (cfg: ArchinstallConfig, packageRepos: Record<string, stri
 
   if (cfg.disk_config) {
     const encryptedSet = new Set(cfg.disk_config.disk_encryption?.partitions ?? [])
-    bike.disk = cfg.disk_config.device_modifications.map((d) => ({
+    bike.disks = cfg.disk_config.device_modifications.map((d) => ({
       device: d.device,
       wipe: d.wipe,
       table: 'gpt',
-      partition: d.partitions.map((p, i) => {
+      partitions: d.partitions.map((p, i) => {
         const out: Record<string, unknown> = {
-          mount: p.mountpoint ?? '',
           fs: p.fs_type,
           size: p.original_size ?? formatSize(p.size),
         }
+        if (p.mountpoint) out.mount = p.mountpoint
         if (i === 0) out.start = p.original_start ?? formatSize(p.start)
         if (p.flags.length > 0) out.flags = p.flags
         if (p.mount_options.length > 0) out.mount_options = p.mount_options
         if (p.btrfs.length > 0) {
-          out.subvol = p.btrfs.map((s) => {
+          out.subvolumes = p.btrfs.map((s) => {
             const sv: Record<string, unknown> = { name: s.name }
             if (s.mountpoint) sv.mount = s.mountpoint
             return sv
@@ -329,13 +259,13 @@ export const toToml = (cfg: ArchinstallConfig, packageRepos: Record<string, stri
       }),
     }))
     if (cfg.disk_config.disk_encryption && cfg.disk_config.disk_encryption.encryption_type !== 'no_encryption') {
-      bike.encryption = { type: cfg.disk_config.disk_encryption.encryption_type }
+      bike.encryption = { type: cfg.disk_config.disk_encryption.encryption_type as EncryptionKind }
     }
   }
 
   if (cfg.swap) bike.swap = cfg.swap
   if (cfg.users && cfg.users.length > 0) {
-    bike.user = cfg.users.map((u) => ({
+    bike.users = cfg.users.map((u) => ({
       name: u.username,
       sudo: u.sudo,
       groups: u.groups,
@@ -370,5 +300,8 @@ export const toToml = (cfg: ArchinstallConfig, packageRepos: Record<string, stri
     bike.pacman = pacman
   }
 
-  return stringifyToml(bike)
+  if (retained.catalog) bike.catalog = retained.catalog
+  if (retained.systemd) bike.systemd = retained.systemd
+
+  return Bun.YAML.stringify(bike, null, 2)
 }

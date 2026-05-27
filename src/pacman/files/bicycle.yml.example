@@ -1,0 +1,6 @@
+catalog:
+  url: "https://github.com/tspader/bikeshop"
+
+systemd:
+  enable:
+    - docker.service

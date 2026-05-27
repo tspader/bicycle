@@ -5,7 +5,8 @@ import * as config from "../config";
 import * as secrets from "../secrets";
 import { ensure as ensureRepo } from "./git";
 import * as manifest from "./manifest";
-import { chownIgnoreEperm } from "../fs";
+import { chownRecursiveIfNeeded } from "../fs";
+import { log } from "../logger";
 
 export type AppPlan = {
   name: string;
@@ -45,9 +46,7 @@ export const buildComposeArgs = (
 export const ensureMount = (m: manifest.Mount): void => {
   fs.mkdirSync(m.hostPath, { recursive: true });
   if (!m.owner) return;
-  const st = fs.statSync(m.hostPath);
-  if (st.uid === m.owner.uid && st.gid === m.owner.gid) return;
-  chownIgnoreEperm(m.hostPath, m.owner.uid, m.owner.gid);
+  chownRecursiveIfNeeded(m.hostPath, m.owner.uid, m.owner.gid);
 };
 
 export const plan = async (
@@ -60,6 +59,10 @@ export const plan = async (
   const cfg = config.app(name);
   const cache = paths.state.cache.catalog(name, cfg.ref);
 
+  log.info(
+    { app: name, ref: cfg.ref, catalog: catalogUrl },
+    "app: fetching catalog",
+  );
   await ensureRepo({
     repo: catalogUrl,
     ref: cfg.ref,
@@ -111,19 +114,34 @@ export const execute = async (p: AppPlan): Promise<void> => {
   const generated = p.overrideContent !== null ? p.stateOverride : null;
   const fileArgs = buildComposeArgs(p.stateCompose, generated, p.userOverride);
 
+  log.info(
+    { app: p.name, ref: p.ref, mounts: p.mounts.length },
+    "app: docker compose up",
+  );
   await $`docker compose ${fileArgs} --project-directory ${p.projectDir} -p ${p.name} up -d`
     .env({ ...process.env, ...p.env });
 
-  console.log(`reconciled ${p.name} @ ${p.ref}`);
+  log.info({ app: p.name, ref: p.ref }, "app: reconciled");
 };
 
 export const reconcile = async (): Promise<void> => {
-  const cfg = config.bicycle();
   if (!fs.existsSync(paths.etc.apps)) return;
+  const names = fs.readdirSync(paths.etc.apps).filter((name) => {
+    const app = paths.etc.app(name);
+    return fs.statSync(app.root).isDirectory() && fs.existsSync(app.config);
+  });
+  if (names.length === 0) return;
+  const cfg = config.bicycle();
+  if (!cfg.catalog) throw new Error("bicycle.yml: missing `catalog.url`");
+  const catalogUrl = cfg.catalog.url;
 
-  for (const name of fs.readdirSync(paths.etc.apps)) {
-    if (!fs.statSync(paths.etc.app(name).root).isDirectory()) continue;
-    const p = await plan(name, cfg.catalog.url);
-    if (p) await execute(p);
+  for (const name of names) {
+    try {
+      const p = await plan(name, catalogUrl);
+      if (p) await execute(p);
+    } catch (e) {
+      log.error({ err: e, app: name }, "app: reconcile failed");
+      throw e;
+    }
   }
 };

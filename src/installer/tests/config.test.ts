@@ -1,59 +1,59 @@
 import { describe, test, expect } from 'bun:test'
-import { fromToml, toToml, testMachine, DEFAULT_MIRROR_URL, parseSize, sizeBytes, preflight, targetDevice } from '../src/config'
+import { fromYaml, toYaml, testMachine, DEFAULT_MIRROR_URL, parseSize, sizeBytes, preflight, targetDevice } from '../src/config'
 import type { DiskInfo } from '../src/system'
 
 const ctx = () => testMachine({ disks: { '/dev/vda': 100 * 1024 ** 3 } }) // 100 GiB
 
 const MINIMAL = `
-[core]
-hostname = "mark"
-timezone = "America/New_York"
-kernels = ["linux"]
-ntp = true
+core:
+  hostname: mark
+  timezone: America/New_York
+  kernels: [linux]
+  ntp: true
 
-[locale]
-keyboard = "us"
-language = "en_US.UTF-8"
-encoding = "UTF-8"
+locale:
+  keyboard: us
+  language: en_US.UTF-8
+  encoding: UTF-8
 
-[boot]
-loader = "systemd-boot"
-uki = true
-removable = false
+boot:
+  loader: systemd-boot
+  uki: true
+  removable: false
 
-[[disk]]
-device = "/dev/vda"
-wipe = true
-table = "gpt"
+disks:
+  - device: /dev/vda
+    wipe: true
+    table: gpt
+    partitions:
+      - mount: /boot
+        fs: fat32
+        size: 1GiB
+        start: 1MiB
+        flags: [boot, esp]
+      - mount: /
+        fs: ext4
+        size: 20GiB
 
-  [[disk.partition]]
-  mount = "/boot"
-  fs    = "fat32"
-  size  = "1GiB"
-  start = "1MiB"
-  flags = ["boot", "esp"]
+swap:
+  enabled: true
+  algorithm: zstd
 
-  [[disk.partition]]
-  mount = "/"
-  fs    = "ext4"
-  size  = "20GiB"
+packages:
+  extra: [git, vim]
 
-[swap]
-enabled = true
-algorithm = "zstd"
+pacman:
+  mirrors:
+    regions: [United States]
 
-[packages]
-extra = ["git", "vim"]
-
-[pacman.mirrors]
-regions = ["United States"]
-
-[network]
-mode = "iso"
+network:
+  mode: iso
 `
 
-test('fromToml produces archinstall-shape JSON', () => {
-  const cfg = fromToml(MINIMAL, ctx())
+const importCfg = (text: string) => fromYaml(text, ctx()).config
+
+test('fromYaml produces archinstall-shape JSON', () => {
+  const cfg = importCfg(MINIMAL)
   expect(cfg.hostname).toBe('mark')
   expect(cfg.kernels).toEqual(['linux'])
   expect(cfg.locale_config).toEqual({ kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' })
@@ -66,7 +66,7 @@ test('fromToml produces archinstall-shape JSON', () => {
 })
 
 test('testMachine produces deterministic obj_ids', () => {
-  const cfg = fromToml(MINIMAL, ctx())
+  const cfg = importCfg(MINIMAL)
   const ids = cfg.disk_config!.device_modifications[0]!.partitions.map((p) => p.obj_id)
   expect(ids).toEqual([
     '00000000-0000-4000-8000-000000000001',
@@ -75,32 +75,28 @@ test('testMachine produces deterministic obj_ids', () => {
 })
 
 test('derives start for non-first partition', () => {
-  const cfg = fromToml(MINIMAL, ctx())
+  const cfg = importCfg(MINIMAL)
   const p1 = cfg.disk_config!.device_modifications[0]!.partitions[1]!
   expect(p1.start.unit).toBe('B')
   expect(p1.start.value).toBe(1024 ** 2 + 1024 ** 3)
 })
 
 test('"rest" on last partition resolves to remaining disk minus GPT tail', () => {
-  const withRest = MINIMAL.replace('size  = "20GiB"', 'size  = "rest"')
-  const cfg = fromToml(withRest, ctx())
+  const withRest = MINIMAL.replace('size: 20GiB', 'size: rest')
+  const cfg = importCfg(withRest)
   const root = cfg.disk_config!.device_modifications[0]!.partitions[1]!
-  // 100 GiB - 1 MiB (GPT backup) - 1 MiB (start of /boot) - 1 GiB (/boot length)
   const expected = 100 * 1024 ** 3 - 1024 ** 2 - 1024 ** 2 - 1024 ** 3
   expect(root.size).toEqual({ unit: 'B', value: expected, sector_size: { unit: 'B', value: 512 } })
 })
 
 test('"rest" only on last partition', () => {
-  const bad = MINIMAL.replace('size  = "1GiB"', 'size  = "rest"')
-  expect(() => fromToml(bad, ctx())).toThrow(/only allowed on the last partition/)
+  const bad = MINIMAL.replace('size: 1GiB', 'size: rest')
+  expect(() => importCfg(bad)).toThrow(/only allowed on the last partition/)
 })
 
-test('toToml -> fromToml round-trips meaningful fields', () => {
-  // obj_id UUIDs are regenerated and `start` is only emitted for partition 0,
-  // but everything user-meaningful must survive. We don't include "rest" here
-  // because round-tripping resolves it to concrete bytes (lossy by design).
-  const a = fromToml(MINIMAL, ctx())
-  const b = fromToml(toToml(a), ctx())
+test('toYaml -> fromYaml round-trips meaningful fields', () => {
+  const a = importCfg(MINIMAL)
+  const b = importCfg(toYaml(a))
   expect(b.hostname).toEqual(a.hostname)
   expect(b.locale_config).toEqual(a.locale_config)
   expect(b.bootloader_config).toEqual(a.bootloader_config)
@@ -115,56 +111,85 @@ test('toToml -> fromToml round-trips meaningful fields', () => {
   )
 })
 
-test('rejects unknown nested fields', () => {
-  const bad = MINIMAL.replace('keyboard = "us"', 'keyboard = "us"\ntypo_field = "x"')
-  expect(() => fromToml(bad, ctx())).toThrow()
+test('uses plural YAML keys (disks/partitions)', () => {
+  const cfg = importCfg(MINIMAL)
+  expect(cfg.disk_config!.device_modifications).toHaveLength(1)
+  expect(cfg.disk_config!.device_modifications[0]!.partitions).toHaveLength(2)
 })
 
-test('drops user blocks on import (passwords cannot be expressed in TOML)', () => {
-  const withUser = MINIMAL + '\n[[user]]\nname = "spader"\nsudo = true\ngroups = ["wheel"]\n'
-  const cfg = fromToml(withUser, ctx())
+test('rejects obsolete singular keys (disk/partition)', () => {
+  const bad = MINIMAL
+    .replace('disks:', 'disk:')
+    .replace('partitions:', 'partition:')
+  expect(() => importCfg(bad)).toThrow()
+})
+
+test('rejects unknown nested fields', () => {
+  const bad = MINIMAL.replace('keyboard: us', 'keyboard: us\n  typo_field: x')
+  expect(() => importCfg(bad)).toThrow()
+})
+
+test('drops user blocks on import (passwords cannot be expressed in YAML)', () => {
+  const withUser = MINIMAL + '\nusers:\n  - name: spader\n    sudo: true\n    groups: [wheel]\n'
+  const cfg = importCfg(withUser)
   expect(cfg.users).toBeUndefined()
 })
 
 test('rejects nm_iwd network mode (archinstall silently drops it)', () => {
-  const bad = MINIMAL.replace('mode = "iso"', 'mode = "nm_iwd"')
-  expect(() => fromToml(bad, ctx())).toThrow()
+  const bad = MINIMAL.replace('mode: iso', 'mode: nm_iwd')
+  expect(() => importCfg(bad)).toThrow()
+})
+
+test('retains catalog and systemd through import and preview serialization', () => {
+  const withRetained = MINIMAL +
+    '\ncatalog:\n  url: "git://localhost/bikeshop"\n' +
+    'systemd:\n  enable: [docker.service]\n'
+  const { config, retained } = fromYaml(withRetained, ctx())
+  expect(retained.catalog?.url).toBe('git://localhost/bikeshop')
+  expect(retained.systemd?.enable).toEqual(['docker.service'])
+
+  const out = toYaml(config, retained)
+  const reparsed = fromYaml(out, ctx())
+  expect(reparsed.retained.catalog?.url).toBe('git://localhost/bikeshop')
+  expect(reparsed.retained.systemd?.enable).toEqual(['docker.service'])
+})
+
+test('parses the checked-in example/machine/bicycle.yml', async () => {
+  const text = await Bun.file(new URL('../../../example/machine/bicycle.yml', import.meta.url)).text()
+  const { config, retained } = fromYaml(text, testMachine({ disks: { '/dev/vda': 32 * 1024 ** 3 } }))
+  expect(config.hostname).toBeTruthy()
+  expect(retained.catalog?.url).toBeTruthy()
+  expect(retained.systemd?.enable?.length).toBeGreaterThan(0)
 })
 
 const WITH_BTRFS_ENC = `
-[[disk]]
-device = "/dev/vda"
-wipe   = true
-table  = "gpt"
+disks:
+  - device: /dev/vda
+    wipe: true
+    table: gpt
+    partitions:
+      - mount: /boot
+        fs: fat32
+        start: 1MiB
+        size: 512MiB
+        flags: [boot, esp]
+      - mount: /
+        fs: btrfs
+        size: 20GiB
+        mount_options: [compress=zstd, noatime]
+        encrypt: true
+        subvolumes:
+          - name: "@"
+            mount: /
+          - name: "@home"
+            mount: /home
 
-  [[disk.partition]]
-  mount = "/boot"
-  fs    = "fat32"
-  start = "1MiB"
-  size  = "512MiB"
-  flags = ["boot", "esp"]
-
-  [[disk.partition]]
-  mount = "/"
-  fs    = "btrfs"
-  size  = "20GiB"
-  mount_options = ["compress=zstd", "noatime"]
-  encrypt = true
-
-    [[disk.partition.subvol]]
-    name = "@"
-    mount = "/"
-
-    [[disk.partition.subvol]]
-    name = "@home"
-    mount = "/home"
-
-[encryption]
-type = "luks"
+encryption:
+  type: luks
 `
 
-test('mount_options + btrfs subvols + encryption round-trip', () => {
-  const a = fromToml(WITH_BTRFS_ENC, ctx())
+test('mount_options + btrfs subvolumes + encryption round-trip', () => {
+  const a = importCfg(WITH_BTRFS_ENC)
   const root = a.disk_config!.device_modifications[0]!.partitions[1]!
   expect(root.mount_options).toEqual(['compress=zstd', 'noatime'])
   expect(root.btrfs).toEqual([
@@ -174,7 +199,7 @@ test('mount_options + btrfs subvols + encryption round-trip', () => {
   expect(a.disk_config!.disk_encryption?.encryption_type).toBe('luks')
   expect(a.disk_config!.disk_encryption?.partitions).toEqual([root.obj_id])
 
-  const b = fromToml(toToml(a), ctx())
+  const b = importCfg(toYaml(a))
   const rootB = b.disk_config!.device_modifications[0]!.partitions[1]!
   expect(rootB.mount_options).toEqual(root.mount_options)
   expect(rootB.btrfs).toEqual(root.btrfs)
@@ -182,14 +207,14 @@ test('mount_options + btrfs subvols + encryption round-trip', () => {
   expect(b.disk_config!.disk_encryption?.partitions).toEqual([rootB.obj_id])
 })
 
-test('rejects encrypt=true without [encryption] block', () => {
-  const bad = WITH_BTRFS_ENC.replace('\n[encryption]\ntype = "luks"\n', '')
-  expect(() => fromToml(bad, ctx())).toThrow(/require an \[encryption\] block/)
+test('rejects encrypt=true without encryption block', () => {
+  const bad = WITH_BTRFS_ENC.replace(/\nencryption:\n  type: luks\n/, '')
+  expect(() => importCfg(bad)).toThrow(/require an `encryption` block/)
 })
 
-test('rejects subvol on non-btrfs partition', () => {
-  const bad = WITH_BTRFS_ENC.replace('fs    = "btrfs"', 'fs    = "ext4"')
-  expect(() => fromToml(bad, ctx())).toThrow(/subvol requires fs="btrfs"/)
+test('rejects subvolumes on non-btrfs partition', () => {
+  const bad = WITH_BTRFS_ENC.replace('fs: btrfs', 'fs: ext4')
+  expect(() => importCfg(bad)).toThrow(/subvolumes requires fs="btrfs"/)
 })
 
 describe('parseSize', () => {
@@ -242,7 +267,7 @@ describe('preflight', () => {
   ]
 
   const ready = () => {
-    const cfg = fromToml(MINIMAL.replace('size  = "20GiB"', 'size  = "rest"'), ctx())
+    const cfg = importCfg(MINIMAL.replace('size: 20GiB', 'size: rest'))
     return {
       ...cfg,
       users: [{ username: 's', sudo: true, groups: ['wheel'], enc_password: 'h' }],

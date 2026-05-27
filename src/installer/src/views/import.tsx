@@ -10,14 +10,14 @@ const FILE_PICKER_JS = `
     if (status) status.textContent = 'Reading file…'
     if (error) error.textContent = ''
     try {
-      const toml = await f.text()
-      const r = await fetch('/api/import/toml', {
+      const yaml = await f.text()
+      const r = await fetch('/api/import/yaml', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'datastar-request': 'true',
         },
-        body: JSON.stringify({ toml }),
+        body: JSON.stringify({ yaml }),
       })
       if (!r.ok) {
         const msg = await r.text()
@@ -128,7 +128,7 @@ export const ImportView = ({ ageKeySet }: { ageKeySet: boolean }) => {
       <div data-signals={JSON.stringify(signals)}>
         <Section
           title="From Git repository"
-          subhead="Clones over HTTPS and reads .bicycle/machine.toml from the repository root."
+          subhead="Clones over HTTPS and reads .bicycle/bicycle.yml from the repository root."
         >
           <form class="form card" data-on:submit__prevent="@post('/api/import/git')">
             <Field label="Repository URL" htmlFor="import-git-url">
@@ -171,16 +171,16 @@ export const ImportView = ({ ageKeySet }: { ageKeySet: boolean }) => {
         </Section>
 
         <Section
-          title="From local TOML file"
-          subhead="Pick a .bicycle/machine.toml from this machine (the one running the browser)."
+          title="From local YAML file"
+          subhead="Pick a bicycle.yml from this machine (the one running the browser)."
         >
           <div class="form card">
-            <Field label="machine.toml" htmlFor="import-toml-file">
+            <Field label="bicycle.yml" htmlFor="import-yaml-file">
               <input
-                id="import-toml-file"
+                id="import-yaml-file"
                 class="combo"
                 type="file"
-                accept=".toml,text/plain"
+                accept=".yml,.yaml,text/yaml,text/plain"
                 onchange={FILE_PICKER_JS}
               />
             </Field>

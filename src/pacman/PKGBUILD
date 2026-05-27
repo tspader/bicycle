@@ -16,6 +16,6 @@ package() {
     "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.service"
   install -Dm644 "$startdir/files/bicycle-reconcile.timer" \
     "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.timer"
-  install -Dm644 "$startdir/files/bicycle.toml.example" \
-    "$pkgdir/etc/bicycle/bicycle.toml.example"
+  install -Dm644 "$startdir/files/bicycle.yml.example" \
+    "$pkgdir/etc/bicycle/bicycle.yml.example"
 }

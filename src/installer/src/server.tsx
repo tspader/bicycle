@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { CATEGORIES, Layout, Preview, Warnings } from './views/layout'
 import type { Child } from 'hono/jsx'
 import { codeToHtml } from 'shiki'
-import { toToml, DEFAULT_MIRROR_URL, fromToml } from './config'
+import { toYaml, DEFAULT_MIRROR_URL, fromYaml } from './config'
 import { randomUUID } from 'node:crypto'
 import { rmSync, readFileSync } from 'node:fs'
 import { SystemView } from './views/system'
@@ -38,7 +38,7 @@ import { InstallView, ProgressCard } from './views/install'
 import { ImportView } from './views/import'
 import { existsSync } from 'node:fs'
 import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
-import { getState, setState, replaceState } from './state'
+import { getState, setState, replaceState, getRetained, setRetained } from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig } from './config'
@@ -107,15 +107,15 @@ const LOADER_MAP = {
 } as const
 
 const renderPreviewHtml = async (): Promise<string> => {
-  let toml: string
+  let yaml: string
   try {
     const all = await loadPackages()
     const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
-    toml = toToml(getState(), repos)
+    yaml = toYaml(getState(), getRetained(), repos)
   } catch (e) {
-    toml = `# preview unavailable\n# ${(e as Error).message}`
+    yaml = `# preview unavailable\n# ${(e as Error).message}`
   }
-  return codeToHtml(toml, { lang: 'toml', theme: 'github-dark-default' })
+  return codeToHtml(yaml, { lang: 'yaml', theme: 'github-dark-default' })
 }
 
 const renderSidecar = async () => {
@@ -271,11 +271,12 @@ const ImportGitSignals = z.object({
   import_git_pass: z.string().optional().default(''),
 })
 
-const ImportTomlBody = z.object({ toml: z.string().min(1) })
+const ImportYamlBody = z.object({ yaml: z.string().min(1) })
 
-const applyImportToml = (text: string): void => {
-  const cfg = fromToml(text, liveMachine())
-  replaceState(cfg)
+const applyImportYaml = (text: string): void => {
+  const { config, retained } = fromYaml(text, liveMachine())
+  replaceState(config)
+  setRetained(retained)
 }
 
 app.post('/api/import/git', (c) =>
@@ -319,12 +320,12 @@ app.post('/api/import/git', (c) =>
           const tail = sanitized.trim().split('\n').slice(-2).join(' ').slice(0, 400)
           throw new Error(tail || 'git clone failed')
         }
-        const tomlPath = `${tmp}/.bicycle/machine.toml`
-        if (!existsSync(tomlPath)) {
-          throw new Error('.bicycle/machine.toml not found in repository root')
+        const yamlPath = `${tmp}/.bicycle/bicycle.yml`
+        if (!existsSync(yamlPath)) {
+          throw new Error('.bicycle/bicycle.yml not found in repository root')
         }
-        const text = readFileSync(tomlPath, 'utf8')
-        applyImportToml(text)
+        const text = readFileSync(yamlPath, 'utf8')
+        applyImportYaml(text)
       } finally {
         try { rmSync(tmp, { recursive: true, force: true }) } catch {}
       }
@@ -353,13 +354,13 @@ app.post('/api/secrets/age-key/clear', (c) => {
   return c.json({ ok: true })
 })
 
-app.post('/api/import/toml', (c) => {
-  const parsed = ImportTomlBody.safeParse(c.get('signals') ?? {})
+app.post('/api/import/yaml', (c) => {
+  const parsed = ImportYamlBody.safeParse(c.get('signals') ?? {})
   if (!parsed.success) {
     throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid body' })
   }
   try {
-    applyImportToml(parsed.data.toml)
+    applyImportYaml(parsed.data.yaml)
   } catch (e) {
     throw new HTTPException(400, { message: (e as Error).message })
   }
@@ -1056,8 +1057,23 @@ name=$(basename "$pkg")
 cp "$pkg" /mnt/root/
 arch-chroot /mnt pacman -U --noconfirm "/root/$name"
 `.trim()
+
+  const all = await loadPackages().catch(() => [])
+  const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
+  const docYaml = toYaml(getState(), getRetained(), repos)
+  const writeDoc = `
+set -e
+install -d -m 0755 -o root -g root /mnt/etc/bicycle
+cat > /mnt/etc/bicycle/bicycle.yml <<'BICYCLE_YAML_EOF'
+${docYaml}
+BICYCLE_YAML_EOF
+chmod 0644 /mnt/etc/bicycle/bicycle.yml
+chown root:root /mnt/etc/bicycle/bicycle.yml
+`.trim()
+
   const steps: Array<[string, string[]]> = [
     ['install bicycle pkg into target', ['sh', '-c', installPkg]],
+    ['write /mnt/etc/bicycle/bicycle.yml', ['sh', '-c', writeDoc]],
   ]
   const ageKey = getAgeKey()
   if (ageKey) {

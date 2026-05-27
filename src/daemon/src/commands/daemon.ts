@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Command } from "@spader/zargs";
+import { log } from "../logger";
 
 export const command: Command = {
   description: "Run the long-running bicycle daemon HTTP server",
@@ -23,7 +24,7 @@ export const command: Command = {
     const port = Number(argv.port);
     const hostname = String(argv.host);
 
-    console.log(`bicycle daemon listening on http://${hostname}:${port}`);
+    log.info({ host: hostname, port }, "bicycle daemon listening");
 
     Bun.serve({
       port,

@@ -14,7 +14,6 @@
     "@starfederation/datastar-sdk": "1.0.0",
     "hono": "catalog:",
     "shiki": "^4.0.2",
-    "smol-toml": "^1.6.1",
     "zod": "catalog:"
   },
   "devDependencies": {

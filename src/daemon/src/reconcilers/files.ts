@@ -5,6 +5,7 @@ import { env } from "../env";
 import { paths } from "../paths";
 import * as age from "../age";
 import { chownIgnoreEperm } from "../fs";
+import { log } from "../logger";
 
 const walk = (root: string): string[] => {
   const out: string[] = [];
@@ -70,9 +71,9 @@ export const reconcile = async (): Promise<void> => {
         if (sha(existing) === sha(plaintext)) continue;
       }
       writeAtomic(dest, plaintext);
-      console.log(`files: wrote ${dest}`);
-    } catch (e: any) {
-      console.error(`files: failed ${src}: ${e.message ?? e}`);
+      log.info({ src, dest }, "files: wrote");
+    } catch (e) {
+      log.error({ err: e, src }, "files: failed");
     }
   }
 };

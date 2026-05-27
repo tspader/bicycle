@@ -20,7 +20,7 @@ afterEach(() => {
 test("etc paths follow BICYCLE_ETC", () => {
   process.env.BICYCLE_ETC = "/tmp/x";
   expect(paths.etc.root).toBe("/tmp/x");
-  expect(paths.etc.bicycleToml).toBe("/tmp/x/bicycle.toml");
+  expect(paths.etc.bicycleYaml).toBe("/tmp/x/bicycle.yml");
   expect(paths.etc.ageKey).toBe("/tmp/x/age.key");
   expect(paths.etc.recipients).toBe("/tmp/x/recipients");
   expect(paths.etc.files).toBe("/tmp/x/files");
@@ -51,7 +51,7 @@ test("run paths follow BICYCLE_RUN", () => {
 
 test("getters re-read env on each access (no stale cache)", () => {
   process.env.BICYCLE_ETC = "/tmp/a";
-  expect(paths.etc.bicycleToml).toBe("/tmp/a/bicycle.toml");
+  expect(paths.etc.bicycleYaml).toBe("/tmp/a/bicycle.yml");
   process.env.BICYCLE_ETC = "/tmp/b";
-  expect(paths.etc.bicycleToml).toBe("/tmp/b/bicycle.toml");
+  expect(paths.etc.bicycleYaml).toBe("/tmp/b/bicycle.yml");
 });

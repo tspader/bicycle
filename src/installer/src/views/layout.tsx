@@ -21,7 +21,7 @@ const matchExpr = (label: string): string => {
 
 export const Preview = ({ html }: { html: string }) => (
   <section id="config-preview" class="preview">
-    <div class="preview-head">bicycle.toml</div>
+    <div class="preview-head">bicycle.yml</div>
     <div class="preview-body" dangerouslySetInnerHTML={{ __html: html }} />
   </section>
 )

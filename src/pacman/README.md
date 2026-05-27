@@ -27,17 +27,17 @@ prebuilt binary to be staged alongside it by `tools/pkg.ts`.
 
 ```sh
 pacman -U bicycle-<ver>-1-x86_64.pkg.tar.zst
-cp /etc/bicycle/bicycle.toml.example /etc/bicycle/bicycle.toml
-$EDITOR /etc/bicycle/bicycle.toml
+cp /etc/bicycle/bicycle.yml.example /etc/bicycle/bicycle.yml
+$EDITOR /etc/bicycle/bicycle.yml
 ```
 
 The package's post-install hook enables `bicycle-reconcile.timer`. Any other
-units (docker, sshd, etc.) go in `bicycle.toml`'s `[systemd]`
-`enable` list; the reconciler enables them on its next run.
+units (docker, sshd, etc.) go in `bicycle.yml`'s `systemd.enable` list;
+the reconciler enables them on its next run.
 
 ## Files installed
 
 - `/usr/bin/bicycle` — compiled daemon binary
 - `/usr/lib/systemd/system/bicycle.service` — long-running daemon
 - `/usr/lib/systemd/system/bicycle-reconcile.service` — oneshot reconciler
-- `/etc/bicycle/bicycle.toml.example` — sample machine spec
+- `/etc/bicycle/bicycle.yml.example` — sample machine spec

@@ -1,4 +1,4 @@
-import type { ArchinstallConfig } from './config'
+import type { ArchinstallConfig, RetainedDoc } from './config'
 
 let state: ArchinstallConfig = {
   hostname: 'bicycle-test',
@@ -28,4 +28,12 @@ export const setState = (patch: Partial<ArchinstallConfig>): void => {
 
 export const replaceState = (next: ArchinstallConfig): void => {
   state = next
+}
+
+let retained: RetainedDoc = {}
+
+export const getRetained = (): Readonly<RetainedDoc> => retained
+
+export const setRetained = (next: RetainedDoc): void => {
+  retained = next
 }

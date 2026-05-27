@@ -13,6 +13,8 @@
     "@spader/zargs": "catalog:",
     "age-encryption": "catalog:",
     "hono": "catalog:",
+    "pino": "catalog:",
+    "pino-pretty": "catalog:",
     "yargs": "catalog:"
   },
   "devDependencies": {

@@ -5,8 +5,7 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
-    "types": ["bun-types"],
-    "composite": true
+    "types": ["bun-types"]
   },
   "include": ["src"]
 }

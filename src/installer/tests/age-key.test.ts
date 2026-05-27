@@ -1,53 +1,51 @@
 import { describe, test, expect } from 'bun:test'
 import { AgeIdentityString } from '../src/age-key'
-import { deriveWarnings, fromToml, testMachine } from '../src/config'
+import { deriveWarnings, fromYaml, testMachine } from '../src/config'
 import type { DiskInfo } from '../src/system'
 
 const ctx = () => testMachine({ disks: { '/dev/vda': 100 * 1024 ** 3 } })
 
 const MINIMAL = `
-[core]
-hostname = "mark"
-timezone = "America/New_York"
-kernels = ["linux"]
-ntp = true
+core:
+  hostname: mark
+  timezone: America/New_York
+  kernels: [linux]
+  ntp: true
 
-[locale]
-keyboard = "us"
-language = "en_US.UTF-8"
-encoding = "UTF-8"
+locale:
+  keyboard: us
+  language: en_US.UTF-8
+  encoding: UTF-8
 
-[boot]
-loader = "systemd-boot"
-uki = true
-removable = false
+boot:
+  loader: systemd-boot
+  uki: true
+  removable: false
 
-[[disk]]
-device = "/dev/vda"
-wipe = true
-table = "gpt"
+disks:
+  - device: /dev/vda
+    wipe: true
+    table: gpt
+    partitions:
+      - mount: /boot
+        fs: fat32
+        size: 1GiB
+        start: 1MiB
+        flags: [boot, esp]
+      - mount: /
+        fs: ext4
+        size: rest
 
-  [[disk.partition]]
-  mount = "/boot"
-  fs    = "fat32"
-  size  = "1GiB"
-  start = "1MiB"
-  flags = ["boot", "esp"]
+swap:
+  enabled: true
+  algorithm: zstd
 
-  [[disk.partition]]
-  mount = "/"
-  fs    = "ext4"
-  size  = "rest"
+packages:
+  extra: [git]
 
-[swap]
-enabled = true
-algorithm = "zstd"
-
-[packages]
-extra = ["git"]
-
-[pacman.mirrors]
-regions = ["United States"]
+pacman:
+  mirrors:
+    regions: [United States]
 `
 
 const GOOD_X25519 = 'AGE-SECRET-KEY-1' + 'A'.repeat(58)
@@ -96,7 +94,7 @@ describe('deriveWarnings age-key', () => {
     { path: '/dev/vda', model: 'vda', size: 100 * 1024 ** 3, sectorSize: 512, isBoot: false },
   ]
   const ready = () => {
-    const cfg = fromToml(MINIMAL, ctx())
+    const cfg = fromYaml(MINIMAL, ctx()).config
     return {
       ...cfg,
       users: [{ username: 's', sudo: true, groups: ['wheel'], enc_password: 'h' }],

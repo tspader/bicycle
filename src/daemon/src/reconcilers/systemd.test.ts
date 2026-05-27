@@ -19,16 +19,16 @@ afterEach(() => {
   else process.env.BICYCLE_ETC = saved;
 });
 
-const writeBicycleToml = (body: string) => {
-  fs.writeFileSync(path.join(tmp, "bicycle.toml"), body);
+const writeBicycleYaml = (body: string) => {
+  fs.writeFileSync(path.join(tmp, "bicycle.yml"), body);
 };
 
-test("no [systemd] block: no-op without throwing", async () => {
-  writeBicycleToml(`[machine]\nhostname = "x"\n\n[catalog]\nurl = "x"\n`);
+test("no systemd block: no-op without throwing", async () => {
+  writeBicycleYaml(`catalog:\n  url: "x"\n`);
   await systemd.reconcile();
 });
 
-test("[systemd].enable empty: no-op without throwing", async () => {
-  writeBicycleToml(`[machine]\nhostname = "x"\n[catalog]\nurl = "x"\n[systemd]\nenable = []\n`);
+test("systemd.enable empty: no-op without throwing", async () => {
+  writeBicycleYaml(`catalog:\n  url: "x"\nsystemd:\n  enable: []\n`);
   await systemd.reconcile();
 });

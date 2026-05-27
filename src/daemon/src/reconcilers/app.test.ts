@@ -248,3 +248,35 @@ test("ensureMount: tolerates EPERM on chown when non-root attempts foreign uid",
     }),
   ).not.toThrow();
 });
+
+test("ensureMount: recurses into pre-existing files (the original bug)", () => {
+  const dir = path.join(tmp, "mnt", "rec");
+  fs.mkdirSync(path.join(dir, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "sub", "f.txt"), "hi");
+  const st = fs.statSync(path.join(dir, "sub", "f.txt"));
+  const before = st.mtimeMs;
+  const old = new Date(before - 60_000);
+  fs.utimesSync(path.join(dir, "sub", "f.txt"), old, old);
+
+  app.ensureMount({
+    service: "x",
+    hostPath: dir,
+    containerPath: "/r",
+    owner: { uid: st.uid, gid: st.gid },
+  });
+  expect(fs.statSync(path.join(dir, "sub", "f.txt")).mtimeMs).toBe(
+    fs.statSync(path.join(dir, "sub", "f.txt")).mtimeMs,
+  );
+
+  // Different-owner under non-root: EPERM swallowed, no throw.
+  if (process.getuid && process.getuid() !== 0) {
+    expect(() =>
+      app.ensureMount({
+        service: "x",
+        hostPath: dir,
+        containerPath: "/r",
+        owner: { uid: 1, gid: 1 },
+      }),
+    ).not.toThrow();
+  }
+});

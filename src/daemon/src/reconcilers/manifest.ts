@@ -30,6 +30,21 @@ export type Mount = {
   owner?: Owner;
 };
 
+const TOP_KEYS = new Set(["services", "env"]);
+const SERVICE_KEYS = new Set(["data"]);
+const DATA_KEYS = new Set(["path", "owner"]);
+const ENV_KEYS = new Set(["required", "optional"]);
+
+const checkKeys = (where: string, obj: object, allowed: Set<string>): void => {
+  for (const k of Object.keys(obj)) {
+    if (!allowed.has(k)) {
+      throw new Error(
+        `${where}: unknown key "${k}" (allowed: ${[...allowed].join(", ")})`,
+      );
+    }
+  }
+};
+
 export const load = (manifestPath: string): Manifest => {
   if (!fs.existsSync(manifestPath)) return {};
   const raw = fs.readFileSync(manifestPath, "utf8");
@@ -38,7 +53,20 @@ export const load = (manifestPath: string): Manifest => {
   if (typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`manifest at ${manifestPath} must be a YAML mapping`);
   }
-  return parsed as Manifest;
+
+  checkKeys(manifestPath, parsed, TOP_KEYS);
+  const m = parsed as Manifest;
+
+  if (m.env) checkKeys(`${manifestPath}: env`, m.env, ENV_KEYS);
+
+  for (const [svcName, svc] of Object.entries(m.services ?? {})) {
+    checkKeys(`${manifestPath}: services.${svcName}`, svc, SERVICE_KEYS);
+    for (const [i, entry] of (svc.data ?? []).entries()) {
+      checkKeys(`${manifestPath}: services.${svcName}.data[${i}]`, entry, DATA_KEYS);
+    }
+  }
+
+  return m;
 };
 
 export const parseOwner = (s: string): Owner => {
