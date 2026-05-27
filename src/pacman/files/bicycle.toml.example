@@ -1,3 +1,11 @@
+[machine]
+hostname = "box.lan"
+
 [catalog]
 url = "https://github.com/tspader/bikeshop"
 ref = "main"
+
+[systemd]
+enable = [
+  "docker.service",
+]

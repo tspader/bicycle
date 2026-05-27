@@ -7,6 +7,7 @@ url="https://github.com/spader/bicycle"
 license=('MIT')
 depends=('docker' 'docker-compose' 'git')
 options=(!strip !debug)
+install=bicycle.install
 
 package() {
   install -Dm755 "$startdir/bicycle" \
@@ -15,8 +16,6 @@ package() {
     "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.service"
   install -Dm644 "$startdir/files/bicycle-reconcile.timer" \
     "$pkgdir/usr/lib/systemd/system/bicycle-reconcile.timer"
-  install -Dm644 "$startdir/files/bicycle-boot.service" \
-    "$pkgdir/usr/lib/systemd/system/bicycle-boot.service"
   install -Dm644 "$startdir/files/bicycle.toml.example" \
     "$pkgdir/etc/bicycle/bicycle.toml.example"
 }

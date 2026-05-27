@@ -2,7 +2,7 @@
 Description=Bicycle: reconcile every minute
 
 [Timer]
-OnBootSec=1min
+OnBootSec=10s
 OnUnitActiveSec=1min
 AccuracySec=5s
 Unit=bicycle-reconcile.service

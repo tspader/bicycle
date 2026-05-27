@@ -29,8 +29,11 @@ prebuilt binary to be staged alongside it by `tools/pkg.ts`.
 pacman -U bicycle-<ver>-1-x86_64.pkg.tar.zst
 cp /etc/bicycle/bicycle.toml.example /etc/bicycle/bicycle.toml
 $EDITOR /etc/bicycle/bicycle.toml
-systemctl enable --now docker bicycle bicycle-reconcile
 ```
+
+The package's post-install hook enables `bicycle-reconcile.timer`. Any other
+units (docker, sshd, etc.) go in `bicycle.toml`'s `[systemd]`
+`enable` list; the reconciler enables them on its next run.
 
 ## Files installed
 
