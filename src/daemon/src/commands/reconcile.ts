@@ -13,9 +13,16 @@ export const command: Command = {
   description: "Reconcile all state to desired and exit",
   summary: "One-shot reconcile",
   handler: async () => {
-    const result = await withLock(paths.run.reconcileLock, reconcile);
-    if (result === null) {
-      console.log("reconcile already running, skipping");
+    try {
+      const result = await withLock(paths.run.reconcileLock, reconcile);
+      if (result === null) {
+        console.log("reconcile already running, skipping");
+      }
+    } catch (e) {
+      const err = e as Error;
+      console.error(`reconcile failed: ${err.message}`);
+      if (err.stack) console.error(err.stack);
+      process.exit(1);
     }
   },
 };

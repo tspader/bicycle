@@ -31,20 +31,34 @@ const destFor = (src: string, srcRoot: string, hostRoot: string): string => {
 const loadPlaintext = async (src: string): Promise<Uint8Array> =>
   src.endsWith(".age") ? age.decrypt(src) : new Uint8Array(fs.readFileSync(src));
 
+const chownIgnoreEperm = (target: string, uid: number, gid: number): void => {
+  try {
+    fs.chownSync(target, uid, gid);
+  } catch (e: any) {
+    if (e.code !== "EPERM") throw e;
+  }
+};
+
+const ensureDir = (target: string): void => {
+  if (fs.existsSync(target)) return;
+  const parent = path.dirname(target);
+  ensureDir(parent);
+  const parentStat = fs.statSync(parent);
+  fs.mkdirSync(target);
+  chownIgnoreEperm(target, parentStat.uid, parentStat.gid);
+};
+
 const writeAtomic = (dest: string, bytes: Uint8Array): void => {
   const parent = path.dirname(dest);
-  fs.mkdirSync(parent, { recursive: true });
+  ensureDir(parent);
   const parentStat = fs.statSync(parent);
   const tmp = `${dest}.bicycle.tmp`;
   fs.writeFileSync(tmp, bytes, { mode: 0o600 });
   try {
-    fs.chownSync(tmp, parentStat.uid, parentStat.gid);
-  } catch (e: any) {
-    // Non-root processes can't chown; fine for dev/test, the daemon runs as root.
-    if (e.code !== "EPERM") {
-      try { fs.unlinkSync(tmp); } catch {}
-      throw e;
-    }
+    chownIgnoreEperm(tmp, parentStat.uid, parentStat.gid);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw e;
   }
   fs.renameSync(tmp, dest);
 };

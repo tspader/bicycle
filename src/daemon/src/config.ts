@@ -4,6 +4,7 @@ import { paths } from "./paths";
 export type BicycleConfig = {
   machine: { hostname: string };
   catalog: { url: string };
+  systemd?: { enable?: string[] };
 };
 
 export type AppConfig = {
