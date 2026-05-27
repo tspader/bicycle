@@ -39,36 +39,15 @@ const writeSecret = async (addr: string, value: string) => {
   fs.writeFileSync(dest, ciphertext);
 };
 
-test("interpolate substitutes a single token", async () => {
-  await writeSecret("db/password", "hunter2");
-  expect(await secrets.interpolate("PASS=${secret:db/password}")).toBe("PASS=hunter2");
-});
-
-test("interpolate substitutes multiple tokens in one string", async () => {
-  await writeSecret("a", "one");
-  await writeSecret("b", "two");
-  expect(await secrets.interpolate("X=${secret:a};Y=${secret:b};Z=${secret:a}")).toBe(
-    "X=one;Y=two;Z=one",
-  );
-});
-
-test("interpolate returns input unchanged when no tokens", async () => {
-  expect(await secrets.interpolate("plain string")).toBe("plain string");
-});
-
-test("missing secret throws", async () => {
-  await expect(secrets.interpolate("X=${secret:nope}")).rejects.toThrow();
-});
-
-test("rejects path traversal", async () => {
-  await expect(secrets.interpolate("X=${secret:../etc/passwd}")).rejects.toThrow(/escapes/);
-});
-
-test("rejects absolute address", async () => {
-  await expect(secrets.interpolate("X=${secret:/abs}")).rejects.toThrow(/relative/);
-});
-
-test("resolve returns plaintext directly", async () => {
+test("resolve returns plaintext", async () => {
   await writeSecret("api/token", "abc123");
   expect(await secrets.resolve("api/token")).toBe("abc123");
+});
+
+test("resolve rejects path traversal", async () => {
+  await expect(secrets.resolve("../etc/passwd")).rejects.toThrow(/escapes/);
+});
+
+test("resolve rejects absolute address", async () => {
+  await expect(secrets.resolve("/abs")).rejects.toThrow(/relative/);
 });

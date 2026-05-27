@@ -41,6 +41,49 @@ test("parses catalog and systemd from a unified document", () => {
   expect(cfg.systemd?.enable).toEqual(['docker.service', 'sshd.service']);
 });
 
+test("resolves vars into typed fields (uid as number) before zod", () => {
+  write([
+    'vars:',
+    '  admin:',
+    '    uid: 1000',
+    '  media_gid: 1001',
+    'users:',
+    '  - name: spader',
+    '    uid: ${admin.uid}',
+    '    sudo: true',
+    '    groups: [wheel, media]',
+    'groups:',
+    '  - name: media',
+    '    gid: ${media_gid}',
+    '',
+  ].join('\n'));
+  const cfg = config.bicycle();
+  expect(cfg.users?.[0]?.uid).toBe(1000);
+  expect(cfg.groups?.[0]?.gid).toBe(1001);
+});
+
+test("vars cannot reference other vars", () => {
+  write([
+    'vars:',
+    '  base: 1000',
+    '  derived: ${base}',
+    '',
+  ].join('\n'));
+  expect(() => config.bicycle()).toThrow(/cannot reference/);
+});
+
+test("unknown var ref in bicycle.yml throws", () => {
+  write([
+    'users:',
+    '  - name: x',
+    '    uid: ${nope}',
+    '    sudo: false',
+    '    groups: []',
+    '',
+  ].join('\n'));
+  expect(() => config.bicycle()).toThrow(/unresolved/);
+});
+
 test("parses the checked-in example/machine/bicycle.yml", () => {
   const src = fs.readFileSync(
     path.join(import.meta.dir, '..', '..', '..', 'example', 'machine', 'bicycle.yml'),

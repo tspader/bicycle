@@ -79,20 +79,39 @@ const makeCatalogRepo = async (
 };
 
 test("resolveAppEnv: undefined input returns empty", async () => {
-  expect(await app.resolveAppEnv(undefined)).toEqual({});
+  expect(await app.resolveAppEnv(undefined, {})).toEqual({});
 });
 
 test("resolveAppEnv: passes through literals", async () => {
-  expect(await app.resolveAppEnv({ A: "1", B: "two" })).toEqual({ A: "1", B: "two" });
+  expect(await app.resolveAppEnv({ A: "1", B: "two" }, {})).toEqual({ A: "1", B: "two" });
 });
 
 test("resolveAppEnv: interpolates ${secret:...} tokens", async () => {
   await writeSecret("foo/bar", "sekret");
-  expect(await app.resolveAppEnv({ X: "v=${secret:foo/bar}" })).toEqual({ X: "v=sekret" });
+  expect(await app.resolveAppEnv({ X: "v=${secret:foo/bar}" }, {})).toEqual({ X: "v=sekret" });
 });
 
 test("resolveAppEnv: missing secret propagates as error", async () => {
-  await expect(app.resolveAppEnv({ X: "${secret:nope}" })).rejects.toThrow();
+  await expect(app.resolveAppEnv({ X: "${secret:nope}" }, {})).rejects.toThrow();
+});
+
+test("resolveAppEnv: interpolates vars (scalars and nested paths)", async () => {
+  expect(
+    await app.resolveAppEnv(
+      { PUID: "${admin.uid}", TZ: "${tz}" },
+      { admin: { uid: 1000 }, tz: "UTC" },
+    ),
+  ).toEqual({ PUID: "1000", TZ: "UTC" });
+});
+
+test("resolveAppEnv: mixes vars and secrets in one string", async () => {
+  await writeSecret("api/key", "k123");
+  expect(
+    await app.resolveAppEnv(
+      { URL: "https://${host}.lan/api?k=${secret:api/key}" },
+      { host: "miniflux" },
+    ),
+  ).toEqual({ URL: "https://miniflux.lan/api?k=k123" });
 });
 
 test("buildComposeArgs: base only when no overrides", () => {

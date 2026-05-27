@@ -1,7 +1,7 @@
 ref: f1617d352b23d1cd4a0a1def31006c174db94c6d
 env:
   DOWNLOADS_PATH: /media/downloads
-  PUID: "1000"
-  PGID: "1001"
+  PUID: ${admin.uid}
+  PGID: ${media.gid}
   WHITELIST: 192.168.*,172.*
   HOST_WHITELIST: transmission.box.lan

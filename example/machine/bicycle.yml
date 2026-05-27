@@ -27,14 +27,19 @@ disks:
 swap:
   enabled: true
   algorithm: zstd
+vars:
+  admin:
+    uid: 1000
+  media:
+    gid: 1001
 users:
   - name: spader
-    uid: 1000
+    uid: ${admin.uid}
     sudo: true
     groups: [wheel, media]
 groups:
   - name: media
-    gid: 1001
+    gid: ${media.gid}
 dirs:
   - path: /media
     group: media

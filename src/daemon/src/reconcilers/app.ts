@@ -2,7 +2,7 @@ import { $ } from "bun";
 import fs from "fs";
 import { paths } from "../paths";
 import * as config from "../config";
-import * as secrets from "../secrets";
+import { interpolate } from "../interpolate";
 import { ensure as ensureRepo } from "./git";
 import * as manifest from "./manifest";
 import * as network from "./network";
@@ -25,10 +25,11 @@ export type AppPlan = {
 
 export const resolveAppEnv = async (
   cfgEnv: Record<string, string> | undefined,
+  vars: unknown,
 ): Promise<Record<string, string>> => {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(cfgEnv ?? {})) {
-    out[k] = await secrets.interpolate(v);
+    out[k] = await interpolate(v, vars);
   }
   return out;
 };
@@ -53,6 +54,7 @@ export const ensureMount = (m: manifest.Mount): void => {
 export const plan = async (
   name: string,
   catalogUrl: string,
+  vars: unknown = {},
 ): Promise<AppPlan | null> => {
   const etcApp = paths.etc.app(name);
   if (!fs.existsSync(etcApp.config)) return null;
@@ -76,7 +78,7 @@ export const plan = async (
   }
 
   const m = manifest.load(cache.manifest);
-  const env = await resolveAppEnv(cfg.env);
+  const env = await resolveAppEnv(cfg.env, vars);
   manifest.validateEnv(m.env, env, name);
 
   const mounts = manifest.planMounts(m, name);
@@ -125,10 +127,10 @@ export const execute = async (p: AppPlan): Promise<void> => {
   log.info({ app: p.name, ref: p.ref }, "app: reconciled");
 };
 
-const catalogUrl = (): string => {
+const loadBicycle = (): { url: string; vars: unknown } => {
   const cfg = config.bicycle();
   if (!cfg.catalog) throw new Error("bicycle.yml: missing `catalog.url`");
-  return cfg.catalog.url;
+  return { url: cfg.catalog.url, vars: cfg.vars ?? {} };
 };
 
 export const one = async (name: string): Promise<void> => {
@@ -136,7 +138,8 @@ export const one = async (name: string): Promise<void> => {
   if (!fs.existsSync(etcApp.config)) return;
   try {
     await network.ensure();
-    const p = await plan(name, catalogUrl());
+    const { url, vars } = loadBicycle();
+    const p = await plan(name, url, vars);
     if (p) await execute(p);
   } catch (e) {
     log.error({ err: e, app: name }, "app: reconcile failed");
@@ -151,12 +154,12 @@ export const all = async (): Promise<void> => {
     return fs.statSync(app.root).isDirectory() && fs.existsSync(app.config);
   });
   if (names.length === 0) return;
-  const url = catalogUrl();
+  const { url, vars } = loadBicycle();
   await network.ensure();
 
   for (const name of names) {
     try {
-      const p = await plan(name, url);
+      const p = await plan(name, url, vars);
       if (p) await execute(p);
     } catch (e) {
       log.error({ err: e, app: name }, "app: reconcile failed");

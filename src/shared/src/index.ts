@@ -77,7 +77,17 @@ const Dir = z.object({
 }).strict()
 export type Dir = z.infer<typeof Dir>
 
+const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/
+
+const VarScalar = z.union([z.string(), z.number(), z.boolean()])
+const VarValue: z.ZodType<unknown> = z.lazy(() =>
+  z.union([VarScalar, z.record(z.string().regex(IDENT), VarValue)]),
+)
+export const Vars = z.record(z.string().regex(IDENT), VarValue)
+export type Vars = z.infer<typeof Vars>
+
 export const BicycleConfig = z.object({
+  vars: Vars.optional(),
   core: z.object({
     hostname: z.string().min(1),
     timezone: z.string().min(1),
