@@ -34,8 +34,13 @@ test("state paths follow BICYCLE_VAR", () => {
   process.env.BICYCLE_VAR = "/tmp/y";
   expect(paths.state.root).toBe("/tmp/y");
   expect(paths.state.apps).toBe("/tmp/y/apps");
-  expect(paths.state.app("foo").data).toBe("/tmp/y/apps/foo/data");
-  expect(paths.state.cache.catalog("foo", "abc")).toBe("/tmp/y/cache/catalog/foo/abc");
+  expect(paths.state.app("foo").compose).toBe("/tmp/y/apps/foo/compose.yml");
+  expect(paths.state.app("foo").override).toBe("/tmp/y/apps/foo/override.yml");
+  expect(paths.state.app("foo").mount("db", "data")).toBe("/tmp/y/apps/foo/db/data");
+  const cache = paths.state.cache.catalog("foo", "abc");
+  expect(cache.root).toBe("/tmp/y/cache/catalog/foo/abc");
+  expect(cache.compose).toBe("/tmp/y/cache/catalog/foo/abc/foo/compose.yml");
+  expect(cache.manifest).toBe("/tmp/y/cache/catalog/foo/abc/foo/bicycle.yml");
 });
 
 test("run paths follow BICYCLE_RUN", () => {

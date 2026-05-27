@@ -4,6 +4,7 @@ import path from "path";
 import { env } from "../env";
 import { paths } from "../paths";
 import * as age from "../age";
+import { chownIgnoreEperm } from "../fs";
 
 const walk = (root: string): string[] => {
   const out: string[] = [];
@@ -30,14 +31,6 @@ const destFor = (src: string, srcRoot: string, hostRoot: string): string => {
 
 const loadPlaintext = async (src: string): Promise<Uint8Array> =>
   src.endsWith(".age") ? age.decrypt(src) : new Uint8Array(fs.readFileSync(src));
-
-const chownIgnoreEperm = (target: string, uid: number, gid: number): void => {
-  try {
-    fs.chownSync(target, uid, gid);
-  } catch (e: any) {
-    if (e.code !== "EPERM") throw e;
-  }
-};
 
 const ensureDir = (target: string): void => {
   if (fs.existsSync(target)) return;

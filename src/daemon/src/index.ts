@@ -4,9 +4,8 @@ import { build, type Cli } from "@spader/zargs";
 import { daemon, reconcile } from "./commands/index";
 import pkg from "../package.json" with { type: "json" };
 
-const version = typeof (pkg as { version?: unknown }).version === "string"
-  ? (pkg as { version: string }).version
-  : undefined;
+const pkgVersion = (pkg as unknown as { version?: unknown }).version;
+const version = typeof pkgVersion === "string" ? pkgVersion : undefined;
 
 const def: Cli = {
   name: "bicycle",

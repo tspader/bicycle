@@ -33,14 +33,22 @@ export const paths = {
     return {
       root: state,
       cache: {
-        catalog: (app: string, ref: string) =>
-          path.join(state, "cache", "catalog", app, ref),
+        catalog: (app: string, ref: string) => {
+          const root = path.join(state, "cache", "catalog", app, ref);
+          return {
+            root,
+            compose: path.join(root, app, "compose.yml"),
+            manifest: path.join(root, app, "bicycle.yml"),
+          };
+        },
       },
       apps: path.join(state, "apps"),
       app: (name: string) => ({
         root: path.join(state, "apps", name),
         compose: path.join(state, "apps", name, "compose.yml"),
-        data: path.join(state, "apps", name, "data"),
+        override: path.join(state, "apps", name, "override.yml"),
+        mount: (service: string, base: string) =>
+          path.join(state, "apps", name, service, base),
       }),
     };
   },

@@ -1,4 +1,4 @@
-import { $, type ShellPromise } from "bun";
+import { $ } from "bun";
 import fs from "fs";
 import path from "path";
 
@@ -8,6 +8,8 @@ export type EnsureArgs = {
   dest: string;
   sparse?: string[];
 };
+
+type ShellPromise = ReturnType<typeof $>;
 
 const run = async (label: string, p: ShellPromise): Promise<void> => {
   const r = await p.nothrow().quiet();
