@@ -4,9 +4,6 @@
   "workspaces": {
     "": {
       "name": "bicycle",
-      "dependencies": {
-        "install": "^0.13.0",
-      },
       "devDependencies": {
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -55,6 +52,7 @@
     },
   },
   "catalog": {
+    "@clack/prompts": "^1.4.0",
     "@hono/standard-validator": "^0.2.2",
     "@spader/zargs": "^1.2.0",
     "@types/bun": "latest",
@@ -156,8 +154,6 @@
     "hono": ["hono@4.12.23", "", {}, "sha512-eIaZ9qDgu7XV0pxOCrg7/WhnQ6Ivm22UcxhXx/A3dcbqbbYgBEkc6e/J/s7j2tS96zoB0S9VBdLwQNCWwUo4LA=="],
 
     "html-void-elements": ["html-void-elements@3.0.0", "", {}, "sha512-bEqo66MRXsUGxWHV5IP0PUiAWwoEjba4VCzg0LjFJBpchPaTfyfCKTG6bc5F8ucKec3q5y6qOdGyYTSBEvhCrg=="],
-
-    "install": ["install@0.13.0", "", {}, "sha512-zDml/jzr2PKU9I8J/xyZBQn8rPCAY//UOYNmR01XwNwyfhEWObo2SWfSl1+0tm1u6PhxLwDnfsT/6jB7OUxqFA=="],
 
     "is-fullwidth-code-point": ["is-fullwidth-code-point@3.0.0", "", {}, "sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg=="],
 

@@ -1,0 +1,38 @@
+#define SP_IMPLEMENTATION
+#include "sp.h"
+
+s32 run(s32 num_args, const c8** args) {
+  if (num_args < 2) {
+    sp_log("usage: wc {.fg cyan}", sp_fmt_cstr("$file"));
+    return 1;
+  }
+
+  sp_mem_t mem = sp_mem_os_new();
+
+  sp_str_t cwd = sp_fs_get_cwd(mem);
+  sp_str_t path = sp_fs_join_path(mem, cwd, sp_str_view(args[1]));
+  sp_str_t content = sp_zero;
+  sp_io_read_file(mem, path, &content);
+
+  sp_ht(sp_str_t, u32) counts = sp_zero;
+  sp_str_ht_init(mem, counts);
+  sp_da(sp_str_t) lines = sp_str_split_c8(mem, content, '\n');
+  sp_da_for(lines, i) {
+    sp_da(sp_str_t) words = sp_str_split_c8(mem, lines[i], ' ');
+
+    sp_da_for(words, j) {
+      u32* count = sp_str_ht_get(counts, words[j]);
+      if (count) {
+        *count = *count + 1;
+      } else {
+        sp_str_ht_insert(counts, words[j], 1);
+      }
+    }
+  }
+
+  sp_str_ht_for_kv(counts, it) {
+    sp_log("{} {}", sp_fmt_uint(*it.val), sp_fmt_str(*it.key));
+  }
+  return 0;
+}
+SP_MAIN(run)

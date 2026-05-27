@@ -3,3 +3,9 @@ hostname = "box.lan"
 
 [catalog]
 url = "git://192.168.0.211/bikeshop"
+
+[systemd]
+enable = [
+  "docker.service",
+  "sshd.service",
+]

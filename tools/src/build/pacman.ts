@@ -7,6 +7,7 @@ const stageWork = () => {
   rm(paths.cache.work);
   mkdir(paths.cache.work);
   copy(paths.pacman.pkgbuild, paths.cache.work);
+  copy(paths.pacman.install, paths.cache.work);
   copy(paths.pacman.files, paths.cache.work);
   copy(paths.cache.binary, paths.cache.work);
   console.log(`staged makepkg work dir -> ${paths.cache.work}`);

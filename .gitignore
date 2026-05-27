@@ -7,6 +7,8 @@ dist
 node_modules
 *.png
 *.tsbuildinfo
+.envrc
+.env*
 /compile_commands.json
 /example/user_configuration.json
 /example/user_credentials.json

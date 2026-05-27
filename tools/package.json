@@ -2,7 +2,8 @@
   "name": "tools",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@clack/prompts": "catalog:"
   },
   "peerDependencies": {
     "typescript": "^5"

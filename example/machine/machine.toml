@@ -41,7 +41,7 @@ sudo = true
 groups = [ "wheel" ]
 
 [packages]
-extra = [ "git", "lsd" ]
+extra = [ "git", "lsd", "openssh" ]
 
 [network]
 mode = "iso"

@@ -10,6 +10,7 @@ export const paths = {
   pacman: {
     root: path.join(root, "src", "pacman"),
     pkgbuild: path.join(root, "src", "pacman", "PKGBUILD"),
+    install: path.join(root, "src", "pacman", "bicycle.install"),
     files: path.join(root, "src", "pacman", "files"),
   },
   cache: {

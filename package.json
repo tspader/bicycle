@@ -1,7 +1,17 @@
 {
   "name": "bicycle",
-  "private": true,
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  },
   "packageManager": "bun@1.3.8",
+  "private": true,
+  "scripts": {
+    "daemon:dev": "bun --cwd src/daemon dev",
+    "daemon:start": "bun --cwd src/daemon start",
+    "installer:dev": "bun --cwd src/installer dev",
+    "installer:start": "bun --cwd src/installer start"
+  },
   "workspaces": {
     "packages": [
       "src/shared",
@@ -16,20 +26,8 @@
       "@hono/standard-validator": "^0.2.2",
       "yargs": "^18.0.0",
       "@spader/zargs": "^1.2.0",
-      "age-encryption": "^0.3.0"
+      "age-encryption": "^0.3.0",
+      "@clack/prompts": "^1.4.0"
     }
-  },
-  "scripts": {
-    "daemon:dev": "bun --cwd src/daemon dev",
-    "daemon:start": "bun --cwd src/daemon start",
-    "installer:dev": "bun --cwd src/installer dev",
-    "installer:start": "bun --cwd src/installer start"
-  },
-  "devDependencies": {
-    "@types/bun": "catalog:",
-    "typescript": "catalog:"
-  },
-  "dependencies": {
-    "install": "^0.13.0"
   }
 }
