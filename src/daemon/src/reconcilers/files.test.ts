@@ -56,7 +56,7 @@ const stageAge = async (rel: string, plaintext: string) => {
 
 test("mirrors plaintext file into host root with 0600", async () => {
   stage("etc/foo.conf", "hello");
-  await files.reconcile();
+  await files.all();
   const dest = path.join(host, "etc/foo.conf");
   expect(fs.readFileSync(dest, "utf8")).toBe("hello");
   expect(fs.statSync(dest).mode & 0o777).toBe(0o600);
@@ -64,7 +64,7 @@ test("mirrors plaintext file into host root with 0600", async () => {
 
 test("decrypts .age files and strips suffix from destination", async () => {
   await stageAge("etc/secret.conf.age", "decrypted");
-  await files.reconcile();
+  await files.all();
   const dest = path.join(host, "etc/secret.conf");
   expect(fs.existsSync(`${dest}.age`)).toBe(false);
   expect(fs.readFileSync(dest, "utf8")).toBe("decrypted");
@@ -73,42 +73,42 @@ test("decrypts .age files and strips suffix from destination", async () => {
 
 test("creates nested parent directories", async () => {
   stage("a/b/c/d.txt", "deep");
-  await files.reconcile();
+  await files.all();
   expect(fs.readFileSync(path.join(host, "a/b/c/d.txt"), "utf8")).toBe("deep");
 });
 
 test("idempotent: second pass does not rewrite unchanged files", async () => {
   stage("foo", "same");
-  await files.reconcile();
+  await files.all();
   const dest = path.join(host, "foo");
   const before = fs.statSync(dest);
   // Backdate so a rewrite would be detectable as mtime increase.
   const old = new Date(before.mtimeMs - 60_000);
   fs.utimesSync(dest, old, old);
   const stamp = fs.statSync(dest).mtimeMs;
-  await files.reconcile();
+  await files.all();
   expect(fs.statSync(dest).mtimeMs).toBe(stamp);
 });
 
 test("rewrites when source content changes", async () => {
   stage("foo", "v1");
-  await files.reconcile();
+  await files.all();
   const dest = path.join(host, "foo");
   expect(fs.readFileSync(dest, "utf8")).toBe("v1");
   stage("foo", "v2");
-  await files.reconcile();
+  await files.all();
   expect(fs.readFileSync(dest, "utf8")).toBe("v2");
 });
 
 test("continues past a bad .age file", async () => {
   stage("etc/bad.age", "not-actually-age-encrypted");
   stage("etc/good", "ok");
-  await files.reconcile();
+  await files.all();
   expect(fs.existsSync(path.join(host, "etc/bad"))).toBe(false);
   expect(fs.readFileSync(path.join(host, "etc/good"), "utf8")).toBe("ok");
 });
 
 test("no-op when source root does not exist", async () => {
   fs.rmSync(path.join(etc, "files"), { recursive: true });
-  await files.reconcile();
+  await files.all();
 });

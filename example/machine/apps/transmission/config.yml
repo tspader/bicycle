@@ -1,0 +1,5 @@
+ref: f1617d352b23d1cd4a0a1def31006c174db94c6d
+env:
+  DOWNLOADS_PATH: /mnt/downloads
+  WHITELIST: 192.168.*,172.*
+  HOST_WHITELIST: transmission.box.lan

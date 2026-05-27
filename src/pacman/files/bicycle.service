@@ -1,0 +1,13 @@
+[Unit]
+Description=Bicycle: long-running reconciliation daemon
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bicycle daemon
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

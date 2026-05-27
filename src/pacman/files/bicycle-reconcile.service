@@ -1,6 +1,0 @@
-[Unit]
-Description=Bicycle: reconcile all state to desired
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/bicycle reconcile

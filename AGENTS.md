@@ -5,6 +5,9 @@ Bicycle is something between a tool and a distro, built on top of Arch, that let
 - `src/installer` The installer web UI
 - `src/daemon` The main Bicycle daemon
 
+# commands
+- `turbo typecheck`
+
 # rules
 - Never comment code. Code with newly added comments will be rejected outright
 

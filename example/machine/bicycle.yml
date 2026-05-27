@@ -32,7 +32,7 @@ users:
     sudo: true
     groups: [wheel]
 packages:
-  extra: [git, lsd]
+  extra: [git, lsd, cockpit]
 network:
   mode: iso
 pacman:
@@ -44,3 +44,4 @@ systemd:
   enable:
     - docker.service
     - sshd.service
+    - cockpit.socket

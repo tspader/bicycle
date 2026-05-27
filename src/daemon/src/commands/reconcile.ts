@@ -1,32 +1,23 @@
 import type { Command } from "@spader/zargs";
-import * as reconcilers from "../reconcilers";
-import { withLock } from "../lock";
 import { log } from "../logger";
-import { paths } from "../paths";
 
-const reconcile = async () => {
-  log.info("reconcile: start");
-  await reconcilers.files.reconcile();
-  await reconcilers.systemd.reconcile();
-  await reconcilers.network.reconcile();
-  await reconcilers.app.reconcile();
-  log.info("reconcile: done");
-};
+const DAEMON_URL = process.env.BICYCLE_DAEMON_URL ?? "http://127.0.0.1:7777";
 
 export const command: Command = {
-  description: "Reconcile all state to desired and exit",
-  summary: "One-shot reconcile",
+  description: "Request a reconcile from the running daemon",
+  summary: "Reconcile via daemon",
   handler: async () => {
-    log.info("handler");
+    let res: Response;
     try {
-      const result = await withLock(paths.run.reconcileLock, reconcile);
-      if (result === null) {
-        log.warn({ lock: paths.run.reconcileLock }, "reconcile already running, skipping");
-      }
+      res = await fetch(`${DAEMON_URL}/reconcile`, { method: "POST" });
     } catch (e) {
-      const err = e as Error;
-      log.error({ err }, "reconcile failed");
+      log.error({ err: e as Error, url: DAEMON_URL }, "reconcile: daemon unreachable");
       process.exit(1);
     }
+    if (!res.ok) {
+      log.error({ status: res.status, url: DAEMON_URL }, "reconcile: daemon returned error");
+      process.exit(1);
+    }
+    log.info("reconcile: requested via daemon");
   },
 };

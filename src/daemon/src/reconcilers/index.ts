@@ -3,3 +3,4 @@ export * as app from "./app";
 export * as git from "./git";
 export * as files from "./files";
 export * as systemd from "./systemd";
+export * as packages from "./packages";

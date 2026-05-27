@@ -1,12 +1,12 @@
 post_install() {
-  systemctl enable --now bicycle-reconcile.timer
+  systemctl enable --now bicycle.service
 }
 
 post_upgrade() {
   systemctl daemon-reload
-  systemctl try-restart bicycle-reconcile.timer
+  systemctl try-restart bicycle.service
 }
 
 pre_remove() {
-  systemctl disable --now bicycle-reconcile.timer 2>/dev/null || true
+  systemctl disable --now bicycle.service 2>/dev/null || true
 }

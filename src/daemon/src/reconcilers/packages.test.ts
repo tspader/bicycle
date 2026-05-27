@@ -1,14 +1,14 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import * as systemd from "./systemd";
+import * as packages from "./packages";
 
 let tmp: string;
 let saved: string | undefined;
 
 beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-systemd-"));
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-packages-"));
   saved = process.env.BICYCLE_ETC;
   process.env.BICYCLE_ETC = tmp;
 });
@@ -23,12 +23,12 @@ const writeBicycleYaml = (body: string) => {
   fs.writeFileSync(path.join(tmp, "bicycle.yml"), body);
 };
 
-test("no systemd block: no-op without throwing", async () => {
+test("no packages block: no-op without throwing", async () => {
   writeBicycleYaml(`catalog:\n  url: "x"\n`);
-  await systemd.all();
+  await packages.all();
 });
 
-test("systemd.enable empty: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\nsystemd:\n  enable: []\n`);
-  await systemd.all();
+test("packages.extra empty: no-op without throwing", async () => {
+  writeBicycleYaml(`catalog:\n  url: "x"\npackages:\n  extra: []\n`);
+  await packages.all();
 });

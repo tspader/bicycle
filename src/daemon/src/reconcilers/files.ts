@@ -57,23 +57,28 @@ const writeAtomic = (dest: string, bytes: Uint8Array): void => {
   fs.renameSync(tmp, dest);
 };
 
-export const reconcile = async (): Promise<void> => {
+export const one = async (src: string): Promise<void> => {
   const srcRoot = paths.etc.files;
   const hostRoot = env.HOST_ROOT;
-  if (!fs.existsSync(srcRoot)) return;
-
-  for (const src of walk(srcRoot)) {
-    try {
-      const dest = destFor(src, srcRoot, hostRoot);
-      const plaintext = await loadPlaintext(src);
-      if (fs.existsSync(dest)) {
-        const existing = new Uint8Array(fs.readFileSync(dest));
-        if (sha(existing) === sha(plaintext)) continue;
-      }
-      writeAtomic(dest, plaintext);
-      log.info({ src, dest }, "files: wrote");
-    } catch (e) {
-      log.error({ err: e, src }, "files: failed");
+  try {
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) return;
+    const dest = destFor(src, srcRoot, hostRoot);
+    const plaintext = await loadPlaintext(src);
+    if (fs.existsSync(dest)) {
+      const existing = new Uint8Array(fs.readFileSync(dest));
+      if (sha(existing) === sha(plaintext)) return;
     }
+    writeAtomic(dest, plaintext);
+    log.info({ src, dest }, "files: wrote");
+  } catch (e) {
+    log.error({ err: e, src }, "files: failed");
+  }
+};
+
+export const all = async (): Promise<void> => {
+  const srcRoot = paths.etc.files;
+  if (!fs.existsSync(srcRoot)) return;
+  for (const src of walk(srcRoot)) {
+    await one(src);
   }
 };

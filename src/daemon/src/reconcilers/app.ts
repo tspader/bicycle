@@ -5,6 +5,7 @@ import * as config from "../config";
 import * as secrets from "../secrets";
 import { ensure as ensureRepo } from "./git";
 import * as manifest from "./manifest";
+import * as network from "./network";
 import { chownRecursiveIfNeeded } from "../fs";
 import { log } from "../logger";
 
@@ -124,20 +125,38 @@ export const execute = async (p: AppPlan): Promise<void> => {
   log.info({ app: p.name, ref: p.ref }, "app: reconciled");
 };
 
-export const reconcile = async (): Promise<void> => {
+const catalogUrl = (): string => {
+  const cfg = config.bicycle();
+  if (!cfg.catalog) throw new Error("bicycle.yml: missing `catalog.url`");
+  return cfg.catalog.url;
+};
+
+export const one = async (name: string): Promise<void> => {
+  const etcApp = paths.etc.app(name);
+  if (!fs.existsSync(etcApp.config)) return;
+  try {
+    await network.ensure();
+    const p = await plan(name, catalogUrl());
+    if (p) await execute(p);
+  } catch (e) {
+    log.error({ err: e, app: name }, "app: reconcile failed");
+    throw e;
+  }
+};
+
+export const all = async (): Promise<void> => {
   if (!fs.existsSync(paths.etc.apps)) return;
   const names = fs.readdirSync(paths.etc.apps).filter((name) => {
     const app = paths.etc.app(name);
     return fs.statSync(app.root).isDirectory() && fs.existsSync(app.config);
   });
   if (names.length === 0) return;
-  const cfg = config.bicycle();
-  if (!cfg.catalog) throw new Error("bicycle.yml: missing `catalog.url`");
-  const catalogUrl = cfg.catalog.url;
+  const url = catalogUrl();
+  await network.ensure();
 
   for (const name of names) {
     try {
-      const p = await plan(name, catalogUrl);
+      const p = await plan(name, url);
       if (p) await execute(p);
     } catch (e) {
       log.error({ err: e, app: name }, "app: reconcile failed");
