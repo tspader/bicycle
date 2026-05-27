@@ -34,6 +34,9 @@ const makeDebouncer = (delayMs: number, enqueue: (job: Job) => Promise<void>) =>
 };
 
 const fullSweep: Job = async () => {
+  await reconcilers.groups.all();
+  await reconcilers.users.all();
+  await reconcilers.dirs.all();
   await reconcilers.files.all();
   await reconcilers.packages.all();
   await reconcilers.systemd.all();
@@ -48,9 +51,7 @@ const classify = (abs: string): Job | null => {
   if (abs === paths.etc.bicycleYaml) {
     return async () => {
       log.info({ path: abs }, "daemon: bicycle.yml changed");
-      await reconcilers.packages.all();
-      await reconcilers.systemd.all();
-      await reconcilers.app.all();
+      await fullSweep();
     };
   }
 

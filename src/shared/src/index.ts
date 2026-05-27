@@ -54,10 +54,28 @@ export type Disk = z.infer<typeof Disk>
 
 const User = z.object({
   name: z.string().min(1),
+  uid: z.number().int().nonnegative().optional(),
   sudo: z.boolean(),
   groups: z.array(z.string()),
 }).strict()
 export type User = z.infer<typeof User>
+
+const Group = z.object({
+  name: z.string().min(1),
+  gid: z.number().int().nonnegative(),
+}).strict()
+export type Group = z.infer<typeof Group>
+
+const OCTAL_MODE = /^0[0-7]{3,4}$/
+const Dir = z.object({
+  path: z.string().min(1).refine((p) => p.startsWith('/'), {
+    message: 'path must be absolute',
+  }),
+  owner: z.string().min(1).optional(),
+  group: z.string().min(1).optional(),
+  mode: z.string().regex(OCTAL_MODE, 'mode must be octal like "0775" or "02775"').optional(),
+}).strict()
+export type Dir = z.infer<typeof Dir>
 
 export const BicycleConfig = z.object({
   core: z.object({
@@ -82,6 +100,8 @@ export const BicycleConfig = z.object({
     algorithm: SwapAlgorithm,
   }).strict().optional(),
   users: z.array(User).optional(),
+  groups: z.array(Group).optional(),
+  dirs: z.array(Dir).optional(),
   packages: z.record(z.string(), z.array(z.string())).optional(),
   pacman: z.object({
     color: z.boolean().optional(),

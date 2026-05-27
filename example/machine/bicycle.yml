@@ -29,10 +29,21 @@ swap:
   algorithm: zstd
 users:
   - name: spader
+    uid: 1000
     sudo: true
-    groups: [wheel]
+    groups: [wheel, media]
+groups:
+  - name: media
+    gid: 1001
+dirs:
+  - path: /media
+    group: media
+    mode: "02775"
+  - path: /media/downloads
+    group: media
+    mode: "02775"
 packages:
-  extra: [git, lsd, cockpit]
+  extra: [git, lsd, cockpit, vim]
 network:
   mode: iso
 pacman:

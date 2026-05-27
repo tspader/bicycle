@@ -4,3 +4,6 @@ export * as git from "./git";
 export * as files from "./files";
 export * as systemd from "./systemd";
 export * as packages from "./packages";
+export * as groups from "./groups";
+export * as users from "./users";
+export * as dirs from "./dirs";

@@ -23,7 +23,8 @@
     "packages": [
       "src/shared",
       "src/installer",
-      "src/daemon"
+      "src/daemon",
+      "tools"
     ],
     "catalog": {
       "@types/bun": "latest",
