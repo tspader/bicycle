@@ -1,0 +1,6 @@
+ref: db7cc2477820c42145c057e808859b8370125c6a
+env:
+  DB_PASSWORD: ${secret:miniflux/db-password}
+  ADMIN_USERNAME: admin
+  ADMIN_PASSWORD: ${secret:miniflux/admin-password}
+  BASE_URL: http://miniflux.box.lan
