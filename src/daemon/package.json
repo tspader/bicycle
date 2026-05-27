@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --hot run src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",

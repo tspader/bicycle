@@ -6,7 +6,8 @@
     "start": "bun run src/server.tsx",
     "dev": "bun --hot run src/server.tsx",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",
