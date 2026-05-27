@@ -11,10 +11,16 @@ export type Warning = {
   category?: CategoryId
 }
 
-export const deriveWarnings = (cfg: ArchinstallConfig, disks: DiskInfo[]): Warning[] => {
+export const deriveWarnings = (
+  cfg: ArchinstallConfig,
+  disks: DiskInfo[],
+  ageKey: string | null = null,
+): Warning[] => {
   const out: Warning[] = []
   const err = (message: string, category?: CategoryId) =>
     out.push({ severity: 'error', message, category })
+  const warn = (message: string, category?: CategoryId) =>
+    out.push({ severity: 'warning', message, category })
 
   if (!cfg.hostname) err('Set a hostname.', 'system')
   if (!cfg.timezone) err('Set a timezone.', 'system')
@@ -62,6 +68,10 @@ export const deriveWarnings = (cfg: ArchinstallConfig, disks: DiskInfo[]): Warni
   const hasRootPw = !!cfg.root_enc_password
   if (!hasSudoer && !hasRootPw) {
     err('Create a sudo user or set a root password.', 'users')
+  }
+
+  if (!ageKey) {
+    warn('No age identity set — secrets will not be decryptable on the installed system.', 'import')
   }
 
   return out

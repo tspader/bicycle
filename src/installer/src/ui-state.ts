@@ -53,3 +53,9 @@ export const appendInstallLog = (chunk: string): void => {
 
 export type CategoryId = 'system' | 'users' | 'disk' | 'pacman' | 'boot' | 'import'
 
+let ageKey: string | null = null
+export const getAgeKey = (): string | null => ageKey
+export const setAgeKey = (s: string | null): void => {
+  ageKey = s
+}
+

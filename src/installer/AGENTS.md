@@ -5,3 +5,4 @@
 - Never use FC or PropsWithChildren for functional components
 - Put any intermediate artifacts (e.g. Playwright screenshots) in .llm/playwright/
 - Prefer existing semantic tokens instead of making up new ones
+- Use Playwright to verify your work visually and run basic manual tests

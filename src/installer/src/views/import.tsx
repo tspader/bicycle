@@ -31,13 +31,94 @@ const FILE_PICKER_JS = `
   })()
 `
 
-export const ImportView = () => {
+const AGE_FILE_PICKER_JS = `
+  (async () => {
+    const f = event.target.files && event.target.files[0]
+    if (!f) return
+    event.target.value = ''
+    const status = document.getElementById('import-status')
+    const error = document.getElementById('import-error')
+    if (status) status.textContent = 'Reading key file…'
+    if (error) error.textContent = ''
+    try {
+      const text = await f.text()
+      const lines = text.split(/\\r?\\n/).map((l) => l.trim())
+      const identity = lines.find((l) => l.startsWith('AGE-SECRET-KEY-')) || ''
+      if (!identity) throw new Error('no AGE-SECRET-KEY- line found in file')
+      const r = await fetch('/api/secrets/age-key', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'datastar-request': 'true',
+        },
+        body: JSON.stringify({ identity }),
+      })
+      if (!r.ok) {
+        const msg = await r.text()
+        throw new Error(msg || ('HTTP ' + r.status))
+      }
+      location.reload()
+    } catch (e) {
+      if (status) status.textContent = ''
+      if (error) error.textContent = 'Age key import failed: ' + (e && e.message ? e.message : e)
+    }
+  })()
+`
+
+const AGE_SAVE_JS = `
+  (async () => {
+    const status = document.getElementById('import-status')
+    const error = document.getElementById('import-error')
+    if (status) status.textContent = 'Saving age identity…'
+    if (error) error.textContent = ''
+    try {
+      const identity = ($age_identity || '').trim()
+      if (!identity) throw new Error('paste an AGE-SECRET-KEY- identity')
+      const r = await fetch('/api/secrets/age-key', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'datastar-request': 'true',
+        },
+        body: JSON.stringify({ identity }),
+      })
+      if (!r.ok) {
+        const msg = await r.text()
+        throw new Error(msg || ('HTTP ' + r.status))
+      }
+      location.reload()
+    } catch (e) {
+      if (status) status.textContent = ''
+      if (error) error.textContent = 'Save failed: ' + (e && e.message ? e.message : e)
+    }
+  })()
+`
+
+const AGE_CLEAR_JS = `
+  (async () => {
+    const error = document.getElementById('import-error')
+    if (error) error.textContent = ''
+    try {
+      const r = await fetch('/api/secrets/age-key/clear', {
+        method: 'POST',
+        headers: { 'datastar-request': 'true' },
+      })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      location.reload()
+    } catch (e) {
+      if (error) error.textContent = 'Clear failed: ' + (e && e.message ? e.message : e)
+    }
+  })()
+`
+
+export const ImportView = ({ ageKeySet }: { ageKeySet: boolean }) => {
   const signals = {
     import_git_url: '',
     import_git_user: '',
     import_git_pass: '',
     import_status: '',
     import_error: '',
+    age_identity: '',
   }
   return (
     <Page
@@ -106,6 +187,54 @@ export const ImportView = () => {
             <p class="muted small">
               After a successful import the page reloads to reflect the new state.
             </p>
+          </div>
+        </Section>
+
+        <Section
+          title="Age identity for secrets"
+          subhead="Private key used at runtime to decrypt age-encrypted secrets and files."
+        >
+          <div class="form card">
+            <p class="muted small">
+              The identity is written once to <span class="mono">/etc/bicycle/age.key</span> on
+              the target (mode 0600, root:root) during post-install. It is held only in this
+              installer's memory and never persisted to the install medium beyond that.
+            </p>
+            {ageKeySet ? (
+              <div class="field">
+                <div class="field-control">
+                  <span class="muted">✓ identity set</span>
+                  {' '}
+                  <button class="btn" type="button" data-on:click={AGE_CLEAR_JS}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            <Field label="Paste AGE-SECRET-KEY-..." htmlFor="age-identity-input">
+              <input
+                id="age-identity-input"
+                class="combo mono"
+                type="password"
+                autocomplete="off"
+                placeholder="AGE-SECRET-KEY-1..."
+                data-bind="age_identity"
+              />
+            </Field>
+            <div class="field-control">
+              <button class="btn" type="button" data-on:click={AGE_SAVE_JS} data-attr:disabled="!$age_identity">
+                Save identity
+              </button>
+            </div>
+            <Field label="Or import from key file" htmlFor="age-key-file">
+              <input
+                id="age-key-file"
+                class="combo"
+                type="file"
+                accept=".key,.txt,text/plain"
+                onchange={AGE_FILE_PICKER_JS}
+              />
+            </Field>
           </div>
         </Section>
 

@@ -12,6 +12,11 @@ export const collapseTerminal = (s: string): string => {
       return i >= 0 ? line.slice(i + 1) : line
     })
     .join('\n')
+    // archinstall/rich emit cursor-positioning sequences interleaved with
+    // literal newlines; once we strip the control bytes, those newlines
+    // pile up as huge blank runs. Squash runs of blank lines down to one.
+    .replace(/\n[ \t]*(\n[ \t]*){2,}/g, '\n\n')
+    .replace(/^\n+/, '')
 }
 
 type Props = {

@@ -25,6 +25,7 @@ import {
   getOpenDisk, setOpenDisk,
   getDiskError, setDiskError,
   getInstall, setInstall, appendInstallLog,
+  getAgeKey, setAgeKey,
   type CategoryId,
 } from './ui-state'
 import {
@@ -43,6 +44,7 @@ import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig } from './config'
 import { hashPassword } from './auth'
 import { Api } from './api'
+import { AgeIdentityString } from './age-key'
 import { sigSlug } from './slug'
 import appCssPath from "./assets/app.css" with { type: "file" }
 import datastarPath from "./assets/datastar.js" with { type: "file" }
@@ -118,7 +120,7 @@ const renderPreviewHtml = async (): Promise<string> => {
 
 const renderSidecar = async () => {
   const [previewHtml, disks] = await Promise.all([renderPreviewHtml(), listDisks()])
-  const warnings = deriveWarnings(getState(), disks)
+  const warnings = deriveWarnings(getState(), disks, getAgeKey())
   return { previewHtml, warnings }
 }
 
@@ -234,7 +236,7 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
       )
     }
     case 'import':
-      return <ImportView />
+      return <ImportView ageKeySet={getAgeKey() != null} />
   }
 }
 
@@ -334,6 +336,22 @@ app.post('/api/import/git', (c) =>
     }
   }),
 )
+
+const AgeKeyBody = z.object({ identity: AgeIdentityString })
+
+app.post('/api/secrets/age-key', (c) => {
+  const parsed = AgeKeyBody.safeParse(c.get('signals') ?? {})
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid identity' })
+  }
+  setAgeKey(parsed.data.identity)
+  return c.json({ ok: true })
+})
+
+app.post('/api/secrets/age-key/clear', (c) => {
+  setAgeKey(null)
+  return c.json({ ok: true })
+})
 
 app.post('/api/import/toml', (c) => {
   const parsed = ImportTomlBody.safeParse(c.get('signals') ?? {})
@@ -990,7 +1008,6 @@ app.post('/api/install/start', async (c) => {
 
     const args = ['archinstall', '--config', configFile, '--creds', credsFile, '--silent', '--script', 'guided']
     if (!wet) args.push('--dry-run')
-    setInstall({ log: `$ ${args.join(' ')}\n` })
 
     void runInstall(args, wet)
   } catch (e) {
@@ -1041,8 +1058,23 @@ arch-chroot /mnt pacman -U --noconfirm "/root/$name"
 `.trim()
   const steps: Array<[string, string[]]> = [
     ['install bicycle pkg into target', ['sh', '-c', installPkg]],
-    ['enable docker + bicycle services', ['arch-chroot', '/mnt', 'systemctl', 'enable', 'docker.service', 'bicycle-boot.service', 'bicycle-reconcile.timer']],
   ]
+  const ageKey = getAgeKey()
+  if (ageKey) {
+    const writeAgeKey = `
+set -e
+install -d -m 0700 -o root -g root /mnt/etc/bicycle
+umask 077
+cat > /mnt/etc/bicycle/age.key <<'BICYCLE_AGE_KEY_EOF'
+${ageKey}
+BICYCLE_AGE_KEY_EOF
+chmod 0600 /mnt/etc/bicycle/age.key
+chown root:root /mnt/etc/bicycle/age.key
+`.trim()
+    steps.push(['write age identity to /mnt/etc/bicycle/age.key', ['sh', '-c', writeAgeKey]])
+  } else {
+    appendInstallLog('\n(note) no age identity set; skipping /mnt/etc/bicycle/age.key write\n')
+  }
   for (const [label, args] of steps) {
     const code = await runStep(label, args)
     if (code !== 0) return code

@@ -24,3 +24,15 @@ test('preserves plain output untouched', () => {
   const s = '( 1/10) installing package linux\n( 2/10) installing package base\n'
   expect(collapseTerminal(s)).toBe(s)
 })
+
+test('squashes runs of blank lines to a single blank', () => {
+  expect(collapseTerminal('a\n\n\n\n\nb\n')).toBe('a\n\nb\n')
+  // whitespace-only lines count as blank
+  expect(collapseTerminal('a\n  \n\t\n\nb\n')).toBe('a\n\nb\n')
+  // a single blank line is preserved
+  expect(collapseTerminal('a\n\nb\n')).toBe('a\n\nb\n')
+})
+
+test('trims leading newlines', () => {
+  expect(collapseTerminal('\n\n$ cmd\noutput\n')).toBe('$ cmd\noutput\n')
+})
