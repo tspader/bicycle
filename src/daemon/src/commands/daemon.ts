@@ -33,15 +33,7 @@ const makeDebouncer = (delayMs: number, enqueue: (job: Job) => Promise<void>) =>
   };
 };
 
-const fullSweep: Job = async () => {
-  await reconcilers.groups.all();
-  await reconcilers.users.all();
-  await reconcilers.dirs.all();
-  await reconcilers.files.all();
-  await reconcilers.packages.all();
-  await reconcilers.systemd.all();
-  await reconcilers.app.all();
-};
+const fullSweep: Job = () => reconcilers.run();
 
 const classify = (abs: string): Job | null => {
   const filesRoot = paths.etc.files;

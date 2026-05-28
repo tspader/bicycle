@@ -40,6 +40,6 @@ test("users empty: no-op without throwing", async () => {
 test("existing root user with no extra groups: no-op", async () => {
   // root always exists; declaring it with empty groups and no sudo
   // should not try to modify anything.
-  writeBicycleYaml(`catalog:\n  url: "x"\nusers:\n  - { name: root, sudo: false, groups: [] }\n`);
+  writeBicycleYaml(`catalog:\n  url: "x"\nusers:\n  - { name: root, sudo: none, groups: [] }\n`);
   await users.all();
 });

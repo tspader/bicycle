@@ -18,6 +18,11 @@ rsync -a --delete --exclude='node_modules' \
   "$REPO/src/shared/" \
   "root@$VM_HOST:/root/bicycle/src/shared/"
 
+rsync -a --delete \
+  -e "ssh -p $VM_PORT ${SSH_OPTS[*]}" \
+  "$REPO/src/daemon/" \
+  "root@$VM_HOST:/root/bicycle/src/daemon/"
+
 rsync -a \
   -e "ssh -p $VM_PORT ${SSH_OPTS[*]}" \
   "$REPO/package.json" "$REPO/bun.lock" "$REPO/tsconfig.json" \

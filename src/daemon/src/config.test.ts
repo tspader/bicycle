@@ -50,7 +50,7 @@ test("resolves vars into typed fields (uid as number) before zod", () => {
     'users:',
     '  - name: spader',
     '    uid: ${admin.uid}',
-    '    sudo: true',
+    '    sudo: password',
     '    groups: [wheel, media]',
     'groups:',
     '  - name: media',
@@ -77,7 +77,7 @@ test("unknown var ref in bicycle.yml throws", () => {
     'users:',
     '  - name: x',
     '    uid: ${nope}',
-    '    sudo: false',
+    '    sudo: none',
     '    groups: []',
     '',
   ].join('\n'));

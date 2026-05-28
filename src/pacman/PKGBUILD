@@ -5,7 +5,7 @@ pkgdesc="Declarative Arch-native machine and container provisioner"
 arch=('x86_64')
 url="https://github.com/spader/bicycle"
 license=('MIT')
-depends=('docker' 'docker-compose' 'git')
+depends=('docker' 'docker-compose' 'git' 'sudo')
 options=(!strip !debug)
 install=bicycle.install
 

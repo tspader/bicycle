@@ -1,6 +1,7 @@
 import {
-  BicycleConfig,
+  loadBicycleDoc,
   LoaderName,
+  type BicycleConfig,
   type EncryptionKind,
 } from '@bicycle/shared'
 import { ArchinstallConfig, Bootloader, EncryptionType } from './schema'
@@ -35,6 +36,20 @@ const NET_MODE_REVERSE: Record<'iso' | 'nm', 'iso' | 'networkmanager'> = {
 export type RetainedDoc = {
   catalog?: BicycleConfig['catalog']
   systemd?: BicycleConfig['systemd']
+  // Users declared in an imported bicycle.yml. They carry password *secret
+  // refs* (and possibly a uid), neither of which ArchinstallConfig.User can
+  // hold, so — like catalog/systemd — they're retained verbatim rather than
+  // folded into `config.users`. toYaml re-emits them so a dirty (UI-edited)
+  // import doesn't silently drop imported users from the regenerated
+  // bicycle.yml. UI-created users (config.users) take precedence on name
+  // conflict, matching mergeUsers() at install time.
+  users?: BicycleConfig['users']
+  // Bicycle-only sections the daemon reconciles (groups.ts / dirs.ts) but
+  // archinstall knows nothing about. Like the above, they're retained so a
+  // dirty (UI-edited) import doesn't drop them from the regenerated
+  // bicycle.yml. Their `${var}` refs are already resolved at load time.
+  groups?: BicycleConfig['groups']
+  dirs?: BicycleConfig['dirs']
 }
 
 export type YamlImport = {
@@ -48,8 +63,7 @@ const addBytes = (a: Size, bytes: number): Size => {
 }
 
 export const fromYaml = (text: string, ctx: MachineCtx): YamlImport => {
-  const raw = Bun.YAML.parse(text)
-  const bike = BicycleConfig.parse(raw)
+  const bike = loadBicycleDoc(text).resolved
   const out: ArchinstallConfig = {}
 
   if (bike.core) {
@@ -196,6 +210,9 @@ export const fromYaml = (text: string, ctx: MachineCtx): YamlImport => {
     retained: {
       ...(bike.catalog ? { catalog: bike.catalog } : {}),
       ...(bike.systemd ? { systemd: bike.systemd } : {}),
+      ...(bike.users && bike.users.length > 0 ? { users: bike.users } : {}),
+      ...(bike.groups && bike.groups.length > 0 ? { groups: bike.groups } : {}),
+      ...(bike.dirs && bike.dirs.length > 0 ? { dirs: bike.dirs } : {}),
     },
   }
 }
@@ -264,13 +281,35 @@ export const toYaml = (
   }
 
   if (cfg.swap) bike.swap = cfg.swap
-  if (cfg.users && cfg.users.length > 0) {
-    bike.users = cfg.users.map((u) => ({
-      name: u.username,
-      sudo: u.sudo,
-      groups: u.groups,
-    }))
+  // Merge imported users (retained, with their original secret refs + uid)
+  // with UI-created users (cfg.users). A Map keyed by name keeps imported
+  // ordering while letting UI users override a same-named import — consistent
+  // with mergeUsers() at install. Imported users are placed first so they
+  // retain their slots; UI-only users are appended.
+  const usersByName = new Map<string, Record<string, unknown>>()
+  for (const u of retained.users ?? []) {
+    const entry: Record<string, unknown> = { name: u.name }
+    if (u.uid !== undefined) entry.uid = u.uid
+    entry.sudo = u.sudo
+    entry.groups = u.groups
+    if (u.password !== undefined) entry.password = u.password
+    usersByName.set(u.name, entry)
   }
+  for (const u of cfg.users ?? []) {
+    usersByName.set(u.username, {
+      name: u.username,
+      sudo: u.sudo ? 'password' : 'none',
+      groups: u.groups,
+      // The cleartext password is encrypted to <etc>/secrets/users/<name>/
+      // password.age at install; the daemon resolves this ref + applies it with
+      // chpasswd. archinstall still gets the hashed enc_password via --creds.
+      password: `\${secret:users/${u.username}/password}`,
+    })
+  }
+  if (usersByName.size > 0) bike.users = [...usersByName.values()]
+  // Retained Bicycle-only sections (resolved at import) — pass through verbatim.
+  if (retained.groups && retained.groups.length > 0) bike.groups = retained.groups
+  if (retained.dirs && retained.dirs.length > 0) bike.dirs = retained.dirs
   if (cfg.packages && cfg.packages.length > 0) {
     const groups: Record<string, string[]> = {}
     for (const name of cfg.packages) {

@@ -1,8 +1,10 @@
 import { $ } from "bun";
 import fs from "fs";
+import type { SudoMode } from "@bicycle/shared";
 import * as config from "../config";
 import { paths } from "../paths";
 import { log } from "../logger";
+import { interpolate } from "../interpolate";
 
 type Existing = { name: string; uid: number; gid: number; groups: string[] };
 
@@ -22,8 +24,8 @@ const supplementary = async (name: string): Promise<string[]> => {
   return r.stdout.toString().trim().split(/\s+/).filter(Boolean);
 };
 
-const wantedGroups = (u: { sudo: boolean; groups: string[] }): string[] =>
-  [...new Set(u.sudo ? [...u.groups, "wheel"] : u.groups)];
+const wantedGroups = (u: { sudo: SudoMode; groups: string[] }): string[] =>
+  [...new Set(u.sudo !== "none" ? [...u.groups, "wheel"] : u.groups)];
 
 const createUser = async (
   name: string,
@@ -46,6 +48,43 @@ const createUser = async (
   return true;
 };
 
+// Resolve a user's password secret ref and apply it with chpasswd. The clear
+// password is fed via stdin (never interpolated into a shell string) so it
+// can't be injected or leak into the process table. Only called right after
+// creating a user — we don't reset passwords on every reconcile, both to
+// avoid churning /etc/shadow and to avoid clobbering a password the operator
+// later changed by hand.
+const setPassword = async (
+  name: string,
+  ref: string,
+  vars: unknown,
+): Promise<void> => {
+  let clear: string;
+  try {
+    clear = await interpolate(ref, vars);
+  } catch (e) {
+    log.error({ user: name, err: e }, "users: failed to resolve password secret");
+    return;
+  }
+  // Refuse to set an empty password — that would create a passwordless login.
+  // Matches the installer's promoteUsers() guard. Secret content is treated
+  // verbatim on both sides (no trimming).
+  if (clear.length === 0) {
+    log.error({ user: name }, "users: password secret is empty; not setting password");
+    return;
+  }
+  const line = Buffer.from(`${name}:${clear}\n`);
+  const r = await $`chpasswd < ${line}`.quiet().nothrow();
+  if (r.exitCode !== 0) {
+    log.error(
+      { user: name, exitCode: r.exitCode, stderr: r.stderr.toString().trim() },
+      "users: chpasswd failed",
+    );
+    return;
+  }
+  log.info({ user: name }, "users: password set");
+};
+
 const addToGroups = async (name: string, missing: string[]): Promise<void> => {
   if (missing.length === 0) return;
   log.info({ user: name, groups: missing }, "users: adding to groups");
@@ -60,12 +99,15 @@ const addToGroups = async (name: string, missing: string[]): Promise<void> => {
 
 export const all = async (): Promise<void> => {
   if (!fs.existsSync(paths.etc.bicycleYaml)) return;
-  const wanted = config.bicycle().users ?? [];
+  const cfg = config.bicycle();
+  const wanted = cfg.users ?? [];
   for (const u of wanted) {
     const want = wantedGroups(u);
     const existing = await passwd(u.name);
     if (!existing) {
-      await createUser(u.name, u.uid, want);
+      const created = await createUser(u.name, u.uid, want);
+      // Set the password only on first creation. If creation failed, skip.
+      if (created && u.password) await setPassword(u.name, u.password, cfg.vars);
       continue;
     }
     if (u.uid !== undefined && existing.uid !== u.uid) {

@@ -5,8 +5,11 @@ import { CATEGORIES, Layout, Preview, Warnings } from './views/layout'
 import type { Child } from 'hono/jsx'
 import { codeToHtml } from 'shiki'
 import { toYaml, DEFAULT_MIRROR_URL, fromYaml } from './config'
+import { buildInstallSteps } from './install-steps'
+import { locateConfigTree, applyConfigTree } from './import-tree'
 import { randomUUID } from 'node:crypto'
-import { rmSync, readFileSync } from 'node:fs'
+import { rmSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { join as pathJoin } from 'node:path'
 import { SystemView } from './views/system'
 import { DiskView } from './views/disk'
 import { PacmanView } from './views/pacman'
@@ -26,6 +29,7 @@ import {
   getDiskError, setDiskError,
   getInstall, setInstall, appendInstallLog,
   getAgeKey, setAgeKey,
+  getUserPasswords, setUserPassword, renameUserPassword, deleteUserPassword,
   type CategoryId,
 } from './ui-state'
 import {
@@ -38,11 +42,14 @@ import { InstallView, ProgressCard } from './views/install'
 import { ImportView } from './views/import'
 import { existsSync } from 'node:fs'
 import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
-import { getState, setState, replaceState, getRetained, setRetained } from './state'
+import { getState, setState, replaceState, getRetained, setRetained, getSource, setSource } from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import { ArchinstallConfig } from './config'
 import { hashPassword } from './auth'
+import { recipientFor, generate as generateAgeIdentity } from './age'
+import { loadBicycleDoc, type User as BicycleUser } from '@bicycle/shared'
+import type { PendingUser } from './config'
 import { Api } from './api'
 import { AgeIdentityString } from './age-key'
 import { sigSlug } from './slug'
@@ -108,19 +115,44 @@ const LOADER_MAP = {
 
 const renderPreviewHtml = async (): Promise<string> => {
   let yaml: string
-  try {
-    const all = await loadPackages()
-    const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
-    yaml = toYaml(getState(), getRetained(), repos)
-  } catch (e) {
-    yaml = `# preview unavailable\n# ${(e as Error).message}`
+  // When the state came from an import and hasn't been edited, show the source
+  // YAML verbatim so the user sees exactly what will land in /etc/bicycle —
+  // not a re-serialized round-trip that loses comments, ordering, and any
+  // top-level keys archinstall doesn't know about (apps, dirs, users w/o pw, …).
+  const src = getSource()
+  if (src) {
+    yaml = src.yaml
+  } else {
+    try {
+      const all = await loadPackages()
+      const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
+      yaml = toYaml(getState(), getRetained(), repos)
+    } catch (e) {
+      yaml = `# preview unavailable\n# ${(e as Error).message}`
+    }
   }
   return codeToHtml(yaml, { lang: 'yaml', theme: 'github-dark-default' })
 }
 
+// Users declared in the imported bicycle.yml (resolved). These aren't in the
+// archinstall `state.users` — they carry password secret refs and get promoted
+// to archinstall accounts at install time. Empty for UI-built configs.
+const sourceBicycleUsers = (): BicycleUser[] => {
+  const src = getSource()
+  if (!src) return []
+  try {
+    return loadBicycleDoc(src.yaml).resolved.users ?? []
+  } catch {
+    return []
+  }
+}
+
+const pendingUsers = (): PendingUser[] =>
+  sourceBicycleUsers().map((u) => ({ sudo: u.sudo !== 'none', hasPassword: !!u.password }))
+
 const renderSidecar = async () => {
   const [previewHtml, disks] = await Promise.all([renderPreviewHtml(), listDisks()])
-  const warnings = deriveWarnings(getState(), disks, getAgeKey())
+  const warnings = deriveWarnings(getState(), disks, getAgeKey(), pendingUsers())
   return { previewHtml, warnings }
 }
 
@@ -277,6 +309,7 @@ const applyImportYaml = (text: string): void => {
   const { config, retained } = fromYaml(text, liveMachine())
   replaceState(config)
   setRetained(retained)
+  setSource({ yaml: text, tree: null, ownsTree: false, dirty: false })
 }
 
 app.post('/api/import/git', (c) =>
@@ -299,6 +332,7 @@ app.post('/api/import/git', (c) =>
 
       const tmp = `/tmp/bicycle-import-${randomUUID()}`
       const safeUrl = sig.import_git_url.trim()
+      let imported = false
       try {
         const res = Bun.spawnSync(
           ['git', 'clone', '--depth=1', '--single-branch', url.toString(), tmp],
@@ -320,14 +354,21 @@ app.post('/api/import/git', (c) =>
           const tail = sanitized.trim().split('\n').slice(-2).join(' ').slice(0, 400)
           throw new Error(tail || 'git clone failed')
         }
-        const yamlPath = `${tmp}/.bicycle/bicycle.yml`
-        if (!existsSync(yamlPath)) {
-          throw new Error('.bicycle/bicycle.yml not found in repository root')
-        }
-        const text = readFileSync(yamlPath, 'utf8')
-        applyImportYaml(text)
+        const loc = locateConfigTree(tmp)
+        applyConfigTree(loc, undefined, { ownsTree: true })
+        // Convenience: if the cloned tree includes an age.key (e.g. the
+        // example/ checkout), pre-populate the in-memory age identity so
+        // install can decrypt secrets without a second manual step. The key
+        // is held in memory only and is not copied into the worktree at
+        // install time — it's written to /mnt/etc/bicycle/age.key separately.
+        // (applyConfigTree() handles age-key adoption from the tree.)
+        imported = true
       } finally {
-        try { rmSync(tmp, { recursive: true, force: true }) } catch {}
+        // Only blow away the clone on failure — on success it's kept so
+        // install can copy the exact tree into /mnt/etc/bicycle.
+        if (!imported) {
+          try { rmSync(tmp, { recursive: true, force: true }) } catch {}
+        }
       }
       announce(`Imported from ${safeUrl}`, '')
       stream.patchSignals(JSON.stringify({ import_git_url: '', import_git_user: '', import_git_pass: '' }))
@@ -503,6 +544,10 @@ app.post('/api/users/save', async (c) => {
     enc_password,
   })
   setState({ users: next })
+  // Keep the in-memory cleartext store in sync: follow the rename, then
+  // overwrite with the new password if one was typed (blank = unchanged).
+  renameUserPassword(original, fields.username)
+  if (fields.password) setUserPassword(fields.username, fields.password)
   return reloadUsers(c)
 })
 
@@ -524,6 +569,7 @@ app.post('/api/users/create', async (c) => {
       },
     ],
   })
+  setUserPassword(fields.username, fields.password)
   return reloadUsers(c)
 })
 
@@ -531,6 +577,7 @@ app.post('/api/users/delete', (c) => {
   const name = requiredQuery(c, 'name')
   const s = getState()
   setState({ users: (s.users ?? []).filter((u) => u.username !== name) })
+  deleteUserPassword(name)
   return reloadUsers(c)
 })
 
@@ -899,11 +946,19 @@ const isWet = (): boolean => existsSync('/run/archiso/bootmnt')
 // archinstall splits its input into config + creds. We hold everything in one
 // ArchinstallConfig at runtime; these two helpers carve it back out for the
 // JSON files that get passed via --config and --creds.
-const CRED_KEYS = ['users', 'root_enc_password', 'encryption_password'] as const
+const CRED_KEYS = ['root_enc_password', 'encryption_password'] as const
+// archinstall does NOT create regular users for us — the Bicycle daemon does,
+// via a chroot reconcile right after install (see buildInstallSteps). archinstall
+// only adds users to groups that already exist, which blows up on custom groups
+// (gpasswd: group does not exist). So `users` is dropped from both files; the
+// daemon creates accounts, sets passwords from secrets, and fixes group
+// membership on the target.
+const OMIT_KEYS = ['users'] as const
 const splitForArchinstall = (cfg: ArchinstallConfig) => {
   const config: Record<string, unknown> = {}
   const creds: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(cfg)) {
+    if ((OMIT_KEYS as readonly string[]).includes(k)) continue
     if ((CRED_KEYS as readonly string[]).includes(k)) {
       if (v !== undefined && v !== null) creds[k] = v
     } else {
@@ -916,7 +971,7 @@ const splitForArchinstall = (cfg: ArchinstallConfig) => {
 const renderInstall = async (c: AppContext) => {
   const s = getState()
   const disks = await listDisks()
-  const pf = preflight(s, disks)
+  const pf = preflight(s, disks, getAgeKey(), pendingUsers())
   const view = (
     <InstallView
       preflight={pf}
@@ -949,7 +1004,7 @@ app.get('/api/install/status', async (c) => {
   const disks = await listDisks()
   const view = (
     <InstallView
-      preflight={preflight(s, disks)}
+      preflight={preflight(s, disks, getAgeKey(), pendingUsers())}
       device={targetDevice(s)}
       mode={isWet() ? 'wet' : 'dry-run'}
       install={getInstall()}
@@ -996,11 +1051,14 @@ app.post('/api/install/start', async (c) => {
 
   try {
     const disks = await listDisks()
-    const pf = preflight(s, disks)
+    const pf = preflight(s, disks, getAgeKey(), pendingUsers())
     if (!pf.ok) {
       setInstall({ status: 'idle', startedAt: null })
       throw new HTTPException(400, { message: pf.problems.join('; ') })
     }
+    // Users are NOT handed to archinstall (see splitForArchinstall). The
+    // Bicycle daemon creates them on the target via a chroot reconcile after
+    // install, decrypting each password secret with the age identity there.
     const { config, creds } = splitForArchinstall(s)
     const configFile = '/tmp/bicycle-config.json'
     const credsFile = '/tmp/bicycle-creds.json'
@@ -1049,51 +1107,75 @@ const runStep = async (label: string, args: string[]): Promise<number> => {
   }
 }
 
-const postArchinstall = async (): Promise<number> => {
-  const installPkg = `
-set -e
-pkg=$(ls /root/bicycle-pkg/bicycle-*.pkg.tar.zst | head -1)
-name=$(basename "$pkg")
-cp "$pkg" /mnt/root/
-arch-chroot /mnt pacman -U --noconfirm "/root/$name"
-`.trim()
+const parseRecipients = (text: string): string[] =>
+  text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
 
+const postArchinstall = async (): Promise<number> => {
   const all = await loadPackages().catch(() => [])
   const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
-  const docYaml = toYaml(getState(), getRetained(), repos)
-  const writeDoc = `
-set -e
-install -d -m 0755 -o root -g root /mnt/etc/bicycle
-cat > /mnt/etc/bicycle/bicycle.yml <<'BICYCLE_YAML_EOF'
-${docYaml}
-BICYCLE_YAML_EOF
-chmod 0644 /mnt/etc/bicycle/bicycle.yml
-chown root:root /mnt/etc/bicycle/bicycle.yml
-`.trim()
+  const src = getSource()
+  const state = getState()
 
-  const steps: Array<[string, string[]]> = [
-    ['install bicycle pkg into target', ['sh', '-c', installPkg]],
-    ['write /mnt/etc/bicycle/bicycle.yml', ['sh', '-c', writeDoc]],
-  ]
-  const ageKey = getAgeKey()
-  if (ageKey) {
-    const writeAgeKey = `
-set -e
-install -d -m 0700 -o root -g root /mnt/etc/bicycle
-umask 077
-cat > /mnt/etc/bicycle/age.key <<'BICYCLE_AGE_KEY_EOF'
-${ageKey}
-BICYCLE_AGE_KEY_EOF
-chmod 0600 /mnt/etc/bicycle/age.key
-chown root:root /mnt/etc/bicycle/age.key
-`.trim()
-    steps.push(['write age identity to /mnt/etc/bicycle/age.key', ['sh', '-c', writeAgeKey]])
-  } else {
+  // Collect cleartext UI passwords for users still present in the derived
+  // config; entries left over from a prior import/session are dropped.
+  const present = new Set((state.users ?? []).map((u) => u.username))
+  const userSecrets = [...getUserPasswords()]
+    .filter(([name]) => present.has(name))
+    .map(([name, clear]) => ({ name, clear }))
+
+  // Resolve the recipients to encrypt those passwords to, so the secrets are
+  // decryptable by the age.key that lands on the target.
+  let ageKey = getAgeKey()
+  let recipients: string[] = []
+  if (userSecrets.length > 0) {
+    const treeRecipients = src?.tree ? pathJoin(src.tree, 'recipients') : null
+    if (treeRecipients && existsSync(treeRecipients)) {
+      // Mixed import+edit: reuse the tree's recipients (they match its age.key,
+      // adopted into memory on import) so all secrets share one identity.
+      recipients = parseRecipients(readFileSync(treeRecipients, 'utf8'))
+    }
+    if (recipients.length === 0) {
+      if (!ageKey) {
+        // Pure UI build with no identity: generate one so the build "just
+        // works". buildInstallSteps writes it to <etc>/age.key (step 3).
+        ageKey = await generateAgeIdentity()
+        setAgeKey(ageKey)
+        appendInstallLog('\n(note) generated a new age identity to encrypt user passwords\n')
+      }
+      recipients = [await recipientFor(ageKey)]
+    }
+  }
+
+  if (!ageKey) {
     appendInstallLog('\n(note) no age identity set; skipping /mnt/etc/bicycle/age.key write\n')
   }
-  for (const [label, args] of steps) {
-    const code = await runStep(label, args)
-    if (code !== 0) return code
+  const steps = buildInstallSteps({
+    source: src,
+    state,
+    retained: getRetained(),
+    ageKey,
+    packageRepos: repos,
+    userSecrets,
+    recipients,
+  })
+  for (const step of steps) {
+    if (step.kind === 'shell') {
+      const code = await runStep(step.label, step.argv)
+      if (code !== 0) return code
+    } else {
+      appendInstallLog(`\n$ ${step.label}\n`)
+      try {
+        await step.run()
+      } catch (e) {
+        appendInstallLog(`${step.label} failed: ${(e as Error).message}\n`)
+        return -1
+      }
+    }
+  }
+  // Cleanup: drop the source clone dir once it's been published to /mnt.
+  // setSource() handles deletion when ownsTree is true.
+  if (src?.ownsTree && src.tree) {
+    setSource({ ...src, tree: null, ownsTree: false })
   }
   return 0
 }

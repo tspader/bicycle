@@ -11,10 +11,15 @@ export type Warning = {
   category?: CategoryId
 }
 
+// A source (YAML) user that could be promoted into an archinstall account at
+// install time, summarized to what preflight needs without decrypting.
+export type PendingUser = { sudo: boolean; hasPassword: boolean }
+
 export const deriveWarnings = (
   cfg: ArchinstallConfig,
   disks: DiskInfo[],
   ageKey: string | null = null,
+  pending: PendingUser[] = [],
 ): Warning[] => {
   const out: Warning[] = []
   const err = (message: string, category?: CategoryId) =>
@@ -66,8 +71,18 @@ export const deriveWarnings = (
 
   const hasSudoer = (cfg.users ?? []).some((u) => u.sudo)
   const hasRootPw = !!cfg.root_enc_password
-  if (!hasSudoer && !hasRootPw) {
-    err('Create a sudo user or set a root password.', 'users')
+  // A source YAML sudoer with a password secret can supply the login too — but
+  // only if an age identity is available to decrypt it at install time.
+  const pendingSudoerWithPw = pending.some((p) => p.sudo && p.hasPassword)
+  const hasPendingSudoer = ageKey != null && pendingSudoerWithPw
+  if (!hasSudoer && !hasRootPw && !hasPendingSudoer) {
+    // Emit exactly one error: if a promotable sudoer exists but the age key
+    // is missing, point at that specific fix; otherwise the generic one.
+    if (pendingSudoerWithPw) {
+      err('Set an age identity so the imported user password can be decrypted.', 'import')
+    } else {
+      err('Create a sudo user or set a root password.', 'users')
+    }
   }
 
   if (!ageKey) {
@@ -79,8 +94,13 @@ export const deriveWarnings = (
 
 export type PreflightResult = { ok: true; problems: [] } | { ok: false; problems: string[] }
 
-export const preflight = (cfg: ArchinstallConfig, disks: DiskInfo[]): PreflightResult => {
-  const problems = deriveWarnings(cfg, disks)
+export const preflight = (
+  cfg: ArchinstallConfig,
+  disks: DiskInfo[],
+  ageKey: string | null = null,
+  pending: PendingUser[] = [],
+): PreflightResult => {
+  const problems = deriveWarnings(cfg, disks, ageKey, pending)
     .filter((w) => w.severity === 'error')
     .map((w) => w.message)
   return problems.length === 0

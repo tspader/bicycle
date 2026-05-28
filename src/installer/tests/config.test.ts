@@ -129,10 +129,81 @@ test('rejects unknown nested fields', () => {
   expect(() => importCfg(bad)).toThrow()
 })
 
-test('drops user blocks on import (passwords cannot be expressed in YAML)', () => {
-  const withUser = MINIMAL + '\nusers:\n  - name: spader\n    sudo: true\n    groups: [wheel]\n'
+test('fromYaml does not place YAML users into archinstall config (promoted separately at install)', () => {
+  // YAML users carry password *secret refs*, not hashes, so fromYaml leaves
+  // archinstall `users` empty. promoteUsers() decrypts + hashes them at
+  // install time instead (see users-promote.ts). The user is still recorded
+  // in the on-disk bicycle.yml for the daemon to reconcile.
+  const withUser = MINIMAL +
+    '\nusers:\n  - name: spader\n    sudo: password\n    groups: [wheel]\n    password: ${secret:users/spader/password}\n'
   const cfg = importCfg(withUser)
   expect(cfg.users).toBeUndefined()
+})
+
+test('toYaml emits a password secret ref for each archinstall user', () => {
+  const cfg = importCfg(MINIMAL)
+  cfg.users = [{ username: 'spader', sudo: true, groups: ['wheel'], enc_password: '$6$x' }]
+  const out = toYaml(cfg)
+  expect(out).toContain('${secret:users/spader/password}')
+  // The hash is never serialized into the (world-readable) bicycle.yml.
+  expect(out).not.toContain('$6$x')
+})
+
+test('toYaml preserves imported users (refs + uid) when the config is regenerated', () => {
+  // Reproduces the dirty-import bug: a UI edit marks the source dirty, so
+  // install regenerates bicycle.yml via toYaml instead of copying source
+  // verbatim. Imported users must survive that round-trip.
+  const withUser = MINIMAL +
+    '\nusers:\n  - name: spader\n    uid: 1000\n    sudo: password\n    groups: [wheel]\n' +
+    '    password: ${secret:users/spader/password}\n'
+  const { config, retained } = fromYaml(withUser, ctx())
+  expect(config.users).toBeUndefined() // not folded into archinstall config
+  expect(retained.users?.[0]?.name).toBe('spader')
+
+  const out = toYaml(config, retained)
+  expect(out).toContain('name: spader')
+  expect(out).toContain('uid: 1000')
+  expect(out).toContain('${secret:users/spader/password}')
+
+  const reparsed = fromYaml(out, ctx())
+  expect(reparsed.retained.users?.[0]?.name).toBe('spader')
+  expect(reparsed.retained.users?.[0]?.uid).toBe(1000)
+  expect(reparsed.retained.users?.[0]?.password).toBe('${secret:users/spader/password}')
+})
+
+test('toYaml merges imported + UI users, UI winning on name conflict', () => {
+  const withUser = MINIMAL +
+    '\nusers:\n  - name: imported\n    sudo: none\n    groups: [g]\n' +
+    '    password: ${secret:users/imported/password}\n' +
+    '  - name: spader\n    uid: 1000\n    sudo: none\n    groups: [old]\n' +
+    '    password: ${secret:users/spader/password}\n'
+  const { config, retained } = fromYaml(withUser, ctx())
+  config.users = [{ username: 'spader', sudo: true, groups: ['wheel'], enc_password: '$6$x' }]
+
+  const reparsed = fromYaml(toYaml(config, retained), ctx())
+  const users = reparsed.retained.users!
+  // Both the untouched import and the UI override survive; no duplicate.
+  expect(users.map((u) => u.name).sort()).toEqual(['imported', 'spader'])
+  const spader = users.find((u) => u.name === 'spader')!
+  expect(spader.sudo).toBe('password') // UI value (mapped from on), not the imported none
+  expect(spader.groups).toEqual(['wheel'])
+  expect(spader.uid).toBeUndefined() // UI users have no uid
+  expect(spader.password).toBe('${secret:users/spader/password}')
+})
+
+test('toYaml preserves daemon-only groups + dirs through a dirty regenerate', () => {
+  // groups.ts / dirs.ts reconcile these on the installed system; archinstall
+  // doesn't model them, so they must round-trip via retained (vars resolved).
+  const withExtras = MINIMAL +
+    '\ngroups:\n  - name: media\n    gid: ${media.gid}\n' +
+    'dirs:\n  - path: /media\n    group: media\n    mode: "02775"\n' +
+    'vars:\n  media:\n    gid: 1001\n'
+  const { config, retained } = fromYaml(withExtras, ctx())
+  expect(retained.groups?.[0]).toEqual({ name: 'media', gid: 1001 })
+
+  const reparsed = fromYaml(toYaml(config, retained), ctx())
+  expect(reparsed.retained.groups?.[0]).toEqual({ name: 'media', gid: 1001 })
+  expect(reparsed.retained.dirs?.[0]).toEqual({ path: '/media', group: 'media', mode: '02775' })
 })
 
 test('rejects nm_iwd network mode (archinstall silently drops it)', () => {
@@ -312,6 +383,36 @@ describe('preflight', () => {
     const r = preflight(cfg, disks)
     if (r.ok) throw new Error('expected failure')
     expect(r.problems.some((p) => p.toLowerCase().includes('sudo'))).toBe(true)
+  })
+
+  const noLogin = () => {
+    const cfg = ready()
+    cfg.users = []
+    cfg.root_enc_password = null
+    return cfg
+  }
+  const pendingSudoer = [{ sudo: true, hasPassword: true }]
+  const ageKey = 'AGE-SECRET-KEY-1' + 'A'.repeat(58)
+
+  test('a promotable YAML sudoer + age key satisfies the login requirement', () => {
+    expect(preflight(noLogin(), disks, ageKey, pendingSudoer)).toEqual({ ok: true, problems: [] })
+  })
+
+  test('promotable YAML sudoer WITHOUT an age key errors on the age identity, once', () => {
+    const r = preflight(noLogin(), disks, null, pendingSudoer)
+    if (r.ok) throw new Error('expected failure')
+    const loginProblems = r.problems.filter(
+      (p) => /age identity/i.test(p) || /sudo user or set a root/i.test(p),
+    )
+    // Exactly one login-related error, and it's the actionable age one.
+    expect(loginProblems).toHaveLength(1)
+    expect(loginProblems[0]).toMatch(/age identity/i)
+  })
+
+  test('a non-sudo pending user does not satisfy the requirement', () => {
+    const r = preflight(noLogin(), disks, ageKey, [{ sudo: false, hasPassword: true }])
+    if (r.ok) throw new Error('expected failure')
+    expect(r.problems.some((p) => /sudo user or set a root/i.test(p))).toBe(true)
   })
 
   test('flags overflow', () => {

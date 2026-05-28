@@ -16,7 +16,9 @@ OUT="$CACHE/installer.iso"
 EXTRA_PACKAGES=(
   archinstall
   bun
+  git
   openssh
+  sudo
 )
 
 for cmd in mkarchiso bun rsync makepkg; do

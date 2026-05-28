@@ -1,5 +1,9 @@
 import { z } from 'zod'
 
+export * as vars from './vars'
+export { loadBicycleDoc } from './loader'
+export type { LoadedDoc } from './loader'
+
 export const Kernel = z.enum(['linux', 'linux-lts', 'linux-zen', 'linux-hardened'])
 export type Kernel = z.infer<typeof Kernel>
 
@@ -19,6 +23,9 @@ export type EncryptionKind = z.infer<typeof EncryptionKind>
 
 export const NetworkMode = z.enum(['iso', 'networkmanager'])
 export type NetworkMode = z.infer<typeof NetworkMode>
+
+export const SudoMode = z.enum(['none', 'password', 'passwordless'])
+export type SudoMode = z.infer<typeof SudoMode>
 
 export const SwapAlgorithm = z.enum(['zstd', 'lzo-rle', 'lzo', 'lz4', 'lz4hc'])
 export type SwapAlgorithm = z.infer<typeof SwapAlgorithm>
@@ -55,8 +62,17 @@ export type Disk = z.infer<typeof Disk>
 const User = z.object({
   name: z.string().min(1),
   uid: z.number().int().nonnegative().optional(),
-  sudo: z.boolean(),
+  // none: no sudo. password: full sudo, password required. passwordless: full
+  // sudo with NOPASSWD. The sudoers reconciler writes a drop-in per sudo user;
+  // membership in `wheel` alone grants nothing without that rule.
+  sudo: SudoMode,
   groups: z.array(z.string()),
+  // A secret reference (e.g. "${secret:users/spader/password}") pointing at
+  // an age-encrypted file holding the user's CLEAR password. The installer
+  // decrypts + hashes it for archinstall at install time; the daemon decrypts
+  // it and applies it with chpasswd at reconcile time. Stored clear (inside
+  // the age envelope) because some flows genuinely need the plaintext.
+  password: z.string().min(1).optional(),
 }).strict()
 export type User = z.infer<typeof User>
 

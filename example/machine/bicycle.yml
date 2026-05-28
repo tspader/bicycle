@@ -35,8 +35,9 @@ vars:
 users:
   - name: spader
     uid: ${admin.uid}
-    sudo: true
+    sudo: password
     groups: [wheel, media]
+    password: ${secret:users/spader/password}
 groups:
   - name: media
     gid: ${media.gid}
