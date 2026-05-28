@@ -1,16 +1,14 @@
-import type { PartitionConfig } from './schema'
-import { DEFAULT_SECTOR, parseSize, sizeBytes } from './size'
-import type { MachineCtx } from './machine'
+import type { Disk, FsType, Partition, PartitionFlag } from '@bicycle/shared'
 
 // Each preset is a list of bicycle-shape partitions (size as a string, no
-// obj_id/start, etc). buildPartitions() resolves them against a real disk via
-// MachineCtx, applying the same arithmetic as fromToml: first partition starts
-// at 1 MiB, "rest" fills the tail minus the GPT backup header.
+// obj_id/start). The projection (project() in yaml.ts) resolves them against a
+// real disk: the first partition starts at 1 MiB, "rest" fills the tail minus
+// the GPT backup header.
 export type PresetPart = {
   mount: string
-  fs: PartitionConfig['fs_type']
+  fs: FsType
   size: string
-  flags?: PartitionConfig['flags']
+  flags?: PartitionFlag[]
   mount_options?: string[]
   subvol?: Array<{ name: string; mount?: string }>
   encrypt?: boolean
@@ -74,68 +72,27 @@ export const PRESETS: Record<PresetId, { label: string; parts: PresetPart[]; nee
   },
 }
 
-const MIB = 1024 ** 2
+// Convert a preset part to a bicycle.yml partition. The first partition gets an
+// explicit start (1 MiB); the rest derive theirs from the cursor at projection
+// time. undefined fields are dropped by doc.node so optional keys aren't
+// emitted.
+export const presetPartition = (p: PresetPart, first: boolean): Partition => ({
+  mount: p.mount,
+  fs: p.fs,
+  size: p.size,
+  start: first ? '1MiB' : undefined,
+  flags: p.flags && p.flags.length > 0 ? p.flags : undefined,
+  mount_options: p.mount_options && p.mount_options.length > 0 ? p.mount_options : undefined,
+  subvolumes:
+    p.subvol && p.subvol.length > 0
+      ? p.subvol.map((s) => ({ name: s.name, mount: s.mount }))
+      : undefined,
+  encrypt: p.encrypt ? true : undefined,
+}) as Partition
 
-// Convert a list of preset/bicycle-shape parts into resolved PartitionConfigs
-// for a specific disk. Throws on the same conditions fromToml does.
-export const buildPartitions = (
-  parts: PresetPart[],
-  device: string,
-  ctx: MachineCtx,
-): { partitions: PartitionConfig[]; encryptedObjIds: string[] } => {
-  const lastIdx = parts.length - 1
-  const encryptedObjIds: string[] = []
-  let cursor: number | null = null
-
-  const partitions: PartitionConfig[] = parts.map((p, i) => {
-    if (p.fs !== 'btrfs' && p.subvol && p.subvol.length > 0) {
-      throw new Error(`partition ${p.mount}: subvol requires fs="btrfs"`)
-    }
-    if (p.size === 'rest' && i !== lastIdx) {
-      throw new Error(`partition ${p.mount}: "rest" is only allowed on the last partition`)
-    }
-
-    let startBytes: number
-    let originalStart: string | undefined
-    if (i === 0) {
-      startBytes = MIB
-      originalStart = '1MiB'
-    } else {
-      if (cursor === null) throw new Error(`partition ${p.mount}: cannot derive start`)
-      startBytes = cursor
-    }
-
-    let bytes: number
-    if (p.size === 'rest') {
-      const totalBytes = ctx.diskSize(device)
-      const usableEnd = totalBytes - MIB // GPT backup tail
-      const restBytes = usableEnd - startBytes
-      if (restBytes <= 0) throw new Error(`no space left for "rest" partition ${p.mount}`)
-      bytes = restBytes - (restBytes % MIB)
-    } else {
-      bytes = sizeBytes(parseSize(p.size))
-    }
-
-    cursor = startBytes + bytes
-    const obj_id = ctx.uuid()
-    if (p.encrypt) encryptedObjIds.push(obj_id)
-
-    return {
-      obj_id,
-      status: 'create',
-      type: 'primary',
-      fs_type: p.fs,
-      mountpoint: p.mount,
-      flags: p.flags ?? [],
-      start: { unit: 'B', value: startBytes, sector_size: DEFAULT_SECTOR },
-      size: { unit: 'B', value: bytes, sector_size: DEFAULT_SECTOR },
-      btrfs: (p.subvol ?? []).map((s) => ({ name: s.name, mountpoint: s.mount ?? null })),
-      dev_path: null,
-      mount_options: p.mount_options ?? [],
-      original_size: p.size,
-      ...(originalStart ? { original_start: originalStart } : {}),
-    }
-  })
-
-  return { partitions, encryptedObjIds }
-}
+export const presetDisk = (id: PresetId, device: string): Disk => ({
+  device,
+  wipe: true,
+  table: 'gpt',
+  partitions: PRESETS[id].parts.map((p, i) => presetPartition(p, i === 0)),
+})

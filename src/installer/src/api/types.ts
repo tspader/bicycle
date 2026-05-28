@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { Bootloader as BootloaderEnum, Kernel as KernelEnum, LocaleConfig } from './config'
+import { Bootloader as BootloaderEnum, Kernel as KernelEnum, LocaleConfig } from '../config'
 
 const LOADER_TO_BOOTLOADER = {
   'systemd-boot': 'Systemd-boot',

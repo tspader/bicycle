@@ -1,36 +1,5 @@
 import { Field, Page, Section } from './layout'
 
-const FILE_PICKER_JS = `
-  (async () => {
-    const f = event.target.files && event.target.files[0]
-    if (!f) return
-    event.target.value = ''
-    const status = document.getElementById('import-status')
-    const error = document.getElementById('import-error')
-    if (status) status.textContent = 'Reading file…'
-    if (error) error.textContent = ''
-    try {
-      const yaml = await f.text()
-      const r = await fetch('/api/import/yaml', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'datastar-request': 'true',
-        },
-        body: JSON.stringify({ yaml }),
-      })
-      if (!r.ok) {
-        const msg = await r.text()
-        throw new Error(msg || ('HTTP ' + r.status))
-      }
-      location.reload()
-    } catch (e) {
-      if (status) status.textContent = ''
-      if (error) error.textContent = 'Import failed: ' + (e && e.message ? e.message : e)
-    }
-  })()
-`
-
 const AGE_FILE_PICKER_JS = `
   (async () => {
     const f = event.target.files && event.target.files[0]
@@ -168,26 +137,6 @@ export const ImportView = ({ ageKeySet }: { ageKeySet: boolean }) => {
               </button>
             </div>
           </form>
-        </Section>
-
-        <Section
-          title="From local YAML file"
-          subhead="Pick a bicycle.yml from this machine (the one running the browser)."
-        >
-          <div class="form card">
-            <Field label="bicycle.yml" htmlFor="import-yaml-file">
-              <input
-                id="import-yaml-file"
-                class="combo"
-                type="file"
-                accept=".yml,.yaml,text/yaml,text/plain"
-                onchange={FILE_PICKER_JS}
-              />
-            </Field>
-            <p class="muted small">
-              After a successful import the page reloads to reflect the new state.
-            </p>
-          </div>
         </Section>
 
         <Section

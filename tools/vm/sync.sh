@@ -28,5 +28,5 @@ rsync -a \
   "$REPO/package.json" "$REPO/bun.lock" "$REPO/tsconfig.json" \
   "root@$VM_HOST:/root/bicycle/"
 
-ssh -p "$VM_PORT" "${SSH_OPTS[@]}" "root@$VM_HOST" 'systemctl restart installer-web'
+ssh -p "$VM_PORT" "${SSH_OPTS[@]}" "root@$VM_HOST" 'systemctl restart bicycle-installer'
 echo "synced + restarted"

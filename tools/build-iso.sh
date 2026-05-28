@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK:-/tmp/bicycle-iso}"
 CACHE="$REPO/.cache"
-OVERLAY="$REPO/iso-overlay"
+OVERLAY="$REPO/src/pacman/iso-overlay"
 OUT="$CACHE/installer.iso"
 
 EXTRA_PACKAGES=(
@@ -77,8 +77,8 @@ cat "$USER_HOME"/.ssh/*.pub > "$WORK"/airootfs/root/.ssh/authorized_keys
 chmod 600 "$WORK"/airootfs/root/.ssh/authorized_keys
 
 install -d "$WORK"/airootfs/etc/systemd/system/multi-user.target.wants
-ln -sf /etc/systemd/system/installer-web.service \
-  "$WORK"/airootfs/etc/systemd/system/multi-user.target.wants/installer-web.service
+ln -sf /etc/systemd/system/bicycle-installer.service \
+  "$WORK"/airootfs/etc/systemd/system/multi-user.target.wants/bicycle-installer.service
 
 install -d "$WORK"/airootfs/root/bicycle-pkg
 cp "$PKG_OUT"/bicycle-*.pkg.tar.zst "$WORK"/airootfs/root/bicycle-pkg/

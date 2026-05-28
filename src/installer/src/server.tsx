@@ -4,12 +4,9 @@ import { z } from 'zod'
 import { CATEGORIES, Layout, Preview, Warnings } from './views/layout'
 import type { Child } from 'hono/jsx'
 import { codeToHtml } from 'shiki'
-import { toYaml, DEFAULT_MIRROR_URL, fromYaml } from './config'
+import { project, DEFAULT_MIRROR_URL } from './config'
 import { buildInstallSteps } from './install-steps'
-import { locateConfigTree, applyConfigTree } from './import-tree'
-import { randomUUID } from 'node:crypto'
-import { rmSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join as pathJoin } from 'node:path'
+import { existsSync } from 'node:fs'
 import { SystemView } from './views/system'
 import { DiskView } from './views/disk'
 import { PacmanView } from './views/pacman'
@@ -28,8 +25,6 @@ import {
   getOpenDisk, setOpenDisk,
   getDiskError, setDiskError,
   getInstall, setInstall, appendInstallLog,
-  getAgeKey, setAgeKey,
-  getUserPasswords, setUserPassword, renameUserPassword, deleteUserPassword,
   type CategoryId,
 } from './ui-state'
 import {
@@ -37,27 +32,29 @@ import {
   regions, searchPackages, packageDetail, syncPacman, availableRepos,
   loadPackages, listDisks,
 } from './system'
-import { PRESETS, PartitionFlag, FsType, EncryptionType, buildPartitions, liveMachine, preflight, deriveWarnings, targetDevice, type PartitionConfig } from './config'
+import { PRESETS, PartitionFlag, FsType, presetDisk, liveMachine, preflight, deriveWarnings, targetDevice, type Warning, type PresetId, type AccountSummary } from './config'
 import { InstallView, ProgressCard } from './views/install'
 import { ImportView } from './views/import'
-import { existsSync } from 'node:fs'
 import { spawn as runtimeSpawn, env as runtimeEnv } from './runtime'
-import { getState, setState, replaceState, getRetained, setRetained, getSource, setSource } from './state'
+import {
+  getText, getConfig, getFiles, getIdentity, getRootHash, getEncryptionPassword, getPendingSecrets,
+  editScalar, editNode, editDelete, editAppend, editPrune,
+  setIdentity, setRootHash, setEncryptionPassword, setFile, deleteFile, stageSecret, unstageSecret,
+} from './state'
 import { Signal as Signals, SignalProvider, SignalName, defaultSignals } from './signal'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
-import { ArchinstallConfig } from './config'
 import { hashPassword } from './auth'
 import { recipientFor, generate as generateAgeIdentity } from './age'
-import { loadBicycleDoc, type User as BicycleUser } from '@bicycle/shared'
-import type { PendingUser } from './config'
-import { Api } from './api'
+import { EncryptionKind, type BicycleConfig } from '@bicycle/shared'
+import { userPasswordAddr, userPasswordRef, secretRelPath } from './secrets'
+import api, { Api } from './api'
 import { AgeIdentityString } from './age-key'
 import { sigSlug } from './slug'
 import appCssPath from "./assets/app.css" with { type: "file" }
 import datastarPath from "./assets/datastar.js" with { type: "file" }
 import faviconPath from "./assets/favicon.ico" with { type: "file" }
 
-type App = {
+export type App = {
   signals: Signals
   error: string | null
   datastar: boolean
@@ -65,7 +62,8 @@ type App = {
 
 type AppContext = Context<{ Variables: App }>
 
-// const getSignal = ... totally fucks my syntax highlighting
+const machine = liveMachine()
+
 function getSignal<K extends SignalName>(c: AppContext, name: K): typeof defaultSignals[K] {
   const signal = c.get('signals')[name] ?? defaultSignals[name]
   return signal as typeof defaultSignals[K]
@@ -108,51 +106,56 @@ app.get('/', (c) => c.redirect('/config/system'))
 
 const CategoryParam = z.enum(CATEGORIES.map((c) => c.id) as [CategoryId, ...CategoryId[]])
 
-const LOADER_MAP = {
-  'Systemd-boot': 'systemd-boot', Grub: 'grub', Efistub: 'efistub',
-  Limine: 'limine', Refind: 'refind',
-} as const
+// Parse the bicycle.yml text into the resolved Bicycle config and its throwaway
+// archinstall projection. Either parse or projection can fail on a config the
+// user is mid-edit (e.g. inconsistent encryption) — callers surface `error`.
+type ConfigState = {
+  bike: BicycleConfig
+  archinstall: ReturnType<typeof project> | null
+  error: string | null
+}
+const configState = (): ConfigState => {
+  let bike: BicycleConfig
+  try {
+    bike = getConfig()
+  } catch (e) {
+    return { bike: {}, archinstall: null, error: (e as Error).message }
+  }
+  try {
+    return { bike, archinstall: project(bike, machine), error: null }
+  } catch (e) {
+    return { bike, archinstall: null, error: (e as Error).message }
+  }
+}
+
+const accounts = (bike: BicycleConfig): AccountSummary[] =>
+  (bike.users ?? []).map((u) => ({ sudo: u.sudo, hasPassword: !!u.password }))
+
+const preflightCtx = (bike: BicycleConfig) => ({
+  identity: getIdentity(),
+  rootSet: !!getRootHash(),
+  encryptionSet: !!getEncryptionPassword(),
+  accounts: accounts(bike),
+})
+
+const flatPackages = (bike: BicycleConfig): string[] =>
+  Object.values(bike.packages ?? {}).flat()
 
 const renderPreviewHtml = async (): Promise<string> => {
-  let yaml: string
-  // When the state came from an import and hasn't been edited, show the source
-  // YAML verbatim so the user sees exactly what will land in /etc/bicycle —
-  // not a re-serialized round-trip that loses comments, ordering, and any
-  // top-level keys archinstall doesn't know about (apps, dirs, users w/o pw, …).
-  const src = getSource()
-  if (src) {
-    yaml = src.yaml
-  } else {
-    try {
-      const all = await loadPackages()
-      const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
-      yaml = toYaml(getState(), getRetained(), repos)
-    } catch (e) {
-      yaml = `# preview unavailable\n# ${(e as Error).message}`
-    }
-  }
-  return codeToHtml(yaml, { lang: 'yaml', theme: 'github-dark-default' })
-}
-
-// Users declared in the imported bicycle.yml (resolved). These aren't in the
-// archinstall `state.users` — they carry password secret refs and get promoted
-// to archinstall accounts at install time. Empty for UI-built configs.
-const sourceBicycleUsers = (): BicycleUser[] => {
-  const src = getSource()
-  if (!src) return []
+  const text = getText().trim() || '# empty config'
   try {
-    return loadBicycleDoc(src.yaml).resolved.users ?? []
-  } catch {
-    return []
+    return await codeToHtml(text, { lang: 'yaml', theme: 'github-dark-default' })
+  } catch (e) {
+    return codeToHtml(`# preview unavailable\n# ${(e as Error).message}`, { lang: 'yaml', theme: 'github-dark-default' })
   }
 }
-
-const pendingUsers = (): PendingUser[] =>
-  sourceBicycleUsers().map((u) => ({ sudo: u.sudo !== 'none', hasPassword: !!u.password }))
 
 const renderSidecar = async () => {
   const [previewHtml, disks] = await Promise.all([renderPreviewHtml(), listDisks()])
-  const warnings = deriveWarnings(getState(), disks, getAgeKey(), pendingUsers())
+  const { bike, archinstall, error } = configState()
+  const warnings: Warning[] = archinstall
+    ? deriveWarnings(archinstall, disks, preflightCtx(bike))
+    : [{ severity: 'error', message: `Config error: ${error}`, category: 'import' }]
   return { previewHtml, warnings }
 }
 
@@ -196,43 +199,44 @@ const renderPage = async (c: AppContext, active: CategoryId | 'install', body: C
 }
 
 const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
-  const s = getState()
+  const { bike } = configState()
   switch (cat) {
     case 'system': {
       const [kb, locs, zones] = await Promise.all([kbLayouts(), locales(), timezones()])
-      const lc = s.locale_config ?? { kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' }
+      const lc = bike.locale ?? { keyboard: 'us', language: 'en_US.UTF-8', encoding: 'UTF-8' }
       return (
         <SystemView
-          hostname={s.hostname ?? ''}
+          hostname={bike.core?.hostname ?? ''}
           locale={{
-            state: lc, kbLayouts: kb,
+            state: { kb_layout: lc.keyboard, sys_lang: lc.language, sys_enc: lc.encoding },
+            kbLayouts: kb,
             languages: languages(locs), encodings: encodings(locs),
           }}
-          time={{ zone: s.timezone ?? 'UTC', zones, ntp: s.ntp ?? true }}
-          network={{ mode: s.network_config?.type ?? 'iso' }}
+          time={{ zone: bike.core?.timezone ?? 'UTC', zones, ntp: bike.core?.ntp ?? true }}
+          network={{ mode: bike.network?.mode === 'networkmanager' ? 'nm' : 'iso' }}
         />
       )
     }
     case 'users':
-      return <UsersView rootSet={s.root_enc_password != null} users={s.users ?? []} />
+      return <UsersView rootSet={getRootHash() != null} users={bike.users ?? []} />
     case 'disk': {
-      const sw = s.swap ?? { enabled: true, algorithm: 'zstd' as const }
+      const sw = bike.swap ?? { enabled: true, algorithm: 'zstd' as const }
       const disks = await listDisks()
-      const selected = s.disk_config?.device_modifications ?? []
-      const enc = s.disk_config?.disk_encryption
+      const bikeDisks = bike.disks ?? []
       const open = getOpenDisk()
       const validOpen = open && disks.some((d) => d.path === open) ? open : null
       if (open !== validOpen) setOpenDisk(validOpen)
+      const anyEncrypted = bikeDisks.some((d) => d.partitions.some((p) => p.encrypt))
       return (
         <DiskView
           disks={disks}
-          selected={selected}
+          bikeDisks={bikeDisks}
           openDisk={validOpen}
           error={getDiskError()}
+          anyEncrypted={anyEncrypted}
           encryption={{
-            type: enc?.encryption_type ?? 'luks',
-            password: !!s.encryption_password,
-            objIds: new Set(enc?.partitions ?? []),
+            type: bike.encryption?.type ?? 'luks',
+            password: !!getEncryptionPassword(),
           }}
           swap={sw}
         />
@@ -241,8 +245,8 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
     case 'pacman': {
       const q = getSignal(c, 'q')
       const reposSig = getSignal(c, 'repos')
-      const installed = s.packages ?? []
-      const selected = Object.keys(s.mirror_config?.mirror_regions ?? {})
+      const installed = flatPackages(bike)
+      const selected = bike.pacman?.mirrors?.regions ?? []
       const allRepos = await availableRepos()
       const repos = reposSig.length === 0 ? allRepos : reposSig
       const page = await searchPackages({ q, repos, selected: new Set(installed) })
@@ -259,16 +263,16 @@ const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
       )
     }
     case 'boot': {
-      const b = s.bootloader_config ?? { bootloader: 'Systemd-boot' as const, uki: true, removable: false }
+      const b = bike.boot ?? { loader: 'systemd-boot' as const, uki: true, removable: false }
       return (
         <BootView
-          kernel={s.kernels?.[0] ?? 'linux'}
-          bootloader={{ loader: LOADER_MAP[b.bootloader], uki: b.uki, removable: b.removable }}
+          kernel={bike.core?.kernels?.[0] ?? 'linux'}
+          bootloader={{ loader: b.loader, uki: b.uki, removable: b.removable }}
         />
       )
     }
     case 'import':
-      return <ImportView ageKeySet={getAgeKey() != null} />
+      return <ImportView ageKeySet={getIdentity() != null} />
   }
 }
 
@@ -278,106 +282,44 @@ app.get('/config/:category', async (c) => {
   return renderPage(c, parsed.data, await buildPage(parsed.data, c))
 })
 
-const stateRoute = <T extends z.ZodTypeAny>(
+// --- Simple field edits ------------------------------------------------------
+
+const editRoute = <T extends z.ZodTypeAny>(
   path: string,
   schema: T,
-  apply: (data: z.infer<T>) => Partial<ArchinstallConfig>,
+  apply: (data: z.infer<T>) => void,
 ) =>
   app.post(path, (c) => {
-    setState(apply(parseSignals(c, schema)))
+    apply(parseSignals(c, schema))
     return patchPreview()
   })
 
-stateRoute('/api/locale',     Api.Locale,     (d) => ({ locale_config: d }))
-stateRoute('/api/kernels',    Api.Kernel,     (d) => ({ kernels: [d.kernel] }))
-stateRoute('/api/hostname',   Api.Hostname,   (d) => ({ hostname: d.hostname }))
-stateRoute('/api/ntp',        Api.Ntp,        (d) => ({ ntp: d.ntp }))
-stateRoute('/api/swap',       Api.Swap,       (d) => ({ swap: d }))
-stateRoute('/api/bootloader', Api.Bootloader, (d) => ({ bootloader_config: d }))
-stateRoute('/api/network',    Api.Network,    (d) => ({ network_config: { type: d.mode } }))
-stateRoute('/api/timezone',   Api.Timezone,   (d) => ({ timezone: d.timezone }))
-
-const ImportGitSignals = z.object({
-  import_git_url: z.string().min(1, 'repository URL required'),
-  import_git_user: z.string().optional().default(''),
-  import_git_pass: z.string().optional().default(''),
+const LocaleSignals = z.object({
+  kbLayout: z.string().min(1),
+  sysLang: z.string().min(1),
+  sysEnc: z.string().min(1),
+})
+const BootloaderSignals = z.object({
+  loader: z.enum(['systemd-boot', 'grub', 'efistub', 'limine', 'refind']),
+  uki: z.boolean(),
+  removable: z.boolean(),
 })
 
-const ImportYamlBody = z.object({ yaml: z.string().min(1) })
+editRoute('/api/hostname', Api.Hostname, (d) => editScalar(['core', 'hostname'], d.hostname))
+editRoute('/api/timezone', Api.Timezone, (d) => editScalar(['core', 'timezone'], d.timezone))
+editRoute('/api/ntp', Api.Ntp, (d) => editScalar(['core', 'ntp'], d.ntp))
+editRoute('/api/kernels', Api.Kernel, (d) => editNode(['core', 'kernels'], [d.kernel]))
+editRoute('/api/swap', Api.Swap, (d) => editNode(['swap'], { enabled: d.enabled, algorithm: d.algorithm }))
+editRoute('/api/network', Api.Network, (d) =>
+  editScalar(['network', 'mode'], d.mode === 'nm' ? 'networkmanager' : 'iso'))
+editRoute('/api/locale', LocaleSignals, (d) =>
+  editNode(['locale'], { keyboard: d.kbLayout, language: d.sysLang, encoding: d.sysEnc }))
+editRoute('/api/bootloader', BootloaderSignals, (d) =>
+  editNode(['boot'], { loader: d.loader, uki: d.uki, removable: d.removable }))
 
-const applyImportYaml = (text: string): void => {
-  const { config, retained } = fromYaml(text, liveMachine())
-  replaceState(config)
-  setRetained(retained)
-  setSource({ yaml: text, tree: null, ownsTree: false, dirty: false })
-}
+// --- Import ------------------------------------------------------------------
 
-app.post('/api/import/git', (c) =>
-  ServerSentEventGenerator.stream(async (stream) => {
-    const announce = (status: string, error: string) =>
-      stream.patchSignals(JSON.stringify({ import_status: status, import_error: error }))
-    try {
-      const sig = ImportGitSignals.parse(c.get('signals') ?? {})
-      let url: URL
-      try {
-        url = new URL(sig.import_git_url.trim())
-      } catch {
-        throw new Error('invalid URL')
-      }
-      if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-        throw new Error('only http(s) URLs are supported on the install medium (no SSH keys)')
-      }
-      if (sig.import_git_user) url.username = encodeURIComponent(sig.import_git_user)
-      if (sig.import_git_pass) url.password = encodeURIComponent(sig.import_git_pass)
-
-      const tmp = `/tmp/bicycle-import-${randomUUID()}`
-      const safeUrl = sig.import_git_url.trim()
-      let imported = false
-      try {
-        const res = Bun.spawnSync(
-          ['git', 'clone', '--depth=1', '--single-branch', url.toString(), tmp],
-          {
-            env: {
-              ...runtimeEnv,
-              GIT_TERMINAL_PROMPT: '0',
-              GIT_ASKPASS: '/bin/true',
-            },
-            stdout: 'pipe',
-            stderr: 'pipe',
-          },
-        )
-        if (res.exitCode !== 0) {
-          const raw = new TextDecoder().decode(res.stderr) || 'git clone failed'
-          const sanitized = raw
-            .replaceAll(url.toString(), safeUrl)
-            .replaceAll(sig.import_git_pass || ' ', '***')
-          const tail = sanitized.trim().split('\n').slice(-2).join(' ').slice(0, 400)
-          throw new Error(tail || 'git clone failed')
-        }
-        const loc = locateConfigTree(tmp)
-        applyConfigTree(loc, undefined, { ownsTree: true })
-        // Convenience: if the cloned tree includes an age.key (e.g. the
-        // example/ checkout), pre-populate the in-memory age identity so
-        // install can decrypt secrets without a second manual step. The key
-        // is held in memory only and is not copied into the worktree at
-        // install time — it's written to /mnt/etc/bicycle/age.key separately.
-        // (applyConfigTree() handles age-key adoption from the tree.)
-        imported = true
-      } finally {
-        // Only blow away the clone on failure — on success it's kept so
-        // install can copy the exact tree into /mnt/etc/bicycle.
-        if (!imported) {
-          try { rmSync(tmp, { recursive: true, force: true }) } catch {}
-        }
-      }
-      announce(`Imported from ${safeUrl}`, '')
-      stream.patchSignals(JSON.stringify({ import_git_url: '', import_git_user: '', import_git_pass: '' }))
-      await patchSidecarInto(stream)
-    } catch (e) {
-      announce('', (e as Error).message || 'import failed')
-    }
-  }),
-)
+app.route('/', api.importGit({ machine, patchSidecarInto }))
 
 const AgeKeyBody = z.object({ identity: AgeIdentityString })
 
@@ -386,43 +328,30 @@ app.post('/api/secrets/age-key', (c) => {
   if (!parsed.success) {
     throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid identity' })
   }
-  setAgeKey(parsed.data.identity)
+  setIdentity(parsed.data.identity)
   return c.json({ ok: true })
 })
 
 app.post('/api/secrets/age-key/clear', (c) => {
-  setAgeKey(null)
+  setIdentity(null)
   return c.json({ ok: true })
 })
 
-app.post('/api/import/yaml', (c) => {
-  const parsed = ImportYamlBody.safeParse(c.get('signals') ?? {})
-  if (!parsed.success) {
-    throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid body' })
-  }
-  try {
-    applyImportYaml(parsed.data.yaml)
-  } catch (e) {
-    throw new HTTPException(400, { message: (e as Error).message })
-  }
-  return c.json({ ok: true })
-})
+// --- Mirrors -----------------------------------------------------------------
 
 app.post('/api/mirrors/toggle', (c) => {
   const name = requiredQuery(c, 'name')
-  const s = getState()
-  const current = { ...(s.mirror_config?.mirror_regions ?? {}) }
-  if (name in current) delete current[name]
-  else current[name] = [DEFAULT_MIRROR_URL]
-  setState({
-    mirror_config: {
-      mirror_regions: current,
-      custom_servers: s.mirror_config?.custom_servers ?? [],
-      custom_repositories: s.mirror_config?.custom_repositories ?? [],
-      optional_repositories: s.mirror_config?.optional_repositories ?? [],
-    },
-  })
-  const isChecked = name in current
+  const current = getConfig().pacman?.mirrors?.regions ?? []
+  const idx = current.indexOf(name)
+  if (idx >= 0) {
+    editDelete(['pacman', 'mirrors', 'regions', idx])
+    editPrune(['pacman', 'mirrors', 'regions'])
+    editPrune(['pacman', 'mirrors'])
+    editPrune(['pacman'])
+  } else {
+    editAppend(['pacman', 'mirrors', 'regions'], name)
+  }
+  const isChecked = idx < 0
   return ServerSentEventGenerator.stream(async (stream) => {
     stream.patchElements((<RegionRowFragment name={name} isChecked={isChecked} />).toString())
     await patchSidecarInto(stream)
@@ -433,23 +362,36 @@ app.get('/api/mirrors/list', (c) => {
   const needle = getSignal(c, 'q').trim().toLowerCase()
   const all = regions()
   const filtered = needle ? all.filter((name) => name.toLowerCase().includes(needle)) : all
-  const checked = new Set(Object.keys(getState().mirror_config?.mirror_regions ?? {}))
+  const checked = new Set(getConfig().pacman?.mirrors?.regions ?? [])
   return ServerSentEventGenerator.stream((stream) => {
     stream.patchElements((<RegionListFragment items={filtered} checked={checked} />).toString())
   })
 })
 
+// --- Packages ----------------------------------------------------------------
+
 app.post('/api/packages/toggle', async (c) => {
   const name = requiredQuery(c, 'name')
-  const s = getState()
-  const set = new Set(s.packages ?? [])
-  if (set.has(name)) set.delete(name)
-  else set.add(name)
-  setState({ packages: [...set].sort() })
+  const pkgs = getConfig().packages ?? {}
+  let group: string | null = null
+  let gIdx = -1
+  for (const [repo, list] of Object.entries(pkgs)) {
+    const i = list.indexOf(name)
+    if (i >= 0) { group = repo; gIdx = i; break }
+  }
+  if (group) {
+    editDelete(['packages', group, gIdx])
+    editPrune(['packages', group])
+    editPrune(['packages'])
+  } else {
+    const all = await loadPackages()
+    const repo = all.find((p) => p.name === name)?.repo ?? 'extra'
+    editAppend(['packages', repo], name)
+  }
 
   const all = await loadPackages()
   const entry = all.find((p) => p.name === name)
-  const isChecked = set.has(name)
+  const isChecked = !group
   const showDetail = getCurrentDetail() === name
 
   if (!entry && !showDetail) return patchPreview()
@@ -468,7 +410,7 @@ app.post('/api/packages/toggle', async (c) => {
 app.get('/api/packages/list', async (c) => {
   const after = c.req.query('after') ?? ''
   const mode = c.req.query('mode') ?? 'outer'
-  const installed = getState().packages ?? []
+  const installed = flatPackages(getConfig())
   const state = { checked: new Set(installed), selectedName: getCurrentDetail() }
   const page = await searchPackages({
     q: getSignal(c, 'q'),
@@ -493,7 +435,7 @@ app.get('/api/packages/detail', async (c) => {
   const prev = getCurrentDetail()
   const detail = await packageDetail(name)
   setCurrentDetail(detail ? name : null)
-  const checked = new Set(getState().packages ?? [])
+  const checked = new Set(flatPackages(getConfig()))
   const all = await loadPackages()
   return ServerSentEventGenerator.stream((stream) => {
     if (prev && prev !== name) {
@@ -512,182 +454,130 @@ app.get('/api/packages/detail', async (c) => {
   })
 })
 
+// --- Users -------------------------------------------------------------------
+
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
 const parseGroups = (g: string): string[] => g.split(/[, ]+/).map((x) => x.trim()).filter(Boolean)
 
 const reloadUsers = (c: AppContext) => {
-  const s = getState()
-  const body = <UsersView rootSet={s.root_enc_password != null} users={s.users ?? []} />
+  const body = <UsersView rootSet={getRootHash() != null} users={getConfig().users ?? []} />
   return renderPage(c, 'users', body, '/config/users')
 }
 
 app.post('/api/users/root', async (c) => {
   const { root_password } = parseSignals(c, Api.RootPassword)
-  if (root_password) setState({ root_enc_password: await hashPassword(root_password) })
+  if (root_password) setRootHash(await hashPassword(root_password))
   return reloadUsers(c)
 })
 
-app.post('/api/users/save', async (c) => {
+// Move a user's password secret (staged cleartext and/or imported .age file)
+// from one address to another so a rename keeps the ref + secret aligned.
+const migrateUserSecret = (oldName: string, newName: string): void => {
+  const oldAddr = userPasswordAddr(oldName)
+  const newAddr = userPasswordAddr(newName)
+  const staged = getPendingSecrets().get(oldAddr)
+  if (staged !== undefined) {
+    stageSecret(newAddr, staged)
+    unstageSecret(oldAddr)
+  }
+  const file = getFiles().get(secretRelPath(oldAddr))
+  if (file) {
+    setFile(secretRelPath(newAddr), file)
+    deleteFile(secretRelPath(oldAddr))
+  }
+}
+
+app.post('/api/users/save', (c) => {
   const original = requiredQuery(c, 'original')
   const fields = parseSignals(c, Api.UserFields(slug(original), 'update'))
-  const s = getState()
-  const prev = (s.users ?? []).find((u) => u.username === original)
-  if (!prev) return c.text('user not found', 404)
-  const enc_password = fields.password
-    ? await hashPassword(fields.password)
-    : prev.enc_password
-  const next = (s.users ?? []).filter((u) => u.username !== original)
-  next.push({
-    username: fields.username,
-    sudo: fields.sudo,
-    groups: parseGroups(fields.groups),
-    enc_password,
-  })
-  setState({ users: next })
-  // Keep the in-memory cleartext store in sync: follow the rename, then
-  // overwrite with the new password if one was typed (blank = unchanged).
-  renameUserPassword(original, fields.username)
-  if (fields.password) setUserPassword(fields.username, fields.password)
+  const users = getConfig().users ?? []
+  const idx = users.findIndex((u) => u.name === original)
+  if (idx < 0) return c.text('user not found', 404)
+  editScalar(['users', idx, 'name'], fields.username)
+  editScalar(['users', idx, 'sudo'], fields.sudo ? 'password' : 'none')
+  editNode(['users', idx, 'groups'], parseGroups(fields.groups))
+  // On rename, realign an existing password ref + its secret to the new name.
+  if (fields.username !== original && users[idx]!.password) {
+    migrateUserSecret(original, fields.username)
+    editScalar(['users', idx, 'password'], userPasswordRef(fields.username))
+  }
+  // A typed password (re)stages the secret under the current name; a blank
+  // field leaves the existing ref/secret untouched.
+  if (fields.password) {
+    editScalar(['users', idx, 'password'], userPasswordRef(fields.username))
+    stageSecret(userPasswordAddr(fields.username), fields.password)
+  }
   return reloadUsers(c)
 })
 
-app.post('/api/users/create', async (c) => {
+app.post('/api/users/create', (c) => {
   const fields = parseSignals(c, Api.UserFields('new', 'create'))
-  const s = getState()
-  if ((s.users ?? []).some((u) => u.username === fields.username)) {
+  const users = getConfig().users ?? []
+  if (users.some((u) => u.name === fields.username)) {
     return c.text('username already exists', 400)
   }
-  const enc_password = await hashPassword(fields.password)
-  setState({
-    users: [
-      ...(s.users ?? []),
-      {
-        username: fields.username,
-        sudo: fields.sudo,
-        groups: parseGroups(fields.groups),
-        enc_password,
-      },
-    ],
+  editAppend(['users'], {
+    name: fields.username,
+    sudo: fields.sudo ? 'password' : 'none',
+    groups: parseGroups(fields.groups),
+    password: userPasswordRef(fields.username),
   })
-  setUserPassword(fields.username, fields.password)
+  stageSecret(userPasswordAddr(fields.username), fields.password)
   return reloadUsers(c)
 })
 
 app.post('/api/users/delete', (c) => {
   const name = requiredQuery(c, 'name')
-  const s = getState()
-  setState({ users: (s.users ?? []).filter((u) => u.username !== name) })
-  deleteUserPassword(name)
+  const users = getConfig().users ?? []
+  const idx = users.findIndex((u) => u.name === name)
+  if (idx < 0) return c.text('user not found', 404)
+  editDelete(['users', idx])
+  editPrune(['users'])
+  unstageSecret(userPasswordAddr(name))
+  try { deleteFile(secretRelPath(userPasswordAddr(name))) } catch { /* ignore */ }
   return reloadUsers(c)
 })
 
-// --- Disk endpoints ----------------------------------------------------------
+// --- Disk --------------------------------------------------------------------
 
-const machine = liveMachine()
+const reloadDisk = (c: AppContext) =>
+  buildPage('disk', c).then((body) => renderPage(c, 'disk', body, '/config/disk'))
 
-const reloadDisk = (c: AppContext) => buildPage('disk', c).then((body) => renderPage(c, 'disk', body, '/config/disk'))
-
-const defaultDiskConfig = (): NonNullable<ArchinstallConfig['disk_config']> => ({
-  config_type: 'manual_partitioning',
-  device_modifications: [],
-  btrfs_options: { snapshot_config: null },
-})
-
-const recomputeEncryption = (
-  dc: NonNullable<ArchinstallConfig['disk_config']>,
-  type: EncryptionType = 'luks',
-): NonNullable<ArchinstallConfig['disk_config']>['disk_encryption'] | undefined => {
-  const enc: string[] = []
-  for (const d of dc.device_modifications) {
-    for (const p of d.partitions) {
-      // Mark this partition as encrypted iff it was already in the prior set.
-      if (dc.disk_encryption?.partitions.includes(p.obj_id)) enc.push(p.obj_id)
-    }
-  }
-  if (enc.length === 0) return undefined
-  return {
-    encryption_type: dc.disk_encryption?.encryption_type ?? type,
-    partitions: enc,
-    lvm_volumes: [],
+// Run a partition-table mutation; on Error, stash the message for the next
+// render so the UI shows it inline instead of returning 4xx/5xx.
+const tryDiskMutation = (fn: () => void): void => {
+  try {
+    fn()
+    setDiskError(null)
+  } catch (e) {
+    setDiskError((e as Error).message)
   }
 }
 
-const setEncryptedFlag = (
-  dc: NonNullable<ArchinstallConfig['disk_config']>,
-  device: string,
-  idx: number,
-  on: boolean,
-) => {
-  const part = dc.device_modifications.find((d) => d.device === device)?.partitions[idx]
-  if (!part) return
-  const cur = new Set(dc.disk_encryption?.partitions ?? [])
-  if (on) cur.add(part.obj_id)
-  else cur.delete(part.obj_id)
-  if (cur.size === 0) {
-    dc.disk_encryption = undefined
-  } else {
-    dc.disk_encryption = {
-      encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-      partitions: [...cur],
-      lvm_volumes: [],
-    }
-  }
+// Keep the top-level `encryption:` block in sync with whether any partition is
+// marked encrypt: true — the projection rejects a mismatch in either direction.
+const reconcileEncryption = (): void => {
+  let bike: BicycleConfig
+  try { bike = getConfig() } catch { return }
+  const anyEnc = (bike.disks ?? []).some((d) => d.partitions.some((p) => p.encrypt))
+  const hasBlock = bike.encryption != null
+  if (anyEnc && !hasBlock) editNode(['encryption'], { type: 'luks' })
+  else if (!anyEnc && hasBlock) editDelete(['encryption'])
 }
 
 app.post('/api/disk/open', (c) => {
-  const device = c.req.query('device')
-  setOpenDisk(device ?? null)
+  setOpenDisk(c.req.query('device') ?? null)
   setDiskError(null)
   return reloadDisk(c)
 })
 
-// Run a partition-table mutation; on Error, stash the message for the next
-// render so the UI shows it inline instead of returning 4xx (which Datastar
-// would silently swallow) or 5xx (which crashes the request).
-const tryDiskMutation = (fn: () => void): boolean => {
-  try {
-    fn()
-    setDiskError(null)
-    return true
-  } catch (e) {
-    setDiskError((e as Error).message)
-    return false
-  }
-}
-
-const ensureDeviceModification = (
-  dc: NonNullable<ArchinstallConfig['disk_config']>,
-  device: string,
-): number => {
-  const idx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (idx >= 0) return idx
-  dc.device_modifications.push({ device, wipe: true, partitions: [] })
-  return dc.device_modifications.length - 1
-}
-
 app.post('/api/disk/preset', (c) => {
   const device = requiredQuery(c, 'device')
-  const id = requiredQuery(c, 'id')
-  const preset = PRESETS[id as keyof typeof PRESETS]
-  if (!preset) throw new HTTPException(400, { message: `unknown preset: ${id}` })
+  const id = requiredQuery(c, 'id') as PresetId
+  if (!(id in PRESETS)) throw new HTTPException(400, { message: `unknown preset: ${id}` })
   tryDiskMutation(() => {
-    const s = getState()
-    const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
-    const dIdx = ensureDeviceModification(dc, device)
-    const built = buildPartitions(preset.parts, device, machine)
-    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-    if (built.encryptedObjIds.length > 0) {
-      const existing = new Set(dc.disk_encryption?.partitions ?? [])
-      for (const id of built.encryptedObjIds) existing.add(id)
-      dc.disk_encryption = {
-        encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-        partitions: [...existing],
-        lvm_volumes: [],
-      }
-    } else {
-      dc.disk_encryption = recomputeEncryption(dc)
-    }
-    setState({ disk_config: dc })
+    editNode(['disks'], [presetDisk(id, device)])
+    reconcileEncryption()
   })
   return reloadDisk(c)
 })
@@ -695,54 +585,22 @@ app.post('/api/disk/preset', (c) => {
 app.post('/api/disk/partition/add', (c) => {
   const device = requiredQuery(c, 'device')
   tryDiskMutation(() => {
-    const s = getState()
-    const dc = s.disk_config ? { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] } : defaultDiskConfig()
-    const dIdx = ensureDeviceModification(dc, device)
-    const existing = dc.device_modifications[dIdx]!.partitions
-    const NEW_BYTES = 1024 * 1024 * 1024
-    const MIB = 1024 * 1024
-    const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
-    const presetParts = existing.map((p) => {
-      let size: string
-      if (p.original_size === 'rest') {
-        const remaining = p.size.value - NEW_BYTES
-        if (remaining < MIB) throw new Error('no space left to add another partition')
-        size = `${Math.floor(remaining / MIB)}MiB`
-      } else {
-        size = p.original_size ?? `${p.size.value}${p.size.unit}`
-      }
-      return {
-        mount: p.mountpoint ?? '',
-        fs: p.fs_type,
-        size,
-        start: p.original_start,
-        flags: p.flags,
-        mount_options: p.mount_options,
-        subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-        encrypt: prevEncrypted.has(p.obj_id),
-      }
-    })
-    presetParts.push({ mount: '/', fs: 'ext4', size: '1GiB', start: undefined, flags: [], mount_options: [], subvol: [], encrypt: false })
-    const built = buildPartitions(presetParts, device, machine)
-    const newToOldId = new Map<string, string>()
-    for (let i = 0; i < existing.length; i++) {
-      const oldId = existing[i]!.obj_id
-      const newId = built.partitions[i]!.obj_id
-      built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
-      newToOldId.set(newId, oldId)
-    }
-    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-    const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
-    if (encIds.length > 0) {
-      dc.disk_encryption = {
-        encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-        partitions: encIds,
-        lvm_volumes: [],
-      }
+    const disks = getConfig().disks ?? []
+    const di = disks.findIndex((d) => d.device === device)
+    const newPart = { fs: 'ext4', size: '1GiB' }
+    if (di < 0) {
+      editAppend(['disks'], { device, wipe: true, table: 'gpt', partitions: [newPart] })
     } else {
-      dc.disk_encryption = undefined
+      const parts = disks[di]!.partitions
+      // Keep a trailing "rest" partition last so the projection stays valid.
+      const insertAt = parts.length > 0 && parts[parts.length - 1]!.size === 'rest'
+        ? parts.length - 1
+        : parts.length
+      const next: unknown[] = [...parts]
+      next.splice(insertAt, 0, newPart)
+      editNode(['disks', di, 'partitions'], next)
     }
-    setState({ disk_config: dc })
+    reconcileEncryption()
   })
   return reloadDisk(c)
 })
@@ -750,25 +608,24 @@ app.post('/api/disk/partition/add', (c) => {
 app.post('/api/disk/partition/delete', (c) => {
   const device = requiredQuery(c, 'device')
   const idx = Number(requiredQuery(c, 'idx'))
-  const s = getState()
-  if (!s.disk_config) throw new HTTPException(400, { message: 'no disks selected' })
-  const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
-  const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
-  const partitions = [...dc.device_modifications[dIdx]!.partitions]
-  partitions.splice(idx, 1)
-  if (partitions.length === 0) {
-    dc.device_modifications.splice(dIdx, 1)
-  } else {
-    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions }
-  }
-  dc.disk_encryption = recomputeEncryption(dc)
-  setState({ disk_config: dc.device_modifications.length > 0 ? dc : undefined })
+  tryDiskMutation(() => {
+    const disks = getConfig().disks ?? []
+    const di = disks.findIndex((d) => d.device === device)
+    if (di < 0) throw new Error(`device not selected: ${device}`)
+    const next: unknown[] = [...disks[di]!.partitions]
+    next.splice(idx, 1)
+    if (next.length === 0) {
+      editDelete(['disks', di])
+      editPrune(['disks'])
+    } else {
+      editNode(['disks', di, 'partitions'], next)
+    }
+    reconcileEncryption()
+  })
   return reloadDisk(c)
 })
 
 const PartitionSave = z.object({
-  // Mount may be empty: swap and bare LUKS containers have no mountpoint.
   mount: z.string(),
   fs: FsType,
   size: z.string().min(1),
@@ -797,86 +654,70 @@ app.post('/api/disk/partition/save', (c) => {
     flags,
   })
   if (!parsed.success) throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid' })
-  const fields = parsed.data
+  const f = parsed.data
   tryDiskMutation(() => {
-    const s = getState()
-    if (!s.disk_config) throw new Error('no disks selected')
-    const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
-    const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
-    if (dIdx < 0) throw new Error(`device not selected: ${device}`)
-    const parts = [...dc.device_modifications[dIdx]!.partitions]
-    const prev = parts[idx]
+    const disks = getConfig().disks ?? []
+    const di = disks.findIndex((d) => d.device === device)
+    if (di < 0) throw new Error(`device not selected: ${device}`)
+    const prev = disks[di]!.partitions[idx]
     if (!prev) throw new Error('partition not found')
-
-    // Re-resolve this partition by rebuilding the entire device's partitions
-    // (so cursor/start/rest math stays correct across siblings).
-    const prevEncrypted = new Set(dc.disk_encryption?.partitions ?? [])
-    const presetParts = parts.map((p, i) => {
-      if (i === idx) {
-        return {
-          mount: fields.mount,
-          fs: fields.fs,
-          size: fields.size,
-          start: fields.start,
-          flags: fields.flags,
-          mount_options: fields.mount_options.split(',').map((s) => s.trim()).filter(Boolean),
-          subvol: prev.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-          encrypt: fields.encrypt,
-        }
-      }
-      return {
-        mount: p.mountpoint ?? '',
-        fs: p.fs_type,
-        size: p.original_size ?? `${p.size.value}${p.size.unit}`,
-        start: p.original_start,
-        flags: p.flags,
-        mount_options: p.mount_options,
-        subvol: p.btrfs.map((s) => ({ name: s.name, mount: s.mountpoint ?? undefined })),
-        encrypt: prevEncrypted.has(p.obj_id),
-      }
-    })
-    const built = buildPartitions(presetParts, device, machine)
-    // Preserve existing obj_ids across rebuild so selection + encryption tracking
-    // stay stable. buildPartitions always assigns fresh UUIDs; replace them by
-    // index (length is preserved by construction).
-    const newToOldId = new Map<string, string>()
-    for (let i = 0; i < built.partitions.length; i++) {
-      const oldId = parts[i]?.obj_id
-      if (!oldId) continue
-      const newId = built.partitions[i]!.obj_id
-      built.partitions[i] = { ...built.partitions[i]!, obj_id: oldId }
-      newToOldId.set(newId, oldId)
+    const mountOptions = f.mount_options.split(',').map((s) => s.trim()).filter(Boolean)
+    const part = {
+      mount: f.mount.trim() || undefined,
+      fs: f.fs,
+      size: f.size,
+      // Only the first partition exposes a start field in the UI; non-first
+      // partitions keep whatever start they had (usually none — derived by the
+      // projection) rather than losing it on an unrelated field edit.
+      start: idx === 0 ? (f.start?.trim() || undefined) : prev.start,
+      flags: flags.length > 0 ? flags : undefined,
+      mount_options: mountOptions.length > 0 ? mountOptions : undefined,
+      subvolumes: f.fs === 'btrfs' && prev.subvolumes && prev.subvolumes.length > 0 ? prev.subvolumes : undefined,
+      encrypt: f.encrypt ? true : undefined,
     }
-    dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: built.partitions }
-    // The form is authoritative for which partitions are encrypted; do not fall
-    // back to recomputeEncryption() here, since the prior dc.disk_encryption still
-    // contains the obj_id the user just toggled off and would re-add it.
-    const encIds = built.encryptedObjIds.map((id) => newToOldId.get(id) ?? id)
-    if (encIds.length > 0) {
-      dc.disk_encryption = {
-        encryption_type: dc.disk_encryption?.encryption_type ?? 'luks',
-        partitions: encIds,
-        lvm_volumes: [],
-      }
-    } else {
-      dc.disk_encryption = undefined
-    }
-    setState({ disk_config: dc })
+    editNode(['disks', di, 'partitions', idx], part)
+    reconcileEncryption()
   })
   return reloadDisk(c)
 })
 
+const subvolPath = (device: string, idx: number) => {
+  const disks = getConfig().disks ?? []
+  const di = disks.findIndex((d) => d.device === device)
+  if (di < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
+  // Guard against a stale request whose partition index no longer exists — an
+  // out-of-bounds setIn would otherwise pad the seq with nulls and create a
+  // malformed phantom partition.
+  if (idx < 0 || idx >= disks[di]!.partitions.length) {
+    throw new HTTPException(400, { message: `partition ${idx} not found on ${device}` })
+  }
+  return ['disks', di, 'partitions', idx, 'subvolumes'] as const
+}
+
+const currentSubvols = (device: string, idx: number): { name: string; mount?: string }[] => {
+  const disk = (getConfig().disks ?? []).find((d) => d.device === device)
+  return (disk?.partitions[idx]?.subvolumes ?? []).map((s) => ({ name: s.name, mount: s.mount }))
+}
+
+const writeSubvols = (device: string, idx: number, next: { name: string; mount?: string }[]) => {
+  const path = subvolPath(device, idx)
+  if (next.length === 0) editDelete([...path])
+  else editNode([...path], next)
+}
+
 app.post('/api/disk/partition/subvol/add', (c) => {
   const device = requiredQuery(c, 'device')
   const idx = Number(requiredQuery(c, 'idx'))
-  return mutateSubvols(c, device, idx, (subs) => [...subs, { name: '', mountpoint: null }])
+  writeSubvols(device, idx, [...currentSubvols(device, idx), { name: '@new' }])
+  return reloadDisk(c)
 })
 
 app.post('/api/disk/partition/subvol/delete', (c) => {
   const device = requiredQuery(c, 'device')
   const idx = Number(requiredQuery(c, 'idx'))
   const subIdx = Number(requiredQuery(c, 'subIdx'))
-  return mutateSubvols(c, device, idx, (subs) => subs.filter((_x: unknown, i: number) => i !== subIdx))
+  writeSubvols(device, idx, currentSubvols(device, idx).filter((_x, i) => i !== subIdx))
+  return reloadDisk(c)
 })
 
 app.post('/api/disk/partition/subvol/save', (c) => {
@@ -888,94 +729,61 @@ app.post('/api/disk/partition/subvol/save', (c) => {
   const name = String(raw[`${sl}_name`] ?? '').trim()
   const mount = String(raw[`${sl}_mount`] ?? '').trim()
   if (!name) throw new HTTPException(400, { message: 'subvolume name required' })
-  return mutateSubvols(c, device, idx, (subs) =>
-    subs.map((sv, i) => (i === subIdx ? { name, mountpoint: mount || null } : sv)),
-  )
-})
-
-function mutateSubvols(
-  c: AppContext,
-  device: string,
-  idx: number,
-  fn: (subs: PartitionConfig['btrfs']) => PartitionConfig['btrfs'],
-) {
-  const s = getState()
-  if (!s.disk_config) throw new HTTPException(400, { message: 'no disks selected' })
-  const dc = { ...s.disk_config, device_modifications: [...s.disk_config.device_modifications] }
-  const dIdx = dc.device_modifications.findIndex((d) => d.device === device)
-  if (dIdx < 0) throw new HTTPException(400, { message: `device not selected: ${device}` })
-  const parts = [...dc.device_modifications[dIdx]!.partitions]
-  const prev = parts[idx]
-  if (!prev) throw new HTTPException(404, { message: 'partition not found' })
-  parts[idx] = { ...prev, btrfs: fn(prev.btrfs) }
-  dc.device_modifications[dIdx] = { ...dc.device_modifications[dIdx]!, partitions: parts }
-  setState({ disk_config: dc })
+  writeSubvols(device, idx, currentSubvols(device, idx).map((sv, i) =>
+    i === subIdx ? { name, mount: mount || undefined } : sv,
+  ))
   return reloadDisk(c)
-}
+})
 
 app.post('/api/disk/encryption-type', (c) => {
   const raw = (c.get('signals') ?? {}) as Record<string, unknown>
-  const parsed = EncryptionType.safeParse(raw.enc_type)
+  const parsed = EncryptionKind.safeParse(raw.enc_type)
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid encryption type' })
-  const s = getState()
-  if (!s.disk_config?.disk_encryption) return reloadDisk(c)
-  const dc = { ...s.disk_config, disk_encryption: { ...s.disk_config.disk_encryption, encryption_type: parsed.data } }
-  setState({ disk_config: dc })
+  if (getConfig().encryption) editScalar(['encryption', 'type'], parsed.data)
   return reloadDisk(c)
 })
 
 app.post('/api/disk/encryption-password', (c) => {
   const raw = (c.get('signals') ?? {}) as Record<string, unknown>
   const pw = String(raw.enc_password ?? '')
-  if (pw) setState({ encryption_password: pw })
+  if (pw) setEncryptionPassword(pw)
   return reloadDisk(c)
 })
 
-app.get('/api/config.json', (c) => c.json(ArchinstallConfig.parse(getState())))
+app.get('/api/config.json', (c) => {
+  const { archinstall, error } = configState()
+  if (!archinstall) throw new HTTPException(400, { message: error ?? 'invalid config' })
+  return c.json(archinstall)
+})
 
 import { serve } from './runtime'
 
-// --- Install endpoints ------------------------------------------------------
+// --- Install -----------------------------------------------------------------
 
-// Wet mode is gated on running inside the archiso live environment.
-// /run/archiso/bootmnt is created by archiso's initramfs and cannot exist on
-// an installed host, so a stray invocation on a dev machine is forced to
-// --dry-run no matter what env/args are set.
 const isWet = (): boolean => existsSync('/run/archiso/bootmnt')
 
-// archinstall splits its input into config + creds. We hold everything in one
-// ArchinstallConfig at runtime; these two helpers carve it back out for the
-// JSON files that get passed via --config and --creds.
-const CRED_KEYS = ['root_enc_password', 'encryption_password'] as const
-// archinstall does NOT create regular users for us — the Bicycle daemon does,
-// via a chroot reconcile right after install (see buildInstallSteps). archinstall
-// only adds users to groups that already exist, which blows up on custom groups
-// (gpasswd: group does not exist). So `users` is dropped from both files; the
-// daemon creates accounts, sets passwords from secrets, and fixes group
-// membership on the target.
-const OMIT_KEYS = ['users'] as const
-const splitForArchinstall = (cfg: ArchinstallConfig) => {
-  const config: Record<string, unknown> = {}
+// archinstall is handed the projected config (no users — the daemon creates
+// them) plus a creds file. root/LUKS passwords aren't part of bicycle.yml; they
+// live in transient installer state and are carved out here.
+const archinstallFiles = (cfg: NonNullable<ConfigState['archinstall']>) => {
   const creds: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(cfg)) {
-    if ((OMIT_KEYS as readonly string[]).includes(k)) continue
-    if ((CRED_KEYS as readonly string[]).includes(k)) {
-      if (v !== undefined && v !== null) creds[k] = v
-    } else {
-      if (v !== undefined) config[k] = v
-    }
-  }
-  return { config, creds }
+  const root = getRootHash()
+  const enc = getEncryptionPassword()
+  if (root) creds.root_enc_password = root
+  if (enc) creds.encryption_password = enc
+  return { config: cfg, creds }
 }
 
 const renderInstall = async (c: AppContext) => {
-  const s = getState()
+  const { bike, archinstall, error } = configState()
   const disks = await listDisks()
-  const pf = preflight(s, disks, getAgeKey(), pendingUsers())
+  const pf = archinstall
+    ? preflight(archinstall, disks, preflightCtx(bike))
+    : { ok: false as const, problems: [error ?? 'invalid config'] }
   const view = (
     <InstallView
       preflight={pf}
-      device={targetDevice(s)}
+      device={archinstall ? targetDevice(archinstall) : null}
       mode={isWet() ? 'wet' : 'dry-run'}
       install={getInstall()}
     />
@@ -996,37 +804,18 @@ app.get('/api/install/tick', (c) => {
   })
 })
 
-// Just the inner content for polling — same body the page already shows, but
-// patched into #page-content instead of full reload. No pushUrl here, otherwise
-// every 1s poll would push another /install entry onto history.
-app.get('/api/install/status', async (c) => {
-  const s = getState()
-  const disks = await listDisks()
-  const view = (
-    <InstallView
-      preflight={preflight(s, disks, getAgeKey(), pendingUsers())}
-      device={targetDevice(s)}
-      mode={isWet() ? 'wet' : 'dry-run'}
-      install={getInstall()}
-    />
-  )
-  return renderPage(c, 'install', view)
-})
+app.get('/api/install/status', async (c) => renderInstall(c))
 
 app.post('/api/install/start', async (c) => {
-  // Claim the running slot synchronously BEFORE any await. Without this,
-  // two near-simultaneous POSTs both pass the check and both spawn archinstall.
   const inst = getInstall()
   if (inst.status === 'running') {
     throw new HTTPException(409, { message: 'install already running' })
   }
-  const s = getState()
-  const device = targetDevice(s)
+  const { bike, archinstall, error } = configState()
+  if (!archinstall) throw new HTTPException(400, { message: error ?? 'invalid config' })
+  const device = targetDevice(archinstall)
   if (!device) throw new HTTPException(400, { message: 'no target device' })
 
-  // Server-side enforcement of the type-to-confirm gate. The client form
-  // also disables the button until this matches, but a hand-crafted POST
-  // could skip the UI; reject here too.
   const signals = (c.get('signals') ?? {}) as Record<string, unknown>
   const typed = String(signals.wipe_typed ?? '')
   if (typed !== device) {
@@ -1038,28 +827,19 @@ app.post('/api/install/start', async (c) => {
 
   const wet = isWet()
   const mode = wet ? 'wet' as const : 'dry-run' as const
-  // Take the running slot now so a parallel request loses the 409 check above.
   setInstall({
-    status: 'running',
-    mode,
-    device,
-    log: '',
-    exitCode: null,
-    startedAt: Date.now(),
-    finishedAt: null,
+    status: 'running', mode, device, log: '',
+    exitCode: null, startedAt: Date.now(), finishedAt: null,
   })
 
   try {
     const disks = await listDisks()
-    const pf = preflight(s, disks, getAgeKey(), pendingUsers())
+    const pf = preflight(archinstall, disks, preflightCtx(bike))
     if (!pf.ok) {
       setInstall({ status: 'idle', startedAt: null })
       throw new HTTPException(400, { message: pf.problems.join('; ') })
     }
-    // Users are NOT handed to archinstall (see splitForArchinstall). The
-    // Bicycle daemon creates them on the target via a chroot reconcile after
-    // install, decrypting each password secret with the age identity there.
-    const { config, creds } = splitForArchinstall(s)
+    const { config, creds } = archinstallFiles(archinstall)
     const configFile = '/tmp/bicycle-config.json'
     const credsFile = '/tmp/bicycle-creds.json'
     await Bun.write(configFile, JSON.stringify(config, null, 2))
@@ -1111,51 +891,39 @@ const parseRecipients = (text: string): string[] =>
   text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
 
 const postArchinstall = async (): Promise<number> => {
-  const all = await loadPackages().catch(() => [])
-  const repos = Object.fromEntries(all.map((p) => [p.name, p.repo]))
-  const src = getSource()
-  const state = getState()
+  const files = new Map(getFiles())
+  const pending = [...getPendingSecrets()].map(([addr, clear]) => ({ addr, clear }))
 
-  // Collect cleartext UI passwords for users still present in the derived
-  // config; entries left over from a prior import/session are dropped.
-  const present = new Set((state.users ?? []).map((u) => u.username))
-  const userSecrets = [...getUserPasswords()]
-    .filter(([name]) => present.has(name))
-    .map(([name, clear]) => ({ name, clear }))
-
-  // Resolve the recipients to encrypt those passwords to, so the secrets are
+  // Resolve the recipients to encrypt the staged UI secrets to, so they're
   // decryptable by the age.key that lands on the target.
-  let ageKey = getAgeKey()
+  let identity = getIdentity()
   let recipients: string[] = []
-  if (userSecrets.length > 0) {
-    const treeRecipients = src?.tree ? pathJoin(src.tree, 'recipients') : null
-    if (treeRecipients && existsSync(treeRecipients)) {
-      // Mixed import+edit: reuse the tree's recipients (they match its age.key,
-      // adopted into memory on import) so all secrets share one identity.
-      recipients = parseRecipients(readFileSync(treeRecipients, 'utf8'))
-    }
+  if (pending.length > 0) {
+    const imported = files.get('recipients')
+    if (imported) recipients = parseRecipients(new TextDecoder().decode(imported))
     if (recipients.length === 0) {
-      if (!ageKey) {
-        // Pure UI build with no identity: generate one so the build "just
-        // works". buildInstallSteps writes it to <etc>/age.key (step 3).
-        ageKey = await generateAgeIdentity()
-        setAgeKey(ageKey)
-        appendInstallLog('\n(note) generated a new age identity to encrypt user passwords\n')
+      // No usable imported recipients — derive from the identity (generating one
+      // if needed) and drop any empty/malformed imported file so buildInstallSteps
+      // writes the derived recipients instead of shadowing them.
+      files.delete('recipients')
+      if (!identity) {
+        identity = await generateAgeIdentity()
+        setIdentity(identity)
+        appendInstallLog('\n(note) generated a new age identity to encrypt UI secrets\n')
       }
-      recipients = [await recipientFor(ageKey)]
+      recipients = [await recipientFor(identity)]
     }
   }
 
-  if (!ageKey) {
+  if (!identity) {
     appendInstallLog('\n(note) no age identity set; skipping /mnt/etc/bicycle/age.key write\n')
   }
+
   const steps = buildInstallSteps({
-    source: src,
-    state,
-    retained: getRetained(),
-    ageKey,
-    packageRepos: repos,
-    userSecrets,
+    text: getText(),
+    files,
+    identity,
+    pendingSecrets: pending,
     recipients,
   })
   for (const step of steps) {
@@ -1171,11 +939,6 @@ const postArchinstall = async (): Promise<number> => {
         return -1
       }
     }
-  }
-  // Cleanup: drop the source clone dir once it's been published to /mnt.
-  // setSource() handles deletion when ownsTree is true.
-  if (src?.ownsTree && src.tree) {
-    setSource({ ...src, tree: null, ownsTree: false })
   }
   return 0
 }
@@ -1210,16 +973,10 @@ app.post('/api/install/reset', (c) => {
     throw new HTTPException(409, { message: 'cannot reset while running' })
   }
   setInstall({
-    status: 'idle',
-    log: '',
-    exitCode: null,
-    startedAt: null,
-    finishedAt: null,
+    status: 'idle', log: '', exitCode: null, startedAt: null, finishedAt: null,
   })
   return renderInstall(c)
 })
-
-
 
 const start = async () => {
   syncPacman().then((res) => {

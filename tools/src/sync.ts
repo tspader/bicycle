@@ -46,7 +46,7 @@ const targets: Record<string, Target> = {
   },
   installer: {
     label: "installer source (src/installer + src/shared)",
-    restart: "installer-web",
+    restart: "bicycle-installer",
     mappings: [
       {
         src: path.join(paths.root, "src", "installer"),

@@ -54,21 +54,42 @@ const stageAge = async (rel: string, plaintext: string) => {
   stage(rel, ciphertext);
 };
 
-test("mirrors plaintext file into host root with 0600", async () => {
+test("mirrors plaintext file into host root with the source's mode", async () => {
   stage("etc/foo.conf", "hello");
+  fs.chmodSync(path.join(etc, "files", "etc/foo.conf"), 0o644);
   await files.all();
   const dest = path.join(host, "etc/foo.conf");
   expect(fs.readFileSync(dest, "utf8")).toBe("hello");
-  expect(fs.statSync(dest).mode & 0o777).toBe(0o600);
+  expect(fs.statSync(dest).mode & 0o777).toBe(0o644);
 });
 
-test("decrypts .age files and strips suffix from destination", async () => {
+test("preserves the executable bit from the source", async () => {
+  stage("usr/local/bin/hook", "#!/bin/sh\necho hi\n");
+  fs.chmodSync(path.join(etc, "files", "usr/local/bin/hook"), 0o755);
+  await files.all();
+  expect(fs.statSync(path.join(host, "usr/local/bin/hook")).mode & 0o777).toBe(0o755);
+});
+
+test("decrypts .age files, strips suffix, and forces 0600", async () => {
   await stageAge("etc/secret.conf.age", "decrypted");
+  // The .age source is 0644 (as git stores it) — the secret must still land 0600.
+  fs.chmodSync(path.join(etc, "files", "etc/secret.conf.age"), 0o644);
   await files.all();
   const dest = path.join(host, "etc/secret.conf");
   expect(fs.existsSync(`${dest}.age`)).toBe(false);
   expect(fs.readFileSync(dest, "utf8")).toBe("decrypted");
   expect(fs.statSync(dest).mode & 0o777).toBe(0o600);
+});
+
+test("fixes a stale mode even when content is unchanged", async () => {
+  stage("etc/foo.conf", "hello");
+  fs.chmodSync(path.join(etc, "files", "etc/foo.conf"), 0o644);
+  await files.all();
+  const dest = path.join(host, "etc/foo.conf");
+  // Simulate a file written under the old hardcoded-0600 behaviour.
+  fs.chmodSync(dest, 0o600);
+  await files.all();
+  expect(fs.statSync(dest).mode & 0o777).toBe(0o644);
 });
 
 test("creates nested parent directories", async () => {

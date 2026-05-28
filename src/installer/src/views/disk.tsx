@@ -1,7 +1,7 @@
 import { Page, Section, Field } from './layout'
 import { SwapSection } from './swap'
-import { PRESETS, sizeBytes, type PresetId } from '../config'
-import type { DeviceModification, PartitionConfig, PartitionFlag, FsType } from '../config'
+import { PRESETS, parseSize, sizeBytes, type PresetId } from '../config'
+import type { Disk, Partition, PartitionFlag, FsType } from '@bicycle/shared'
 import type { DiskInfo } from '../system'
 import { sigSlug } from '../slug'
 
@@ -29,39 +29,40 @@ const formatBytes = (n: number): string => {
   return `${n} B`
 }
 
-const formatSize = (p: PartitionConfig): string => `${p.size.value}${p.size.unit}`
+const explicitBytesOf = (p: Partition): number => {
+  if (p.size === 'rest') return 0
+  try {
+    return sizeBytes(parseSize(p.size))
+  } catch {
+    return 0
+  }
+}
 
 type Swap = { enabled: boolean; algorithm: 'zstd' | 'lzo-rle' | 'lzo' | 'lz4' | 'lz4hc' }
 
 type Props = {
   disks: DiskInfo[]
-  selected: DeviceModification[]
+  bikeDisks: Disk[]
   openDisk: string | null
   error: string | null
-  encryption: { type: string; password: boolean; objIds: Set<string> }
+  anyEncrypted: boolean
+  encryption: { type: string; password: boolean }
   swap: Swap
 }
 
-export const DiskView = ({ disks, selected, openDisk, error, encryption, swap }: Props) => {
-  const modByDevice = new Map(selected.map((m) => [m.device, m]))
+export const DiskView = ({ disks, bikeDisks, openDisk, error, anyEncrypted, encryption, swap }: Props) => {
+  const diskByDevice = new Map(bikeDisks.map((d) => [d.device, d]))
   const open = openDisk ? disks.find((d) => d.path === openDisk) ?? null : null
-  const openMod = open ? modByDevice.get(open.path) ?? null : null
+  const openMod = open ? diskByDevice.get(open.path) ?? null : null
   return (
     <Page heading="Disk" subhead="Pick disks, lay out partitions, set encryption.">
       {disks.length === 0 ? (
         <p class="empty">No disks detected.</p>
       ) : (
-        <DisksTable disks={disks} modByDevice={modByDevice} openDisk={openDisk} />
+        <DisksTable disks={disks} diskByDevice={diskByDevice} openDisk={openDisk} />
       )}
-      {open ? (
-        <DiskPanel
-          d={open}
-          mod={openMod}
-          error={error}
-          encryptedObjIds={encryption.objIds}
-        />
-      ) : null}
-      {encryption.objIds.size > 0 ? (
+      {open ? <DiskPanel d={open} mod={openMod} error={error} /> : null}
+      {anyEncrypted ? (
         <EncryptionSection type={encryption.type} hasPassword={encryption.password} />
       ) : null}
       <SwapSection enabled={swap.enabled} algorithm={swap.algorithm} />
@@ -70,10 +71,10 @@ export const DiskView = ({ disks, selected, openDisk, error, encryption, swap }:
 }
 
 const DisksTable = ({
-  disks, modByDevice, openDisk,
+  disks, diskByDevice, openDisk,
 }: {
   disks: DiskInfo[]
-  modByDevice: Map<string, DeviceModification>
+  diskByDevice: Map<string, Disk>
   openDisk: string | null
 }) => (
   <table class="table disks-table">
@@ -88,7 +89,7 @@ const DisksTable = ({
     </thead>
     <tbody>
       {disks.map((d) => {
-        const mod = modByDevice.get(d.path) ?? null
+        const mod = diskByDevice.get(d.path) ?? null
         const isOpen = openDisk === d.path
         const openUrl = `/api/disk/open?${isOpen ? '' : `device=${encodeURIComponent(d.path)}`}`
         const count = mod?.partitions.length ?? 0
@@ -112,32 +113,23 @@ const DisksTable = ({
 )
 
 export const DiskPanel = ({
-  d, mod, error, encryptedObjIds,
+  d, mod, error,
 }: {
   d: DiskInfo
-  mod: DeviceModification | null
+  mod: Disk | null
   error: string | null
-  encryptedObjIds: Set<string>
 }) => {
   const totalSize = d.size
   const partitions = mod?.partitions ?? []
-  const explicitBytes = partitions
-    .filter((p) => p.original_size !== 'rest')
-    .reduce((acc, p) => acc + sizeBytes(p.size), 0)
-  const hasRest = partitions.some((p) => p.original_size === 'rest')
-  // "rest" needs at least 1MiB after the explicit partitions (matches the
-  // GPT-tail margin in buildPartitions). Without "rest", explicit may equal
-  // exactly the disk size.
+  const explicitBytes = partitions.reduce((acc, p) => acc + explicitBytesOf(p), 0)
+  const hasRest = partitions.some((p) => p.size === 'rest')
   const overflow = hasRest ? explicitBytes >= totalSize : explicitBytes > totalSize
   const remaining = totalSize - explicitBytes
   const footerLabel = overflow
     ? `${formatBytes(explicitBytes)} allocated · over by ${formatBytes(-remaining)}`
     : `${formatBytes(explicitBytes)} allocated · ${hasRest ? `${formatBytes(remaining)} for "rest"` : `${formatBytes(remaining)} remaining`}`
   return (
-    <Section
-      title={d.path}
-      subhead={`${d.model} · GPT · ${formatBytes(totalSize)}`}
-    >
+    <Section title={d.path} subhead={`${d.model} · GPT · ${formatBytes(totalSize)}`}>
       <div class="disk-panel card">
         <div class="disk-panel-presets">
           <span class="field-label">Presets</span>
@@ -154,11 +146,7 @@ export const DiskPanel = ({
           </div>
         </div>
         {error ? <div class="alert alert-danger">{error}</div> : null}
-        <PartitionTable
-          device={d.path}
-          partitions={partitions}
-          encryptedObjIds={encryptedObjIds}
-        />
+        <PartitionTable device={d.path} partitions={partitions} />
         <div class="partition-footer">
           <button
             type="button"
@@ -177,11 +165,10 @@ export const DiskPanel = ({
 const PARTITION_COLSPAN = 11
 
 const PartitionTable = ({
-  device, partitions, encryptedObjIds,
+  device, partitions,
 }: {
   device: string
-  partitions: PartitionConfig[]
-  encryptedObjIds: Set<string>
+  partitions: Partition[]
 }) => {
   if (partitions.length === 0) return null
   return (
@@ -201,17 +188,11 @@ const PartitionTable = ({
       <tbody>
         {partitions.map((p, i) => (
           <>
-            <PartitionRow
-              device={device}
-              idx={i}
-              p={p}
-              isFirst={i === 0}
-              isEncrypted={encryptedObjIds.has(p.obj_id)}
-            />
-            {p.fs_type === 'btrfs' ? (
+            <PartitionRow device={device} idx={i} p={p} isFirst={i === 0} />
+            {p.fs === 'btrfs' ? (
               <tr class="subvol-expand-row">
                 <td colspan={PARTITION_COLSPAN}>
-                  <SubvolPanel device={device} idx={i} subvols={p.btrfs} />
+                  <SubvolPanel device={device} idx={i} subvols={p.subvolumes ?? []} />
                 </td>
               </tr>
             ) : null}
@@ -223,25 +204,25 @@ const PartitionTable = ({
 }
 
 const PartitionRow = ({
-  device, idx, p, isFirst, isEncrypted,
+  device, idx, p, isFirst,
 }: {
   device: string
   idx: number
-  p: PartitionConfig
+  p: Partition
   isFirst: boolean
-  isEncrypted: boolean
 }) => {
   const sl = `${sigSlug(device)}_p${idx}`
+  const flags = p.flags ?? []
   const signals: Record<string, unknown> = {
-    [`${sl}_mount`]: p.mountpoint ?? '',
-    [`${sl}_fs`]: p.fs_type,
-    [`${sl}_size`]: p.original_size ?? formatSize(p),
-    [`${sl}_start`]: p.original_start ?? '',
-    [`${sl}_mount_options`]: p.mount_options.join(', '),
-    [`${sl}_encrypt`]: isEncrypted,
+    [`${sl}_mount`]: p.mount ?? '',
+    [`${sl}_fs`]: p.fs,
+    [`${sl}_size`]: p.size,
+    [`${sl}_start`]: p.start ?? '',
+    [`${sl}_mount_options`]: (p.mount_options ?? []).join(', '),
+    [`${sl}_encrypt`]: !!p.encrypt,
   }
   for (const f of FLAG_OPTIONS) {
-    signals[`${sl}_flag_${f}`] = p.flags.includes(f)
+    signals[`${sl}_flag_${f}`] = flags.includes(f)
   }
   const saveUrl = `/api/disk/partition/save?device=${encodeURIComponent(device)}&idx=${idx}`
   const delUrl = `/api/disk/partition/delete?device=${encodeURIComponent(device)}&idx=${idx}`
@@ -265,7 +246,7 @@ const PartitionRow = ({
       <td class="col-fs">
         <select class="cell-input" data-bind={`${sl}_fs`} data-on:change={save}>
           {FS_OPTIONS.map((f) => (
-            <option value={f} selected={f === p.fs_type}>{f}</option>
+            <option value={f} selected={f === p.fs}>{f}</option>
           ))}
         </select>
       </td>
@@ -289,14 +270,14 @@ const PartitionRow = ({
         <td class="col-flag">
           <input
             type="checkbox" data-bind={`${sl}_flag_${f}`}
-            checked={p.flags.includes(f)} data-on:change={save}
+            checked={flags.includes(f)} data-on:change={save}
           />
         </td>
       ))}
       <td class="col-flag">
         <input
           type="checkbox" data-bind={`${sl}_encrypt`}
-          checked={isEncrypted} data-on:change={save}
+          checked={!!p.encrypt} data-on:change={save}
         />
       </td>
       <td>
@@ -315,7 +296,7 @@ const SubvolPanel = ({
 }: {
   device: string
   idx: number
-  subvols: PartitionConfig['btrfs']
+  subvols: NonNullable<Partition['subvolumes']>
 }) => {
   const addUrl = `/api/disk/partition/subvol/add?device=${encodeURIComponent(device)}&idx=${idx}`
   return (
@@ -332,7 +313,7 @@ const SubvolPanel = ({
           const sl = `${sigSlug(device)}_p${idx}_sv${sIdx}`
           const saveUrl = `/api/disk/partition/subvol/save?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
           const delUrl = `/api/disk/partition/subvol/delete?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
-          const signals = { [`${sl}_name`]: sv.name, [`${sl}_mount`]: sv.mountpoint ?? '' }
+          const signals = { [`${sl}_name`]: sv.name, [`${sl}_mount`]: sv.mount ?? '' }
           const save = `@post('${saveUrl}')`
           return (
             <tr class="row subvol-row" data-signals={JSON.stringify(signals)}>

@@ -1,5 +1,5 @@
 import { Page, Field } from './layout'
-import type { User } from '../config'
+import type { User } from '@bicycle/shared'
 
 type Props = { rootSet: boolean; users: User[] }
 
@@ -45,15 +45,15 @@ const RootCard = ({ rootSet }: { rootSet: boolean }) => {
 }
 
 const UserCard = ({ u }: { u: User }) => {
-  const p = slug(u.username)
+  const p = slug(u.name)
   const signals: Record<string, unknown> = {
-    [`${p}_username`]: u.username,
+    [`${p}_username`]: u.name,
     [`${p}_password`]: '',
-    [`${p}_sudo`]: u.sudo,
+    [`${p}_sudo`]: u.sudo !== 'none',
     [`${p}_groups`]: u.groups.join(', '),
   }
-  const saveUrl = `/api/users/save?original=${encodeURIComponent(u.username)}`
-  const deleteUrl = `/api/users/delete?name=${encodeURIComponent(u.username)}`
+  const saveUrl = `/api/users/save?original=${encodeURIComponent(u.name)}`
+  const deleteUrl = `/api/users/delete?name=${encodeURIComponent(u.name)}`
   return (
     <form class="form card account-card" data-signals={JSON.stringify(signals)}>
       <div class="card-header">

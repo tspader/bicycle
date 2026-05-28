@@ -5,7 +5,7 @@ import {
   type EncryptionKind,
 } from '@bicycle/shared'
 import { ArchinstallConfig, Bootloader, EncryptionType } from './schema'
-import { Size, DEFAULT_SECTOR, parseSize, formatSize, sizeBytes } from './size'
+import { Size, DEFAULT_SECTOR, parseSize, sizeBytes } from './size'
 import { MachineCtx } from './machine'
 
 const MIB = 1024 ** 2
@@ -19,42 +19,10 @@ const LOADER_TO_ARCHINSTALL: Record<LoaderName, Bootloader> = {
   limine: 'Limine',
   refind: 'Refind',
 }
-const ARCHINSTALL_TO_LOADER: Record<Bootloader, LoaderName> = Object.fromEntries(
-  Object.entries(LOADER_TO_ARCHINSTALL).map(([k, v]) => [v, k]),
-) as never
 
 const NET_MODE: Record<'iso' | 'networkmanager', 'iso' | 'nm'> = {
   iso: 'iso',
   networkmanager: 'nm',
-}
-
-const NET_MODE_REVERSE: Record<'iso' | 'nm', 'iso' | 'networkmanager'> = {
-  iso: 'iso',
-  nm: 'networkmanager',
-}
-
-export type RetainedDoc = {
-  catalog?: BicycleConfig['catalog']
-  systemd?: BicycleConfig['systemd']
-  // Users declared in an imported bicycle.yml. They carry password *secret
-  // refs* (and possibly a uid), neither of which ArchinstallConfig.User can
-  // hold, so — like catalog/systemd — they're retained verbatim rather than
-  // folded into `config.users`. toYaml re-emits them so a dirty (UI-edited)
-  // import doesn't silently drop imported users from the regenerated
-  // bicycle.yml. UI-created users (config.users) take precedence on name
-  // conflict, matching mergeUsers() at install time.
-  users?: BicycleConfig['users']
-  // Bicycle-only sections the daemon reconciles (groups.ts / dirs.ts) but
-  // archinstall knows nothing about. Like the above, they're retained so a
-  // dirty (UI-edited) import doesn't drop them from the regenerated
-  // bicycle.yml. Their `${var}` refs are already resolved at load time.
-  groups?: BicycleConfig['groups']
-  dirs?: BicycleConfig['dirs']
-}
-
-export type YamlImport = {
-  config: ArchinstallConfig
-  retained: RetainedDoc
 }
 
 const addBytes = (a: Size, bytes: number): Size => {
@@ -62,8 +30,13 @@ const addBytes = (a: Size, bytes: number): Size => {
   return { unit: 'B', value: total, sector_size: DEFAULT_SECTOR }
 }
 
-export const fromYaml = (text: string, ctx: MachineCtx): YamlImport => {
-  const bike = loadBicycleDoc(text).resolved
+// Project the validated Bicycle config into the throwaway archinstall shape:
+// the lossy transforms (loader-name mapping, "rest"→bytes sizing, UUID
+// assignment, encryption wiring, network-mode aliasing) only ever feed
+// archinstall and are discarded after install, so their lossiness is harmless.
+// Users are intentionally NOT projected — the daemon creates them on the target
+// from bicycle.yml after install (see splitForArchinstall).
+export const project = (bike: BicycleConfig, ctx: MachineCtx): ArchinstallConfig => {
   const out: ArchinstallConfig = {}
 
   if (bike.core) {
@@ -149,8 +122,6 @@ export const fromYaml = (text: string, ctx: MachineCtx): YamlImport => {
             btrfs: (p.subvolumes ?? []).map((s) => ({ name: s.name, mountpoint: s.mount ?? null })),
             dev_path: null,
             mount_options: p.mount_options ?? [],
-            original_size: p.size,
-            ...(p.start ? { original_start: p.start } : {}),
           }
         }),
       }
@@ -205,142 +176,10 @@ export const fromYaml = (text: string, ctx: MachineCtx): YamlImport => {
     }
   }
 
-  return {
-    config: ArchinstallConfig.parse(out),
-    retained: {
-      ...(bike.catalog ? { catalog: bike.catalog } : {}),
-      ...(bike.systemd ? { systemd: bike.systemd } : {}),
-      ...(bike.users && bike.users.length > 0 ? { users: bike.users } : {}),
-      ...(bike.groups && bike.groups.length > 0 ? { groups: bike.groups } : {}),
-      ...(bike.dirs && bike.dirs.length > 0 ? { dirs: bike.dirs } : {}),
-    },
-  }
+  return ArchinstallConfig.parse(out)
 }
 
-export const toYaml = (
-  cfg: ArchinstallConfig,
-  retained: RetainedDoc = {},
-  packageRepos: Record<string, string> = {},
-): string => {
-  const bike: Record<string, unknown> = {}
-
-  if (cfg.hostname || cfg.timezone || cfg.kernels || cfg.ntp !== undefined) {
-    const core: Record<string, unknown> = {}
-    if (cfg.hostname) core.hostname = cfg.hostname
-    if (cfg.timezone) core.timezone = cfg.timezone
-    if (cfg.kernels) core.kernels = cfg.kernels
-    if (cfg.ntp !== undefined) core.ntp = cfg.ntp
-    bike.core = core
-  }
-
-  if (cfg.locale_config) {
-    bike.locale = {
-      keyboard: cfg.locale_config.kb_layout,
-      language: cfg.locale_config.sys_lang,
-      encoding: cfg.locale_config.sys_enc,
-    }
-  }
-
-  if (cfg.bootloader_config) {
-    bike.boot = {
-      loader: ARCHINSTALL_TO_LOADER[cfg.bootloader_config.bootloader],
-      uki: cfg.bootloader_config.uki,
-      removable: cfg.bootloader_config.removable,
-    }
-  }
-
-  if (cfg.disk_config) {
-    const encryptedSet = new Set(cfg.disk_config.disk_encryption?.partitions ?? [])
-    bike.disks = cfg.disk_config.device_modifications.map((d) => ({
-      device: d.device,
-      wipe: d.wipe,
-      table: 'gpt',
-      partitions: d.partitions.map((p, i) => {
-        const out: Record<string, unknown> = {
-          fs: p.fs_type,
-          size: p.original_size ?? formatSize(p.size),
-        }
-        if (p.mountpoint) out.mount = p.mountpoint
-        if (i === 0) out.start = p.original_start ?? formatSize(p.start)
-        if (p.flags.length > 0) out.flags = p.flags
-        if (p.mount_options.length > 0) out.mount_options = p.mount_options
-        if (p.btrfs.length > 0) {
-          out.subvolumes = p.btrfs.map((s) => {
-            const sv: Record<string, unknown> = { name: s.name }
-            if (s.mountpoint) sv.mount = s.mountpoint
-            return sv
-          })
-        }
-        if (encryptedSet.has(p.obj_id)) out.encrypt = true
-        return out
-      }),
-    }))
-    if (cfg.disk_config.disk_encryption && cfg.disk_config.disk_encryption.encryption_type !== 'no_encryption') {
-      bike.encryption = { type: cfg.disk_config.disk_encryption.encryption_type as EncryptionKind }
-    }
-  }
-
-  if (cfg.swap) bike.swap = cfg.swap
-  // Merge imported users (retained, with their original secret refs + uid)
-  // with UI-created users (cfg.users). A Map keyed by name keeps imported
-  // ordering while letting UI users override a same-named import — consistent
-  // with mergeUsers() at install. Imported users are placed first so they
-  // retain their slots; UI-only users are appended.
-  const usersByName = new Map<string, Record<string, unknown>>()
-  for (const u of retained.users ?? []) {
-    const entry: Record<string, unknown> = { name: u.name }
-    if (u.uid !== undefined) entry.uid = u.uid
-    entry.sudo = u.sudo
-    entry.groups = u.groups
-    if (u.password !== undefined) entry.password = u.password
-    usersByName.set(u.name, entry)
-  }
-  for (const u of cfg.users ?? []) {
-    usersByName.set(u.username, {
-      name: u.username,
-      sudo: u.sudo ? 'password' : 'none',
-      groups: u.groups,
-      // The cleartext password is encrypted to <etc>/secrets/users/<name>/
-      // password.age at install; the daemon resolves this ref + applies it with
-      // chpasswd. archinstall still gets the hashed enc_password via --creds.
-      password: `\${secret:users/${u.username}/password}`,
-    })
-  }
-  if (usersByName.size > 0) bike.users = [...usersByName.values()]
-  // Retained Bicycle-only sections (resolved at import) — pass through verbatim.
-  if (retained.groups && retained.groups.length > 0) bike.groups = retained.groups
-  if (retained.dirs && retained.dirs.length > 0) bike.dirs = retained.dirs
-  if (cfg.packages && cfg.packages.length > 0) {
-    const groups: Record<string, string[]> = {}
-    for (const name of cfg.packages) {
-      const repo = packageRepos[name] ?? 'extra'
-      ;(groups[repo] ??= []).push(name)
-    }
-    for (const list of Object.values(groups)) list.sort()
-    bike.packages = groups
-  }
-  if (cfg.network_config) bike.network = { mode: NET_MODE_REVERSE[cfg.network_config.type] }
-
-  if (cfg.pacman_config || cfg.mirror_config) {
-    const pacman: Record<string, unknown> = {}
-    if (cfg.pacman_config) {
-      pacman.color = cfg.pacman_config.color
-      pacman.parallel_downloads = cfg.pacman_config.parallel_downloads
-    }
-    if (cfg.mirror_config) {
-      const mirrors: Record<string, unknown> = {
-        regions: Object.keys(cfg.mirror_config.mirror_regions),
-      }
-      if (cfg.mirror_config.custom_servers.length > 0) {
-        mirrors.custom = cfg.mirror_config.custom_servers.map((s) => s.url)
-      }
-      pacman.mirrors = mirrors
-    }
-    bike.pacman = pacman
-  }
-
-  if (retained.catalog) bike.catalog = retained.catalog
-  if (retained.systemd) bike.systemd = retained.systemd
-
-  return Bun.YAML.stringify(bike, null, 2)
-}
+// Parse + validate bicycle.yml text, then project. Throws on malformed configs
+// (bad sizes, inconsistent encryption, schema violations).
+export const fromYaml = (text: string, ctx: MachineCtx): ArchinstallConfig =>
+  project(loadBicycleDoc(text).resolved, ctx)

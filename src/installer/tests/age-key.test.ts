@@ -93,16 +93,11 @@ describe('deriveWarnings age-key', () => {
   const disks: DiskInfo[] = [
     { path: '/dev/vda', model: 'vda', size: 100 * 1024 ** 3, sectorSize: 512, isBoot: false },
   ]
-  const ready = () => {
-    const cfg = fromYaml(MINIMAL, ctx()).config
-    return {
-      ...cfg,
-      users: [{ username: 's', sudo: true, groups: ['wheel'], enc_password: 'h' }],
-    }
-  }
+  const cfg = () => fromYaml(MINIMAL, ctx())
+  const account = { sudo: 'password' as const, hasPassword: true }
 
   test('emits a warning (not an error) when no age key is set', () => {
-    const ws = deriveWarnings(ready(), disks, null)
+    const ws = deriveWarnings(cfg(), disks, { identity: null, accounts: [account], rootSet: true })
     const ageWarnings = ws.filter((w) => /age identity/i.test(w.message))
     expect(ageWarnings.length).toBe(1)
     expect(ageWarnings[0]!.severity).toBe('warning')
@@ -110,7 +105,7 @@ describe('deriveWarnings age-key', () => {
   })
 
   test('no age-key warning when a key is set', () => {
-    const ws = deriveWarnings(ready(), disks, GOOD_X25519)
+    const ws = deriveWarnings(cfg(), disks, { identity: GOOD_X25519, accounts: [account] })
     expect(ws.some((w) => /age identity/i.test(w.message))).toBe(false)
   })
 })

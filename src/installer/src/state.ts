@@ -1,87 +1,110 @@
-import { rmSync } from 'node:fs'
-import type { ArchinstallConfig, RetainedDoc } from './config'
+import type { Document } from 'yaml'
+import type { BicycleConfig } from '@bicycle/shared'
+import * as doc from './doc'
 
-let state: ArchinstallConfig = {
-  hostname: 'bicycle-test',
-  kernels: ['linux'],
-  ntp: true,
-  locale_config: { kb_layout: 'us', sys_lang: 'en_US.UTF-8', sys_enc: 'UTF-8' },
-  bootloader_config: { bootloader: 'Systemd-boot', uki: true, removable: false },
-  swap: { enabled: true, algorithm: 'zstd' },
-  network_config: { type: 'iso' },
-  timezone: 'UTC',
-  packages: [],
-  users: [],
-  mirror_config: {
-    mirror_regions: {},
-    custom_servers: [],
-    custom_repositories: [],
-    optional_repositories: [],
-  },
-  root_enc_password: null,
+export type ConfigTree = {
+  text: string
+  files: Map<string, Uint8Array>
+  identity: string | null
 }
 
-export const getState = (): Readonly<ArchinstallConfig> => state
+const DEFAULT_CONFIG = `core:
+  hostname: bicycle
+  timezone: UTC
+  kernels: [linux]
+  ntp: true
+locale:
+  keyboard: us
+  language: en_US.UTF-8
+  encoding: UTF-8
+boot:
+  loader: systemd-boot
+  uki: true
+  removable: false
+swap:
+  enabled: true
+  algorithm: zstd
+network:
+  mode: iso
+`
 
-// UI mutations diverge the derived state from `source.yaml`, so the source
-// preview becomes stale. We do NOT drop `source.tree` here, because the
-// imported tree still carries the supporting subdirs (apps/, files/,
-// secrets/, recipients) that install must copy to /mnt/etc/bicycle — and
-// dropping them just because the user typed a root password or fixed a
-// typo would silently lose all of that. Install regenerates bicycle.yml
-// from the derived state instead.
-export const setState = (patch: Partial<ArchinstallConfig>): void => {
-  state = { ...state, ...patch }
-  if (source) source = { ...source, dirty: true }
+let text = DEFAULT_CONFIG
+let files = new Map<string, Uint8Array>()
+let identity: string | null = null
+
+// archinstall-only credentials. These are NOT part of bicycle.yml (the daemon
+// never manages root or the LUKS passphrase) — they're carved into the --creds
+// file at install time and otherwise held only in memory.
+let rootHash: string | null = null
+let encryptionPassword: string | null = null
+
+// Cleartext secrets entered in the UI (keyed by secret address, e.g.
+// "users/spader/password"), staged in memory until install encrypts them to
+// the resolved recipients and writes <addr>.age into the tree. Imported users
+// already carry their .age files in `files`, so this only covers UI input.
+const pendingSecrets = new Map<string, string>()
+
+export const getText = (): string => text
+export const getConfig = (): BicycleConfig => doc.resolved(text)
+export const getFiles = (): ReadonlyMap<string, Uint8Array> => files
+export const getIdentity = (): string | null => identity
+export const getRootHash = (): string | null => rootHash
+export const getEncryptionPassword = (): string | null => encryptionPassword
+export const getPendingSecrets = (): ReadonlyMap<string, string> => pendingSecrets
+
+// Replace the whole tree (an import). Adopts an age identity if the import
+// carried one; otherwise leaves any previously-set identity untouched. Staged
+// UI secrets belong to the prior config, so they're dropped.
+export const loadTree = (next: {
+  text: string
+  files: Map<string, Uint8Array>
+  identity?: string | null
+}): void => {
+  text = next.text
+  files = next.files
+  if (next.identity) identity = next.identity
+  pendingSecrets.clear()
 }
 
-// Used by importers to install a brand-new derived state. Does NOT touch
-// `source`; the caller is responsible for setSource() right after.
-export const replaceState = (next: ArchinstallConfig): void => {
-  state = next
+export const editDoc = (fn: (d: Document) => void): void => {
+  text = doc.edit(text, fn)
+}
+export const editScalar = (path: doc.Path, value: string | number | boolean): void => {
+  text = doc.setScalar(text, path, value)
+}
+export const editNode = (path: doc.Path, value: Parameters<typeof doc.setNode>[2]): void => {
+  text = doc.setNode(text, path, value)
+}
+export const editDelete = (path: doc.Path): void => {
+  text = doc.deleteAt(text, path)
+}
+export const editAppend = (path: doc.Path, value: Parameters<typeof doc.append>[2]): void => {
+  text = doc.append(text, path, value)
+}
+export const editPrune = (path: doc.Path): void => {
+  text = doc.pruneEmpty(text, path)
 }
 
-let retained: RetainedDoc = {}
-
-export const getRetained = (): Readonly<RetainedDoc> => retained
-
-export const setRetained = (next: RetainedDoc): void => {
-  retained = next
+export const setIdentity = (next: string | null): void => {
+  identity = next
+}
+export const setRootHash = (next: string | null): void => {
+  rootHash = next
+}
+export const setEncryptionPassword = (next: string | null): void => {
+  encryptionPassword = next
 }
 
-export type SourceDoc = {
-  // Raw bicycle.yml text as imported — the preview shows it verbatim until
-  // a UI mutation marks the source `dirty`.
-  yaml: string
-  // Path to the config root on disk that holds apps/, files/, secrets/,
-  // recipients alongside bicycle.yml. Set when imported from Git so install
-  // can copy the entire tree into /mnt/etc/bicycle. null when the source is
-  // a single YAML document (paste/upload imports).
-  tree: string | null
-  // True when the installer owns this tree dir and should clean it up on
-  // replace/clear (e.g. /tmp/bicycle-import-XXX). False when `tree` points
-  // at something the user owns and we must never delete (e.g. an example
-  // fixture path, a manually-staged dir for testing).
-  ownsTree: boolean
-  // True once the user has performed any UI mutation since import. While
-  // false, the preview shows source.yaml verbatim and install copies the
-  // entire tree verbatim. Once true, install regenerates bicycle.yml from
-  // the derived state but still copies supporting files from `tree`.
-  dirty: boolean
+export const setFile = (path: string, bytes: Uint8Array): void => {
+  files.set(path, bytes)
+}
+export const deleteFile = (path: string): void => {
+  files.delete(path)
 }
 
-let source: SourceDoc | null = null
-
-export const getSource = (): Readonly<SourceDoc> | null => source
-
-export const setSource = (next: SourceDoc | null): void => {
-  const prev = source
-  source = next
-  // Best-effort cleanup of the previous tree dir when we owned it and it's
-  // being replaced or cleared — otherwise repeated imports leak /tmp dirs.
-  if (prev?.tree && prev.ownsTree && prev.tree !== next?.tree) {
-    try { rmSync(prev.tree, { recursive: true, force: true }) } catch {}
-  }
+export const stageSecret = (addr: string, clear: string): void => {
+  pendingSecrets.set(addr, clear)
 }
-
-export const clearSource = (): void => setSource(null)
+export const unstageSecret = (addr: string): void => {
+  pendingSecrets.delete(addr)
+}

@@ -33,11 +33,6 @@ export const PartitionConfig = z.object({
   btrfs: z.array(SubvolumeModification),
   dev_path: z.string().nullable(),
   mount_options: z.array(z.string()),
-  // Bicycle-only: the original size/start strings the user typed ("1GiB", "rest",
-  // "1MiB"). Preserved so the TOML preview can show what the user actually wrote,
-  // rather than the resolved bytes. archinstall ignores unknown partition keys.
-  original_size: z.string().optional(),
-  original_start: z.string().optional(),
 })
 export type PartitionConfig = z.infer<typeof PartitionConfig>
 

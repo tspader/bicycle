@@ -1,122 +1,68 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { locateConfigTree, applyConfigTree } from '../src/import-tree'
-import { getSource, clearSource, replaceState } from '../src/state'
-import { getAgeKey, setAgeKey } from '../src/ui-state'
-import { testMachine } from '../src/config'
+import { locateTreeRoot, importTree } from '../src/import-tree'
 
 const EXAMPLE_ROOT = new URL('../../../example/machine', import.meta.url).pathname
-
 const FAKE_AGE = 'AGE-SECRET-KEY-1' + 'A'.repeat(58)
+const MIN_YAML = 'core:\n  hostname: x\n  timezone: UTC\n  kernels: [linux]\n  ntp: true\n'
 
 let tmp: string
+beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'bicycle-import-test-')) })
+afterEach(() => { rmSync(tmp, { recursive: true, force: true }) })
 
-beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'bicycle-import-test-'))
-  clearSource()
-  setAgeKey(null)
+test('locateTreeRoot finds bicycle.yml at repo root', () => {
+  writeFileSync(join(tmp, 'bicycle.yml'), MIN_YAML)
+  expect(locateTreeRoot(tmp)).toBe(tmp)
 })
 
-afterEach(() => {
-  rmSync(tmp, { recursive: true, force: true })
-  clearSource()
-  setAgeKey(null)
-})
-
-test('locateConfigTree finds bicycle.yml at repo root', () => {
-  writeFileSync(join(tmp, 'bicycle.yml'), 'core:\n  hostname: x\n  timezone: UTC\n  kernels: [linux]\n  ntp: true\n')
-  const loc = locateConfigTree(tmp)
-  expect(loc.treeRoot).toBe(tmp)
-  expect(loc.text).toContain('hostname: x')
-  expect(loc.ageIdentity).toBeNull()
-})
-
-test('locateConfigTree falls back to .bicycle/ subdir', () => {
+test('locateTreeRoot falls back to .bicycle/ subdir', () => {
   mkdirSync(join(tmp, '.bicycle'))
-  writeFileSync(join(tmp, '.bicycle', 'bicycle.yml'), 'core:\n  hostname: y\n  timezone: UTC\n  kernels: [linux]\n  ntp: true\n')
-  const loc = locateConfigTree(tmp)
-  expect(loc.treeRoot).toBe(join(tmp, '.bicycle'))
+  writeFileSync(join(tmp, '.bicycle', 'bicycle.yml'), MIN_YAML)
+  expect(locateTreeRoot(tmp)).toBe(join(tmp, '.bicycle'))
 })
 
-test('locateConfigTree picks up adjacent age.key', () => {
-  writeFileSync(join(tmp, 'bicycle.yml'), 'core:\n  hostname: z\n  timezone: UTC\n  kernels: [linux]\n  ntp: true\n')
+test('locateTreeRoot throws when bicycle.yml is missing', () => {
+  expect(() => locateTreeRoot(tmp)).toThrow(/not found/)
+})
+
+test('importTree reads text and adopts an adjacent age.key as identity', () => {
+  writeFileSync(join(tmp, 'bicycle.yml'), MIN_YAML)
   writeFileSync(join(tmp, 'age.key'), `# created by age-keygen\n# public key: age1...\n${FAKE_AGE}\n`)
-  const loc = locateConfigTree(tmp)
-  expect(loc.ageIdentity).toBe(FAKE_AGE)
+  const tree = importTree(tmp)
+  expect(tree.text).toBe(MIN_YAML)
+  expect(tree.identity).toBe(FAKE_AGE)
+  // age.key and bicycle.yml are NOT part of the files map.
+  expect(tree.files.has('age.key')).toBe(false)
+  expect(tree.files.has('bicycle.yml')).toBe(false)
 })
 
-test('locateConfigTree throws when bicycle.yml is missing', () => {
-  expect(() => locateConfigTree(tmp)).toThrow(/not found/)
+test('importTree skips top-level .git but keeps supporting files', () => {
+  writeFileSync(join(tmp, 'bicycle.yml'), MIN_YAML)
+  mkdirSync(join(tmp, '.git'))
+  writeFileSync(join(tmp, '.git', 'config'), 'gitstuff')
+  mkdirSync(join(tmp, 'secrets'), { recursive: true })
+  writeFileSync(join(tmp, 'secrets', 'foo.age'), 'cipher')
+  mkdirSync(join(tmp, 'apps', 'x'), { recursive: true })
+  writeFileSync(join(tmp, 'apps', 'x', 'config.yml'), 'app: 1')
+  writeFileSync(join(tmp, 'recipients'), 'age1abc\n')
+  const tree = importTree(tmp)
+  expect([...tree.files.keys()].some((k) => k.startsWith('.git'))).toBe(false)
+  expect(new TextDecoder().decode(tree.files.get('secrets/foo.age')!)).toBe('cipher')
+  expect(new TextDecoder().decode(tree.files.get('apps/x/config.yml')!)).toBe('app: 1')
+  expect(tree.files.has('recipients')).toBe(true)
 })
 
-test('end-to-end: locate + apply example/machine/ yields populated state and source', () => {
-  // Use the real example tree as a fixture. This is exactly what
-  // a freshly-cloned config repo looks like.
-  const loc = locateConfigTree(EXAMPLE_ROOT)
-  expect(loc.text).toContain('hostname: spum-cannon')
-  expect(loc.ageIdentity).toBeTruthy()
-
-  // Tree carries the supporting subdirs the daemon needs at runtime —
-  // these must reach /mnt/etc/bicycle for the example to be functional.
-  expect(existsSync(join(loc.treeRoot, 'apps'))).toBe(true)
-  expect(existsSync(join(loc.treeRoot, 'files'))).toBe(true)
-  expect(existsSync(join(loc.treeRoot, 'secrets'))).toBe(true)
-  expect(existsSync(join(loc.treeRoot, 'recipients'))).toBe(true)
-
-  applyConfigTree(loc, testMachine({ disks: { '/dev/vda': 32 * 1024 ** 3 } }))
-
-  const src = getSource()
-  expect(src).not.toBeNull()
-  expect(src!.tree).toBe(EXAMPLE_ROOT)
-  expect(src!.yaml).toContain('hostname: spum-cannon')
-  expect(getAgeKey()).toBe(loc.ageIdentity)
-})
-
-test('applyConfigTree clones-then-yaml flow: yaml comes from disk, not derivation', () => {
-  // The on-disk YAML has comments and a top-level `vars:` table — neither
-  // would survive a derive+re-serialize round-trip through ArchinstallConfig.
-  // Source preservation is exactly what we're testing here.
-  const sourceYaml = [
-    '# user-authored header comment',
-    'vars:',
-    '  admin:',
-    '    uid: 1000',
-    'core:',
-    '  hostname: with-comment',
-    '  timezone: UTC',
-    '  kernels: [linux]',
-    '  ntp: true',
-    'disks:',
-    '  - device: /dev/vda',
-    '    wipe: true',
-    '    table: gpt',
-    '    partitions:',
-    '      - mount: /boot',
-    '        fs: fat32',
-    '        size: 1GiB',
-    '        start: 1MiB',
-    '        flags: [boot, esp]',
-    '      - mount: /',
-    '        fs: ext4',
-    '        size: 20GiB',
-    'users:',
-    '  - name: spader',
-    '    uid: ${admin.uid}',
-    '    sudo: password',
-    '    groups: [wheel]',
-    '',
-  ].join('\n')
-  writeFileSync(join(tmp, 'bicycle.yml'), sourceYaml)
-
-  const loc = locateConfigTree(tmp)
-  applyConfigTree(loc, testMachine({ disks: { '/dev/vda': 100 * 1024 ** 3 } }))
-
-  const src = getSource()
-  expect(src!.yaml).toBe(sourceYaml)
-  // The exact comment and vars table survive, even though the derived
-  // ArchinstallConfig has neither.
-  expect(src!.yaml).toContain('# user-authored header comment')
-  expect(src!.yaml).toContain('${admin.uid}')
+test('importTree on example/machine: byte-identical text + full supporting tree', () => {
+  const tree = importTree(EXAMPLE_ROOT)
+  expect(tree.text).toBe(readFileSync(join(EXAMPLE_ROOT, 'bicycle.yml'), 'utf8'))
+  expect(tree.text).toContain('hostname: spum-cannon')
+  expect(tree.identity).toMatch(/^AGE-SECRET-KEY-/)
+  const keys = [...tree.files.keys()]
+  expect(keys.some((k) => k.startsWith('apps/'))).toBe(true)
+  expect(keys.some((k) => k.startsWith('files/'))).toBe(true)
+  expect(keys.some((k) => k.startsWith('secrets/'))).toBe(true)
+  expect(tree.files.has('recipients')).toBe(true)
+  expect(tree.files.has('secrets/users/spader/password.age')).toBe(true)
 })

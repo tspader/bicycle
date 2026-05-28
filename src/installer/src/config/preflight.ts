@@ -1,4 +1,5 @@
 import type { ArchinstallConfig } from './schema'
+import type { SudoMode } from '@bicycle/shared'
 import { sizeBytes } from './size'
 import type { DiskInfo } from '../system'
 import type { CategoryId } from '../ui-state'
@@ -11,15 +12,24 @@ export type Warning = {
   category?: CategoryId
 }
 
-// A source (YAML) user that could be promoted into an archinstall account at
-// install time, summarized to what preflight needs without decrypting.
-export type PendingUser = { sudo: boolean; hasPassword: boolean }
+// A bicycle.yml user, summarized to what preflight needs (without decrypting).
+export type AccountSummary = { sudo: SudoMode; hasPassword: boolean }
+
+// Everything preflight needs beyond the projected archinstall config: the
+// in-memory identity, whether a root/LUKS password is set, and the declared
+// accounts. (Users and root/LUKS passwords are not part of the projection —
+// they live in bicycle.yml / transient installer creds.)
+export type PreflightCtx = {
+  identity?: string | null
+  rootSet?: boolean
+  encryptionSet?: boolean
+  accounts?: AccountSummary[]
+}
 
 export const deriveWarnings = (
   cfg: ArchinstallConfig,
   disks: DiskInfo[],
-  ageKey: string | null = null,
-  pending: PendingUser[] = [],
+  ctx: PreflightCtx = {},
 ): Warning[] => {
   const out: Warning[] = []
   const err = (message: string, category?: CategoryId) =>
@@ -29,7 +39,7 @@ export const deriveWarnings = (
 
   if (!cfg.hostname) err('Set a hostname.', 'system')
   if (!cfg.timezone) err('Set a timezone.', 'system')
-  if (!cfg.kernels || cfg.kernels.length === 0) err('Pick a kernel.', 'system')
+  if (!cfg.kernels || cfg.kernels.length === 0) err('Pick a kernel.', 'boot')
   if (!cfg.locale_config) err('Set locale.', 'system')
   if (!cfg.bootloader_config) err('Pick a bootloader.', 'boot')
 
@@ -59,33 +69,29 @@ export const deriveWarnings = (
     if (!hasRoot) err('Partitions must include a "/" mountpoint.', 'disk')
     if (!hasBoot) err('Partitions must include a boot/esp partition.', 'disk')
 
-    const encryptedIds = new Set(dc.disk_encryption?.partitions ?? [])
-    const anyEncrypted = encryptedIds.size > 0
-    if (anyEncrypted && !cfg.encryption_password) {
+    const anyEncrypted = (dc.disk_encryption?.partitions.length ?? 0) > 0
+    if (anyEncrypted && !ctx.encryptionSet) {
       err('Encrypted partitions require an encryption password.', 'disk')
     }
-    if (!anyEncrypted && cfg.encryption_password) {
+    if (!anyEncrypted && ctx.encryptionSet) {
       err('Encryption password is set but no partitions are marked encrypted.', 'disk')
     }
   }
 
-  const hasSudoer = (cfg.users ?? []).some((u) => u.sudo)
-  const hasRootPw = !!cfg.root_enc_password
-  // A source YAML sudoer with a password secret can supply the login too — but
-  // only if an age identity is available to decrypt it at install time.
-  const pendingSudoerWithPw = pending.some((p) => p.sudo && p.hasPassword)
-  const hasPendingSudoer = ageKey != null && pendingSudoerWithPw
-  if (!hasSudoer && !hasRootPw && !hasPendingSudoer) {
-    // Emit exactly one error: if a promotable sudoer exists but the age key
-    // is missing, point at that specific fix; otherwise the generic one.
-    if (pendingSudoerWithPw) {
-      err('Set an age identity so the imported user password can be decrypted.', 'import')
+  const sudoers = (ctx.accounts ?? []).filter((u) => u.sudo !== 'none')
+  const sudoerWithPw = sudoers.some((u) => u.hasPassword)
+  // A declared sudoer can supply the login, but only if an age identity is
+  // available to decrypt its password secret on the target at first boot.
+  const usableSudoer = ctx.identity != null && sudoerWithPw
+  if (!ctx.rootSet && !usableSudoer) {
+    if (sudoerWithPw) {
+      err('Set an age identity so the user password secret can be decrypted.', 'import')
     } else {
-      err('Create a sudo user or set a root password.', 'users')
+      err('Create a sudo user with a password, or set a root password.', 'users')
     }
   }
 
-  if (!ageKey) {
+  if (!ctx.identity) {
     warn('No age identity set — secrets will not be decryptable on the installed system.', 'import')
   }
 
@@ -97,10 +103,9 @@ export type PreflightResult = { ok: true; problems: [] } | { ok: false; problems
 export const preflight = (
   cfg: ArchinstallConfig,
   disks: DiskInfo[],
-  ageKey: string | null = null,
-  pending: PendingUser[] = [],
+  ctx: PreflightCtx = {},
 ): PreflightResult => {
-  const problems = deriveWarnings(cfg, disks, ageKey, pending)
+  const problems = deriveWarnings(cfg, disks, ctx)
     .filter((w) => w.severity === 'error')
     .map((w) => w.message)
   return problems.length === 0

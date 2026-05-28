@@ -52,39 +52,3 @@ export const appendInstallLog = (chunk: string): void => {
 }
 
 export type CategoryId = 'system' | 'users' | 'disk' | 'pacman' | 'boot' | 'import'
-
-let ageKey: string | null = null
-export const getAgeKey = (): string | null => ageKey
-export const setAgeKey = (s: string | null): void => {
-  ageKey = s
-}
-
-// Cleartext user passwords entered in the UI, keyed by username. Held in
-// memory only (like the age identity above) — never persisted in the clear.
-// At install they're encrypted to <etc>/secrets/users/<name>/password.age so
-// the daemon can apply them with chpasswd on first boot. We keep the clear
-// (not just a hash) because the daemon needs the plaintext, and a hash can't
-// be reversed back into a secret.
-const userPasswords = new Map<string, string>()
-
-export const getUserPasswords = (): ReadonlyMap<string, string> => userPasswords
-
-export const getUserPassword = (name: string): string | undefined =>
-  userPasswords.get(name)
-
-export const setUserPassword = (name: string, clear: string): void => {
-  userPasswords.set(name, clear)
-}
-
-export const renameUserPassword = (oldName: string, newName: string): void => {
-  if (oldName === newName) return
-  const clear = userPasswords.get(oldName)
-  if (clear === undefined) return
-  userPasswords.delete(oldName)
-  userPasswords.set(newName, clear)
-}
-
-export const deleteUserPassword = (name: string): void => {
-  userPasswords.delete(name)
-}
-
