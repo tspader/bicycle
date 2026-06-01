@@ -527,6 +527,38 @@ a.warnings-link:hover { background: var(--bg-row-hover); }
 .disks-table tbody tr.row.row-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .disks-table tbody tr.row.row-selected:hover td { background: var(--row-selected-hover-bg); }
 .disks-table .col-boot { width: 60px; }
+
+/* Users page */
+.users-table tbody tr.row { cursor: pointer; }
+.users-table tbody tr.row.row-selected td { background: var(--row-selected-bg); color: var(--fg-strong); }
+.users-table tbody tr.row.row-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.users-table tbody tr.row.row-selected:hover td { background: var(--row-selected-hover-bg); }
+.users-table .col-sudo { width: 90px; }
+.users-table .col-pw { width: 110px; }
+.users-add-row td { color: var(--fg-muted); font-family: var(--font-mono); }
+
+/* Groups chip editor */
+.chips { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+.chips .chip { display: inline-flex; align-items: center; gap: var(--s-2); padding-right: var(--s-2); }
+.chip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: none; cursor: pointer; padding: 0;
+  color: var(--fg-muted); font-size: var(--text-lg); line-height: 1;
+}
+.chip-x:hover { color: var(--danger-fg); }
+.chip-input {
+  width: 140px;
+  padding: var(--s-1) var(--s-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.chip-input::placeholder { color: var(--fg-faint); }
+.chip-input:focus { outline: none; border-color: var(--accent); }
+
 .chip {
   display: inline-block;
   padding: var(--s-0) var(--s-3);

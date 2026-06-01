@@ -13,7 +13,7 @@ export type Warning = {
 }
 
 // A bicycle.yml user, summarized to what preflight needs (without decrypting).
-export type AccountSummary = { sudo: SudoMode; hasPassword: boolean }
+export type AccountSummary = { name: string; sudo: SudoMode; hasPassword: boolean }
 
 // Everything preflight needs beyond the projected archinstall config: the
 // in-memory identity, whether a root/LUKS password is set, and the declared
@@ -76,6 +76,12 @@ export const deriveWarnings = (
     if (!anyEncrypted && ctx.encryptionSet) {
       err('Encryption password is set but no partitions are marked encrypted.', 'disk')
     }
+  }
+
+  // A declared account with no password can't log in (and has no secret to
+  // decrypt). Surface it per-user rather than blocking edits inline.
+  for (const a of ctx.accounts ?? []) {
+    if (!a.hasPassword) warn(`User "${a.name}" has no password.`, 'users')
   }
 
   const sudoers = (ctx.accounts ?? []).filter((u) => u.sudo !== 'none')

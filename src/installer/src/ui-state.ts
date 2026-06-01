@@ -11,6 +11,15 @@ export const setOpenDisk = (device: string | null): void => {
   openDisk = device
 }
 
+// Which user detail panel is open, by index into the resolved users array.
+// Keyed by index (not name) so live renames don't move the pointer. null = no
+// panel, table only.
+let openUser: number | null = null
+export const getOpenUser = (): number | null => openUser
+export const setOpenUser = (idx: number | null): void => {
+  openUser = idx
+}
+
 // Transient error from the last partition mutation. Stored here (not thrown as
 // HTTPException) so the UI can rerender with the prior valid state AND surface
 // the message inline. Cleared on the next successful mutation or panel switch.

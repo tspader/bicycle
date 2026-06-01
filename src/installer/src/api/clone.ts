@@ -1,13 +1,13 @@
-import { Hono } from 'hono'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
-import { project, type MachineCtx } from '../config'
+import { project } from '../config'
 import { loadBicycleDoc, type BicycleConfig } from '@bicycle/shared'
 import { locateTreeRoot, importTree } from '../import-tree'
 import { loadTree } from '../state'
 import { env as runtimeEnv } from '../runtime'
-import type { App } from '../server'
+import type { AppContext } from '../http'
+import { machine, patchSidecarInto } from '../render'
 
 const ImportGitSignals = z.object({
   import_git_url: z.string().min(1, 'repository URL required'),
@@ -19,16 +19,8 @@ const ImportGitSignals = z.object({
 // silently breaking every later page render.
 const loadAndValidate = (text: string): BicycleConfig => loadBicycleDoc(text).resolved
 
-type ImportDeps = {
-  machine: MachineCtx
-  patchSidecarInto: (stream: { patchElements: (s: string) => void }) => Promise<void>
-}
-
-export default ({ machine, patchSidecarInto }: ImportDeps) => {
-  const app = new Hono<{ Variables: App }>()
-
-  app.post('/api/import/git', (c) =>
-    ServerSentEventGenerator.stream(async (stream) => {
+export const git = (c: AppContext) =>
+  ServerSentEventGenerator.stream(async (stream) => {
       const announce = (status: string, error: string) =>
         stream.patchSignals(JSON.stringify({ import_status: status, import_error: error }))
       try {
@@ -79,8 +71,4 @@ export default ({ machine, patchSidecarInto }: ImportDeps) => {
       } catch (e) {
         announce('', (e as Error).message || 'import failed')
       }
-    }),
-  )
-
-  return app
-}
+    })

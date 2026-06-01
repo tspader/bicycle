@@ -1,11 +1,8 @@
-import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
 import { AgeIdentityString } from '../age-key'
 import { setIdentity } from '../state'
-import type { App } from '../server'
-
-type AppContext = Context<{ Variables: App }>
+import type { AppContext } from '../http'
 
 const AgeKeyBody = z.object({ identity: AgeIdentityString })
 

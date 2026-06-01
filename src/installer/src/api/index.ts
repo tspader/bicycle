@@ -1,9 +1,13 @@
-import clone from './clone'
-import * as secrets from './secrets'
-
 export * from './types'
 
-export default {
-  clone,
-  secrets,
-}
+export * as clone from './clone'
+export * as importer from './import'
+export * as system from './system'
+export * as boot from './boot'
+export * as pacman from './pacman'
+export * as disk from './disk'
+export * as install from './install'
+export * as mirrors from './mirrors'
+export * as packages from './packages'
+export * as users from './users'
+export * as secrets from './secrets'

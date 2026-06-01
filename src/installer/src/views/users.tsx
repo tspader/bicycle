@@ -1,171 +1,164 @@
-import { Page, Field } from './layout'
-import type { User } from '@bicycle/shared'
+import { Page, Section, Field } from './layout'
+import { SudoMode, type User } from '@bicycle/shared'
 
-type Props = { rootSet: boolean; users: User[] }
+type Props = {
+  users: User[]
+  openIdx: number | null
+  rootSet: boolean
+}
 
-export const UsersView = ({ rootSet, users }: Props) => (
-  <Page heading="Users" subhead="Root password and additional user accounts.">
-    <RootCard rootSet={rootSet} />
-    {users.map((u) => (
-      <UserCard u={u} />
-    ))}
-    <AddUserSlot />
-  </Page>
+const SUDO_OPTIONS = SudoMode.options
+
+export const UsersView = ({ users, openIdx, rootSet }: Props) => {
+  const open = openIdx != null ? users[openIdx] ?? null : null
+  return (
+    <Page heading="Users" subhead="Add accounts and edit them inline. Changes save as you type.">
+      <UsersTable users={users} openIdx={openIdx} />
+      {open ? <UserPanel user={open} idx={openIdx!} /> : null}
+      <RootSection rootSet={rootSet} />
+    </Page>
+  )
+}
+
+const UsersTable = ({ users, openIdx }: { users: User[]; openIdx: number | null }) => (
+  <table class="table users-table">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th class="col-sudo">Sudo</th>
+        <th>Groups</th>
+        <th class="col-pw">Password</th>
+      </tr>
+    </thead>
+    <tbody>
+      {users.map((u, i) => {
+        const isOpen = i === openIdx
+        // Re-clicking the open row closes it, mirroring the Disk table.
+        const clickUrl = isOpen ? '/api/users/close' : `/api/users/open?idx=${i}`
+        return (
+          <tr
+            class={`row${isOpen ? ' row-selected' : ''}`}
+            data-on:click={`@post('${clickUrl}')`}
+          >
+            <td class="mono">{u.name}</td>
+            <td class="col-sudo muted">{u.sudo}</td>
+            <td class="muted small">{u.groups.length ? u.groups.join(', ') : '—'}</td>
+            <td class="col-pw muted">{u.password ? '✓' : '—'}</td>
+          </tr>
+        )
+      })}
+      <tr class="row users-add-row" data-on:click="@post('/api/users/add')">
+        <td colspan={4}>+ Add user</td>
+      </tr>
+    </tbody>
+  </table>
 )
 
-const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'user'
-
-const RootCard = ({ rootSet }: { rootSet: boolean }) => {
-  const signals = { root_password: '' }
-  return (
-    <form class="form card account-card" data-signals={JSON.stringify(signals)}>
-      <div class="card-header">
-        <h2 class="card-title">Root</h2>
-      </div>
-      <Field
-        label="Password"
-        htmlFor="root-pw"
-       
-      >
-        <input
-          id="root-pw"
-          class="combo"
-          type="password"
-          data-bind="root_password"
-          placeholder="••••••"
-        />
-      </Field>
-      <div class="form-actions">
-        <button type="button" class="btn" data-on:click="@post('/api/users/root')">
-          Save
-        </button>
-      </div>
-    </form>
-  )
-}
-
-const UserCard = ({ u }: { u: User }) => {
-  const p = slug(u.name)
-  const signals: Record<string, unknown> = {
-    [`${p}_username`]: u.name,
-    [`${p}_password`]: '',
-    [`${p}_sudo`]: u.sudo !== 'none',
-    [`${p}_groups`]: u.groups.join(', '),
-  }
-  const saveUrl = `/api/users/save?original=${encodeURIComponent(u.name)}`
-  const deleteUrl = `/api/users/delete?name=${encodeURIComponent(u.name)}`
-  return (
-    <form class="form card account-card" data-signals={JSON.stringify(signals)}>
-      <div class="card-header">
-        <h2 class="card-title" data-text={`$${p}_username || 'user'`} />
-        <button type="button" class="btn btn-danger" data-on:click={`@post('${deleteUrl}')`}>
-          Remove
-        </button>
-      </div>
-      <Field label="Username" htmlFor={`${p}-name`}>
-        <input
-          id={`${p}-name`}
-          class="combo"
-          type="text"
-          data-bind={`${p}_username`}
-        />
-      </Field>
-      <Field label="Password" htmlFor={`${p}-pw`}>
-        <input
-          id={`${p}-pw`}
-          class="combo"
-          type="password"
-          data-bind={`${p}_password`}
-          placeholder="••••••"
-        />
-      </Field>
-      <Field label="Sudo" htmlFor={`${p}-sudo`}>
-        <label class="toggle">
-          <input id={`${p}-sudo`} type="checkbox" data-bind={`${p}_sudo`} />
-          <span data-text={`$${p}_sudo ? 'On' : 'Off'`} />
-        </label>
-      </Field>
-      <Field label="Groups" htmlFor={`${p}-groups`}>
-        <input
-          id={`${p}-groups`}
-          class="combo"
-          type="text"
-          data-bind={`${p}_groups`}
-          placeholder="wheel, video"
-        />
-      </Field>
-      <div class="form-actions">
-        <button type="button" class="btn" data-on:click={`@post('${saveUrl}')`}>
-          Save
-        </button>
-      </div>
-    </form>
-  )
-}
-
-const AddUserSlot = () => {
+const UserPanel = ({ user, idx }: { user: User; idx: number }) => {
+  // Fixed signal names: only one panel is open at a time. data-signals re-seeds
+  // them on every open/structural render.
   const signals = {
-    addingUser: false,
-    new_username: '',
-    new_password: '',
-    new_sudo: true,
-    new_groups: 'wheel',
+    u_username: user.name,
+    u_password: '',
+    u_sudo: user.sudo,
+    u_new_group: '',
   }
+  const q = `idx=${idx}`
+  // @post serializes signals synchronously (capturing u_new_group), so clearing
+  // it right after is safe and resets the input for the next entry.
+  const addGroup = `@post('/api/users/group/add?${q}'); $u_new_group = ''`
   return (
-    <div data-signals={JSON.stringify(signals)}>
-      <button
-        type="button"
-        class="btn"
-        data-show="!$addingUser"
-        data-on:click="$addingUser = true"
-      >
-        + Add another user
-      </button>
-      <form class="form card account-card" data-show="$addingUser">
+    <Section title="Edit user">
+      <form class="form card account-card" data-signals={JSON.stringify(signals)}>
         <div class="card-header">
-          <h2 class="card-title" data-text="$new_username || 'new user'" />
+          <h2 class="card-title" data-text="$u_username || 'user'" />
           <button
             type="button"
-            class="btn-link"
-            data-on:click="$addingUser = false; $new_username = ''; $new_password = ''; $new_sudo = true; $new_groups = 'wheel'"
+            class="btn btn-danger"
+            data-on:click={`@post('/api/users/delete?${q}')`}
           >
-            Cancel
+            Remove
           </button>
         </div>
-        <Field label="Username" htmlFor="new-name">
-          <input id="new-name" class="combo" type="text" data-bind="new_username" />
-        </Field>
-        <Field label="Password" htmlFor="new-pw">
+        <Field label="Username" htmlFor="u-name">
           <input
-            id="new-pw"
-            class="combo"
-            type="password"
-            data-bind="new_password"
-            placeholder="••••••"
-            required
-          />
-        </Field>
-        <Field label="Sudo" htmlFor="new-sudo">
-          <label class="toggle">
-            <input id="new-sudo" type="checkbox" data-bind="new_sudo" />
-            <span data-text="$new_sudo ? 'On' : 'Off'" />
-          </label>
-        </Field>
-        <Field label="Groups" htmlFor="new-groups">
-          <input
-            id="new-groups"
+            id="u-name"
             class="combo"
             type="text"
-            data-bind="new_groups"
-            placeholder="wheel, video"
+            data-bind="u_username"
+            {...{ 'data-on:input__debounce.400ms': `@post('/api/users/name?${q}')` }}
           />
         </Field>
-        <div class="form-actions">
-          <button type="button" class="btn" data-on:click="@post('/api/users/create')">
-            Save
-          </button>
-        </div>
+        <Field label="Password" htmlFor="u-pw">
+          <input
+            id="u-pw"
+            class="combo"
+            type="password"
+            data-bind="u_password"
+            placeholder={user.password ? '•••••• (set; leave blank to keep)' : '••••••'}
+            {...{ 'data-on:input__debounce.400ms': `@post('/api/users/password?${q}')` }}
+          />
+        </Field>
+        <Field label="Sudo" htmlFor="u-sudo">
+          <select
+            id="u-sudo"
+            class="combo"
+            data-bind="u_sudo"
+            data-on:change={`@post('/api/users/sudo?${q}')`}
+          >
+            {SUDO_OPTIONS.map((o) => (
+              <option value={o} selected={o === user.sudo}>{o}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Groups">
+          <div class="chips">
+            {user.groups.map((g, gi) => (
+              <span class="chip">
+                {g}
+                <button
+                  type="button"
+                  class="chip-x"
+                  title={`Remove ${g}`}
+                  data-on:click={`@post('/api/users/group/remove?${q}&g=${gi}')`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <input
+              class="chip-input"
+              type="text"
+              placeholder="add group…"
+              data-bind="u_new_group"
+              data-on:keydown={`evt.key === 'Enter' && (evt.preventDefault(), ${addGroup})`}
+            />
+            <button type="button" class="btn btn-sm" data-on:click={addGroup}>
+              Add
+            </button>
+          </div>
+        </Field>
       </form>
-    </div>
+    </Section>
+  )
+}
+
+const RootSection = ({ rootSet }: { rootSet: boolean }) => {
+  const signals = { root_password: '' }
+  return (
+    <Section title="Root" subhead="Set the root account password.">
+      <form class="form card account-card" data-signals={JSON.stringify(signals)}>
+        <Field label="Password" htmlFor="root-pw">
+          <input
+            id="root-pw"
+            class="combo"
+            type="password"
+            data-bind="root_password"
+            placeholder={rootSet ? '•••••• (set; leave blank to keep)' : '••••••'}
+            {...{ 'data-on:input__debounce.400ms': "@post('/api/users/root')" }}
+          />
+        </Field>
+      </form>
+    </Section>
   )
 }

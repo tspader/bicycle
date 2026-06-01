@@ -5,7 +5,6 @@ export const defaultSignals = {
   q: '',
   hostname: '',
   ntp: true,
-  addingUser: false,
   activeCat: 'system' as CategoryId,
   repos: [] as string[],
 }

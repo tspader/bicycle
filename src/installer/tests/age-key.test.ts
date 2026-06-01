@@ -94,7 +94,7 @@ describe('deriveWarnings age-key', () => {
     { path: '/dev/vda', model: 'vda', size: 100 * 1024 ** 3, sectorSize: 512, isBoot: false },
   ]
   const cfg = () => fromYaml(MINIMAL, ctx())
-  const account = { sudo: 'password' as const, hasPassword: true }
+  const account = { name: 'u', sudo: 'password' as const, hasPassword: true }
 
   test('emits a warning (not an error) when no age key is set', () => {
     const ws = deriveWarnings(cfg(), disks, { identity: null, accounts: [account], rootSet: true })

@@ -243,7 +243,7 @@ describe('preflight', () => {
     { path: '/dev/vda', model: 'vda', size: 100 * 1024 ** 3, sectorSize: 512, isBoot: false },
   ]
   const ageKey = 'AGE-SECRET-KEY-1' + 'A'.repeat(58)
-  const sudoer = { sudo: 'password' as const, hasPassword: true }
+  const sudoer = { name: 'u', sudo: 'password' as const, hasPassword: true }
 
   const ready = () => importCfg(MINIMAL.replace('size: 20GiB', 'size: rest'))
   const okCtx = { identity: ageKey, accounts: [sudoer] }
@@ -304,7 +304,7 @@ describe('preflight', () => {
   })
 
   test('a non-sudo account does not satisfy the requirement', () => {
-    const r = preflight(ready(), disks, { identity: ageKey, accounts: [{ sudo: 'none', hasPassword: true }] })
+    const r = preflight(ready(), disks, { identity: ageKey, accounts: [{ name: 'u', sudo: 'none', hasPassword: true }] })
     if (r.ok) throw new Error('expected failure')
     expect(r.problems.some((p) => /sudo user/i.test(p))).toBe(true)
   })
