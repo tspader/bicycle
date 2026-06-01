@@ -48,7 +48,6 @@ import { recipientFor, generate as generateAgeIdentity } from './age'
 import { EncryptionKind, type BicycleConfig } from '@bicycle/shared'
 import { userPasswordAddr, userPasswordRef, secretRelPath } from './secrets'
 import api, { Api } from './api'
-import { AgeIdentityString } from './age-key'
 import { sigSlug } from './slug'
 import appCssPath from "./assets/app.css" with { type: "file" }
 import datastarPath from "./assets/datastar.js" with { type: "file" }
@@ -319,23 +318,9 @@ editRoute('/api/bootloader', BootloaderSignals, (d) =>
 
 // --- Import ------------------------------------------------------------------
 
-app.route('/', api.importGit({ machine, patchSidecarInto }))
-
-const AgeKeyBody = z.object({ identity: AgeIdentityString })
-
-app.post('/api/secrets/age-key', (c) => {
-  const parsed = AgeKeyBody.safeParse(c.get('signals') ?? {})
-  if (!parsed.success) {
-    throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid identity' })
-  }
-  setIdentity(parsed.data.identity)
-  return c.json({ ok: true })
-})
-
-app.post('/api/secrets/age-key/clear', (c) => {
-  setIdentity(null)
-  return c.json({ ok: true })
-})
+app.route('/', api.clone({ machine, patchSidecarInto }))
+app.post('/api/secrets/age-key', api.secrets.setKey)
+app.post('/api/secrets/age-key/clear', api.secrets.clearKey)
 
 // --- Mirrors -----------------------------------------------------------------
 
