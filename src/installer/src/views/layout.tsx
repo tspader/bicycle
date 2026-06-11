@@ -4,7 +4,7 @@ import { CATEGORY_IDS, type CategoryId } from '../ui-state'
 import type { Warning } from '../config/preflight'
 import {
   type Code, type Props, type Sig,
-  signals, expr, seq, eq, get, on, bind, cls, show, text, when,
+  signals, expr, seq, eq, get, on, bind, cls, text, when,
 } from '@bicycle/datastar'
 
 type Category = { id: CategoryId; label: string }
@@ -19,7 +19,6 @@ export const CATEGORIES: Category[] = [
 ]
 
 export const ui = signals({
-  nav_q: z.string().default(''),
   active_cat: z.enum([...CATEGORY_IDS, 'install']),
 })
 
@@ -40,8 +39,22 @@ export const rowClick = (action: Code): Code =>
 
 export const onOff = (sig: Sig<boolean>): Props => text(expr`${sig} ? 'On' : 'Off'`)
 
-const matchesFilter = (label: string): Code =>
-  expr`!${ui.$.nav_q} || ${label.toLowerCase()}.includes(${ui.$.nav_q}.toLowerCase())`
+export const Switch = ({
+  id,
+  sig,
+  checked,
+  action,
+}: {
+  id?: string
+  sig: Sig<boolean>
+  checked: boolean
+  action: Code
+}) => (
+  <label class="toggle">
+    <input id={id} type="checkbox" checked={checked} {...bind(sig)} {...on('change', action)} />
+    <span {...onOff(sig)} />
+  </label>
+)
 
 export const Preview = ({ html }: { html: string }) => (
   <section id="config-preview" class="preview">
@@ -86,14 +99,8 @@ export const Warnings = ({ items }: { items: Warning[] }) => (
 )
 
 const Sidebar = ({ active }: { active: CategoryId | 'install' }) => (
-  <aside class="sidebar" {...ui.seed({ nav_q: '', active_cat: active })}>
+  <aside class="sidebar" {...ui.seed({ active_cat: active })}>
     <a class="brand" href="/">{'>>'} bicycle</a>
-    <input
-      class="nav-filter"
-      type="text"
-      placeholder="Filter…"
-      {...bind(ui.$.nav_q)}
-    />
     <nav class="nav">
       {CATEGORIES.map((c) => (
         <a
@@ -101,7 +108,6 @@ const Sidebar = ({ active }: { active: CategoryId | 'install' }) => (
           class={`nav-link${c.id === active ? ' nav-link-active' : ''}`}
           {...cls('nav-link-active', eq(ui.$.active_cat, c.id))}
           {...on('click', navigate(c.id), { prevent: true })}
-          {...show(matchesFilter(c.label))}
         >
           {c.label}
         </a>

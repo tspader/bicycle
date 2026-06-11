@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { Page, rowClick } from './layout'
+import { Section, rowClick } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
 import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
@@ -29,20 +29,18 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage, 
   const state: RowState = { checked: new Set(installed), selectedName }
   const selected = new Set(selectedRepos)
   return (
-    <Page heading="Packages">
-      <PackageDetailCard detail={detail} />
-
-      <form class="form pkg-filters" {...packageSignals.seed({ q: '', repos: selectedRepos })}>
+    <Section title="Packages" subhead="Check a package to install it. Selected packages sort first.">
+      <form class="pkg-toolbar" {...packageSignals.seed({ q: '', repos: selectedRepos })}>
         <input
           class="combo"
           type="text"
-          placeholder="Filter..."
+          placeholder="Filter packages..."
           {...bind(packageSignals.$.q)}
           {...on('input', routes.packagesList.action({}), { debounceMs: 250 })}
         />
         <div class="repo-filter">
           {availableRepos.map((repo) => (
-            <label class="toggle">
+            <label class="check-label">
               <input
                 type="checkbox"
                 class="pkg-check"
@@ -56,9 +54,13 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage, 
           ))}
         </div>
       </form>
-
-      <PackageListPanel page={initialPage} state={state} />
-    </Page>
+      <div class="pkg-split">
+        <PackageListPanel page={initialPage} state={state} />
+        <div class="pkg-detail-pane">
+          <PackageDetailCard detail={detail} />
+        </div>
+      </div>
+    </Section>
   )
 }
 
@@ -80,7 +82,7 @@ export const PackageRow = ({ p, isChecked, isSelected }: { p: PackageEntry; isCh
       <span class="pkg-name">{p.name}</span>
     </td>
     <td class="col-repo">
-      <span class="muted small"> {p.repo}</span>
+      <span class="muted small">{p.repo}</span>
     </td>
     <td class="col-version mono">{p.version}</td>
   </tr>
@@ -99,11 +101,11 @@ export const PackageRows = ({ items, state }: { items: PackageEntry[]; state: Ro
 )
 
 export const PackageMore = ({ next }: { next: string | null }) => (
-  <div id="package-more">
+  <div id="package-more" class="pkg-more">
     {next ? (
       <button
         type="button"
-        class="btn"
+        class="btn btn-sm"
         {...on('click', routes.packagesList.action({ after: next, mode: 'append' }))}
       >
         Load more
@@ -115,79 +117,75 @@ export const PackageMore = ({ next }: { next: string | null }) => (
 )
 
 export const PackageListPanel = ({ page, state }: { page: PackageList; state: RowState }) => (
-  <div id="package-list" class="list">
-    <table class="table pkg-table">
-      <thead>
-        <tr>
-          <th class="col-check"></th>
-          <th>Package</th>
-          <th class="col-repo">Repo</th>
-          <th class="col-version">Version</th>
-        </tr>
-      </thead>
-      <tbody id="package-rows">
-        <PackageRows items={page.items} state={state} />
-      </tbody>
-    </table>
-    <PackageMore next={page.next} />
+  <div id="package-list" class="scroll-card pkg-list-scroll">
+    {page.items.length === 0 ? (
+      <p class="pkg-more muted">No packages match.</p>
+    ) : (
+      <table class="table pkg-table">
+        <thead>
+          <tr>
+            <th class="col-check"></th>
+            <th>Package</th>
+            <th class="col-repo">Repo</th>
+            <th class="col-version">Version</th>
+          </tr>
+        </thead>
+        <tbody id="package-rows">
+          <PackageRows items={page.items} state={state} />
+        </tbody>
+      </table>
+    )}
+    {page.items.length === 0 ? null : <PackageMore next={page.next} />}
   </div>
 )
 
 export const PackageDetailCard = ({ detail }: { detail: PackageDetail | null }) => (
-  <div id="package-detail" class="card">
+  <div id="package-detail">
     {detail ? (
-      <div class="detail-split">
-        <div>
-          <h2 class="card-title">
-            {detail.name}
-            <span class="muted small">
-              {detail.version}
-            </span>
-          </h2>
-          <dl class="detail-fields">
-            <dt>Repo</dt>
-            <dd>{detail.repo}</dd>
-            <dt>URL</dt>
-            <dd>
-              <a class="link" href={detail.url} target="_blank" rel="noreferrer">
-                {detail.url}
-              </a>
-            </dd>
-            <dt>Size</dt>
-            <dd>{detail.installed_size}</dd>
-            <dt>Depends</dt>
-            <dd>{detail.depends.length}</dd>
-            <dt>Description</dt>
-            <dd>{detail.description}</dd>
-          </dl>
-        </div>
+      <div class="card">
+        <h2 class="card-title">
+          {detail.name}{' '}
+          <span class="muted small">{detail.version}</span>
+        </h2>
+        <dl class="detail-fields">
+          <dt>Repo</dt>
+          <dd>{detail.repo}</dd>
+          <dt>URL</dt>
+          <dd>
+            <a class="link" href={detail.url} target="_blank" rel="noreferrer">
+              {detail.url}
+            </a>
+          </dd>
+          <dt>Size</dt>
+          <dd>{detail.installed_size}</dd>
+          <dt>Description</dt>
+          <dd>{detail.description}</dd>
+        </dl>
         <div class="detail-deps scroll-card">
-          <div class="detail-deps-inner">
-            <table class="table dep-table">
-              <thead>
+          <table class="table dep-table">
+            <thead>
+              <tr>
+                <th>Dependencies ({detail.depends.length})</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.depends.length === 0 ? (
                 <tr>
-                  <th>Dependencies</th>
+                  <td class="muted">No dependencies</td>
                 </tr>
-              </thead>
-              <tbody>
-                {detail.depends.length === 0 ? (
+              ) : (
+                detail.depends.map((d) => (
                   <tr>
-                    <td class="muted">No dependencies</td>
+                    <td class="mono small">{d}</td>
                   </tr>
-                ) : (
-                  detail.depends.map((d) => (
-                    <tr>
-                      <td class="mono small">{d}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     ) : (
-      <p class="muted">Click a package row to see details.</p>
+      <div class="pkg-detail-empty">Select a package to see details.</div>
     )}
   </div>
 )

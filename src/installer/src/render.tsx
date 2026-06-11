@@ -93,7 +93,13 @@ export const editHandler = <S extends z.ZodRawShape>(
   return patchSidecar()
 }
 
-export const renderPage = async (c: AppContext, active: CategoryId | 'install', body: Child, pushUrl?: string) => {
+export const renderPage = async (
+  c: AppContext,
+  active: CategoryId | 'install',
+  body: Child,
+  pushUrl?: string,
+  extra?: (stream: Stream) => void,
+) => {
   const { previewHtml, warnings } = await renderSidecar()
   if (!c.get('datastar')) {
     return c.html(
@@ -106,5 +112,6 @@ export const renderPage = async (c: AppContext, active: CategoryId | 'install', 
     stream.html(<main id="page-content" class="content">{body}</main>)
     stream.signals(ui.patch({ active_cat: active }))
     if (pushUrl) stream.script(`history.pushState({}, '', ${JSON.stringify(pushUrl)})`)
+    extra?.(stream)
   })
 }

@@ -26,6 +26,7 @@ export const ageSignals = signals(
     key_file: z
       .array(z.object({ name: z.string(), contents: z.string(), mime: z.string() }))
       .default([]),
+    error: z.string().default(''),
   },
   'age_',
 )
@@ -75,20 +76,19 @@ export const ImportView = ({ ageKeySet }: { ageKeySet: boolean }) => (
           SSH is not supported on the install medium (no keys). For private
           repos, GitHub requires a personal access token in place of the password.
         </p>
-        <div class="field-control">
+        <div class="form-actions">
           <button class="btn" type="submit" {...attr('disabled', not(gitImportSignals.$.git_url))}>
             Clone and import
           </button>
+        </div>
+        <div {...importStatusSignals.seed({ status: '', error: '' })}>
+          <p id="import-status" class="muted small import-msg" {...text(importStatusSignals.$.status)} />
+          <div id="import-error" class="alert alert-danger import-msg" {...text(importStatusSignals.$.error)} />
         </div>
       </form>
     </Section>
 
     <AgeSection ageKeySet={ageKeySet} />
-
-    <div {...importStatusSignals.seed({ status: '', error: '' })}>
-      <p id="import-status" class="muted small import-msg" {...text(importStatusSignals.$.status)} />
-      <div id="import-error" class="alert alert-danger import-msg" {...text(importStatusSignals.$.error)} />
-    </div>
   </Page>
 )
 
@@ -98,21 +98,18 @@ export const AgeSection = ({ ageKeySet }: { ageKeySet: boolean }) => (
       title="Age identity for secrets"
       subhead="Private key used at runtime to decrypt age-encrypted secrets and files."
     >
-      <div class="form card" {...ageSignals.seed({ identity: '', key_file: [] })}>
+      <div class="form card" {...ageSignals.seed({ identity: '', key_file: [], error: '' })}>
         <p class="muted small">
           The identity is written once to <span class="mono">/etc/bicycle/age.key</span> on
           the target (mode 0600, root:root) during post-install. It is held only in this
           installer's memory and never persisted to the install medium beyond that.
         </p>
         {ageKeySet ? (
-          <div class="field">
-            <div class="field-control">
-              <span class="muted">✓ identity set</span>
-              {' '}
-              <button class="btn" type="button" {...on('click', routes.ageKeyClear.action())}>
-                Clear
-              </button>
-            </div>
+          <div class="form-actions">
+            <span class="chip chip-enc">✓ identity set</span>
+            <button class="btn btn-sm" type="button" {...on('click', routes.ageKeyClear.action())}>
+              Clear
+            </button>
           </div>
         ) : null}
         <Field label="Paste AGE-SECRET-KEY-..." htmlFor="age-identity-input">
@@ -127,6 +124,7 @@ export const AgeSection = ({ ageKeySet }: { ageKeySet: boolean }) => (
         </Field>
         <div class="field-control">
           <button
+            id="age-save"
             class="btn"
             type="button"
             {...on('click', routes.ageKeySet.action())}
@@ -135,6 +133,7 @@ export const AgeSection = ({ ageKeySet }: { ageKeySet: boolean }) => (
             Save identity
           </button>
         </div>
+        <div id="age-error" class="alert alert-danger import-msg" {...text(ageSignals.$.error)} />
         <Field label="Or import from key file" htmlFor="age-key-file">
           <input
             id="age-key-file"

@@ -30,10 +30,32 @@ export const UsersView = ({ users, openIdx, rootSet }: Props) => {
   const open = openIdx != null ? users[openIdx] ?? null : null
   return (
     <Page heading="Users" subhead="Add accounts and edit them inline. Changes save as you type.">
-      <UsersTable users={users} openIdx={openIdx} />
-      {open ? <UserPanel user={open} idx={openIdx!} /> : null}
+      <Section title="Accounts">
+        <div class="card table-card account-card">
+          <UsersTable users={users} openIdx={openIdx} />
+          <div class="table-card-footer">
+            <button id="add-user" type="button" class="btn" {...on('click', routes.usersAdd.action())}>
+              + Add user
+            </button>
+          </div>
+        </div>
+        {open ? <UserPanel user={open} idx={openIdx!} /> : null}
+      </Section>
       <RootSection rootSet={rootSet} />
     </Page>
+  )
+}
+
+export const UserRow = ({ u, idx, isOpen }: { u: User; idx: number; isOpen: boolean }) => {
+  // Re-clicking the open row closes it, mirroring the Disk table.
+  const click = isOpen ? routes.usersClose.action() : routes.usersOpen.action({ idx })
+  return (
+    <tr id={`user-row-${idx}`} class={`row${isOpen ? ' row-selected' : ''}`} {...on('click', click)}>
+      <td class="mono">{u.name}</td>
+      <td class="col-sudo muted">{u.sudo}</td>
+      <td class="muted small">{u.groups.length ? u.groups.join(', ') : '—'}</td>
+      <td class="col-pw muted">{u.password ? '✓' : '—'}</td>
+    </tr>
   )
 }
 
@@ -48,23 +70,38 @@ const UsersTable = ({ users, openIdx }: { users: User[]; openIdx: number | null 
       </tr>
     </thead>
     <tbody>
-      {users.map((u, i) => {
-        // Re-clicking the open row closes it, mirroring the Disk table.
-        const click = i === openIdx ? routes.usersClose.action() : routes.usersOpen.action({ idx: i })
-        return (
-          <tr class={`row${i === openIdx ? ' row-selected' : ''}`} {...on('click', click)}>
-            <td class="mono">{u.name}</td>
-            <td class="col-sudo muted">{u.sudo}</td>
-            <td class="muted small">{u.groups.length ? u.groups.join(', ') : '—'}</td>
-            <td class="col-pw muted">{u.password ? '✓' : '—'}</td>
-          </tr>
-        )
-      })}
-      <tr class="row users-add-row" {...on('click', routes.usersAdd.action())}>
-        <td colspan={4}>+ Add user</td>
-      </tr>
+      {users.length === 0 ? (
+        <tr>
+          <td colspan={4} class="table-empty">No accounts yet.</td>
+        </tr>
+      ) : (
+        users.map((u, i) => <UserRow u={u} idx={i} isOpen={i === openIdx} />)
+      )}
     </tbody>
   </table>
+)
+
+export const NameStatus = ({ status }: { status: string }) => (
+  <p id="user-name-status" class="field-msg warn small">{status}</p>
+)
+
+export const GroupChips = ({ user, idx }: { user: User; idx: number }) => (
+  <div class="chips" id={`user-groups-${idx}`}>
+    {user.groups.length === 0 ? <span class="muted small">No extra groups.</span> : null}
+    {user.groups.map((g, gi) => (
+      <span class="chip">
+        {g}
+        <button
+          type="button"
+          class="chip-x"
+          title={`Remove ${g}`}
+          {...on('click', routes.usersGroupRemove.action({ idx, g: gi }))}
+        >
+          ×
+        </button>
+      </span>
+    ))}
+  </div>
 )
 
 const UserPanel = ({ user, idx }: { user: User; idx: number }) => {
@@ -73,83 +110,77 @@ const UserPanel = ({ user, idx }: { user: User; idx: number }) => {
   // it right after is safe and resets the input for the next entry.
   const addGroup = seq(routes.usersGroupAdd.action({ idx }), $.new_group.set(''))
   return (
-    <Section title="Edit user">
-      <form
-        class="form card account-card"
-        {...userPanelSignals.seed({ username: user.name, password: '', sudo: user.sudo, new_group: '' })}
-      >
-        <div class="card-header">
-          <h2 class="card-title" {...text(expr`${$.username} || 'user'`)} />
-          <button
-            type="button"
-            class="btn btn-danger"
-            {...on('click', routes.usersDelete.action({ idx }))}
-          >
-            Remove
+    <form
+      class="form card account-card"
+      {...userPanelSignals.seed({ username: user.name, password: '', sudo: user.sudo, new_group: '' })}
+    >
+      <div class="card-header">
+        <h2 class="card-title" {...text(expr`${$.username} || 'user'`)} />
+        <button
+          id="user-remove"
+          type="button"
+          class="btn btn-danger btn-sm"
+          {...on('click', routes.usersDelete.action({ idx }))}
+        >
+          Remove
+        </button>
+      </div>
+      <Field label="Username" htmlFor="u-name">
+        <input
+          id="u-name"
+          class="combo"
+          type="text"
+          {...bind($.username)}
+          {...on('input', routes.usersName.action({ idx }), { debounceMs: 100 })}
+        />
+        <NameStatus status="" />
+      </Field>
+      <Field label="Password" htmlFor="u-pw">
+        <input
+          id="u-pw"
+          class="combo"
+          type="password"
+          placeholder={user.password ? '•••••• (set; leave blank to keep)' : '••••••'}
+          {...bind($.password)}
+          {...on('input', routes.usersPassword.action({ idx }), { debounceMs: 400 })}
+        />
+      </Field>
+      <Field label="Sudo" htmlFor="u-sudo">
+        <select
+          id="u-sudo"
+          class="combo"
+          {...bind($.sudo)}
+          {...on('change', routes.usersSudo.action({ idx }))}
+        >
+          {SUDO_OPTIONS.map((o) => (
+            <option value={o} selected={o === user.sudo}>{o}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Groups">
+        <GroupChips user={user} idx={idx} />
+        <div class="chip-row chip-row-tight">
+          <input
+            class="chip-input"
+            type="text"
+            placeholder="add group…"
+            {...bind($.new_group)}
+            {...on('keydown', expr`evt.key === 'Enter' && (evt.preventDefault(), ${addGroup})`)}
+          />
+          <button type="button" class="btn btn-sm" {...on('click', addGroup)}>
+            Add
           </button>
         </div>
-        <Field label="Username" htmlFor="u-name">
-          <input
-            id="u-name"
-            class="combo"
-            type="text"
-            {...bind($.username)}
-            {...on('input', routes.usersName.action({ idx }), { debounceMs: 400 })}
-          />
-        </Field>
-        <Field label="Password" htmlFor="u-pw">
-          <input
-            id="u-pw"
-            class="combo"
-            type="password"
-            placeholder={user.password ? '•••••• (set; leave blank to keep)' : '••••••'}
-            {...bind($.password)}
-            {...on('input', routes.usersPassword.action({ idx }), { debounceMs: 400 })}
-          />
-        </Field>
-        <Field label="Sudo" htmlFor="u-sudo">
-          <select
-            id="u-sudo"
-            class="combo"
-            {...bind($.sudo)}
-            {...on('change', routes.usersSudo.action({ idx }))}
-          >
-            {SUDO_OPTIONS.map((o) => (
-              <option value={o} selected={o === user.sudo}>{o}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Groups">
-          <div class="chips">
-            {user.groups.map((g, gi) => (
-              <span class="chip">
-                {g}
-                <button
-                  type="button"
-                  class="chip-x"
-                  title={`Remove ${g}`}
-                  {...on('click', routes.usersGroupRemove.action({ idx, g: gi }))}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-            <input
-              class="chip-input"
-              type="text"
-              placeholder="add group…"
-              {...bind($.new_group)}
-              {...on('keydown', expr`evt.key === 'Enter' && (evt.preventDefault(), ${addGroup})`)}
-            />
-            <button type="button" class="btn btn-sm" {...on('click', addGroup)}>
-              Add
-            </button>
-          </div>
-        </Field>
-      </form>
-    </Section>
+      </Field>
+    </form>
   )
 }
+
+export const RootStatus = ({ rootSet }: { rootSet: boolean }) => (
+  <p id="root-status" class="muted small">
+    {rootSet ? '✓ root password set' : 'No root password set.'}
+  </p>
+)
 
 const RootSection = ({ rootSet }: { rootSet: boolean }) => (
   <Section title="Root" subhead="Set the root account password.">
@@ -164,6 +195,7 @@ const RootSection = ({ rootSet }: { rootSet: boolean }) => (
           {...on('input', routes.usersRoot.action(), { debounceMs: 400 })}
         />
       </Field>
+      <RootStatus rootSet={rootSet} />
     </form>
   </Section>
 )

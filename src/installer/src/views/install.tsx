@@ -6,7 +6,6 @@ import { routes } from '../routes'
 
 export const installSignals = signals({
   wipe_typed: z.string().default(''),
-  confirm_install: z.boolean().default(false),
 })
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]/g
@@ -34,25 +33,22 @@ type Props = {
   install: InstallState
 }
 
-export const InstallView = ({ preflight, device, mode, install }: Props) => {
-  const sub = mode === 'wet'
-    ? 'WET MODE: archinstall will write to disk.'
-    : 'Dry-run: archinstall will not touch disks (only the archiso live environment enables real installs).'
-  return (
-    <Page heading="Install" subhead={sub}>
-      <ModeBadge mode={mode} />
-      {install.status === 'idle' ? (
-        <IdleView preflight={preflight} device={device} mode={mode} />
-      ) : (
-        <ProgressView install={install} />
-      )}
-    </Page>
-  )
-}
+export const InstallView = ({ preflight, device, mode, install }: Props) => (
+  <Page heading="Install" subhead="Run archinstall against the assembled config.">
+    <ModeBadge mode={mode} />
+    {install.status === 'idle' ? (
+      <IdleView preflight={preflight} device={device} mode={mode} />
+    ) : (
+      <ProgressView install={install} />
+    )}
+  </Page>
+)
 
 const ModeBadge = ({ mode }: { mode: 'dry-run' | 'wet' }) => (
   <div class={`install-mode-badge ${mode === 'wet' ? 'install-mode-wet' : 'install-mode-dry'}`}>
-    {mode === 'wet' ? 'WET — disks will be wiped' : 'DRY-RUN'}
+    {mode === 'wet'
+      ? 'WET — archinstall will write to disk'
+      : 'DRY-RUN — disks will not be touched (real installs only run from the archiso live environment)'}
   </div>
 )
 
@@ -73,16 +69,33 @@ const IdleView = ({
       </Section>
     )
   }
+  if (mode === 'dry-run') {
+    return (
+      <Section title="Dry run" subhead={`Target: ${device}`}>
+        <form class="form card" {...installSignals.seed({ wipe_typed: '' })}>
+          <p class="muted small">
+            Runs archinstall with <span class="mono">--dry-run</span> against{' '}
+            <span class="mono">{device}</span>. No disks are modified.
+          </p>
+          <div class="form-actions">
+            <button type="button" class="btn" {...on('click', routes.installStart.action())}>
+              Run dry-run
+            </button>
+          </div>
+        </form>
+      </Section>
+    )
+  }
   const $ = installSignals.$
   const mismatch = ne($.wipe_typed, device)
   return (
     <Section title="Confirm and install" subhead={`Target: ${device}`}>
-      <form class="form card" {...installSignals.seed({ wipe_typed: '', confirm_install: false })}>
+      <form class="form card" {...installSignals.seed({ wipe_typed: '' })}>
         <p class="muted small">
-          Wiping <span class="mono">{device}</span> will erase all data on the disk.
+          Installing wipes <span class="mono">{device}</span> and erases all data on it.
         </p>
         <label class="field">
-          <span class="field-label">Type <span class="mono">{device}</span> to enable Install</span>
+          <span class="field-label">Type <span class="mono">{device}</span> to confirm</span>
           <input
             class="combo mono"
             type="text"
@@ -97,39 +110,15 @@ const IdleView = ({
         <div class="form-actions">
           <button
             type="button"
-            class="btn"
+            class="btn btn-danger"
             {...attr('disabled', mismatch)}
-            {...on('click', $.confirm_install.set(true))}
+            {...on('click', routes.installStart.action())}
           >
-            Begin install
+            Wipe and install
           </button>
           <span class="muted small" {...show(mismatch)}>
             Device path must match exactly.
           </span>
-        </div>
-        <div class="confirm-modal" {...show($.confirm_install)}>
-          <div class="card confirm-card">
-            <p>
-              Run archinstall in <strong>{mode === 'wet' ? 'WET' : 'dry-run'}</strong> mode against <span class="mono">{device}</span>?
-            </p>
-            {mode === 'wet' ? (
-              <p class="warn small">This will wipe the disk and install Arch Linux.</p>
-            ) : (
-              <p class="muted small">No disks will be modified.</p>
-            )}
-            <div class="form-actions">
-              <button type="button" class="btn" {...on('click', $.confirm_install.set(false))}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                class={mode === 'wet' ? 'btn btn-danger' : 'btn'}
-                {...on('click', routes.installStart.action())}
-              >
-                {mode === 'wet' ? 'Wipe and install' : 'Run dry-run'}
-              </button>
-            </div>
-          </div>
         </div>
       </form>
     </Section>

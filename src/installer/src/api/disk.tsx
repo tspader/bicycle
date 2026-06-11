@@ -9,9 +9,9 @@ import {
   editScalar, editNode, editDelete, editAppend, editPrune,
 } from '../state'
 import { PRESETS, presetDisk, type PresetId } from '../config'
-import type { AppContext } from '@bicycle/datastar'
+import type { AppContext, Stream } from '@bicycle/datastar'
 import { routes } from '../routes'
-import { configState, renderPage, editHandler } from '../render'
+import { configState, renderPage, editHandler, patchSidecar } from '../render'
 import { swapSignals } from '../views/swap'
 
 export const diskBody = async (c: AppContext): Promise<Child> => {
@@ -39,8 +39,8 @@ export const diskBody = async (c: AppContext): Promise<Child> => {
   )
 }
 
-const reloadDisk = async (c: AppContext): Promise<Response> =>
-  renderPage(c, 'disk', await diskBody(c), '/config/disk')
+const reloadDisk = async (c: AppContext, extra?: (stream: Stream) => void): Promise<Response> =>
+  renderPage(c, 'disk', await diskBody(c), '/config/disk', extra)
 
 const tryDiskMutation = (fn: () => void): void => {
   try {
@@ -81,24 +81,34 @@ export const preset = (c: AppContext) => {
 
 export const partitionAdd = (c: AppContext) => {
   const { device } = routes.partitionAdd.params(c)
+  let focusIdx: number | null = null
   tryDiskMutation(() => {
     const disks = getConfig().disks ?? []
     const di = disks.findIndex((d) => d.device === device)
     const newPart = { fs: 'ext4', size: '1GiB' }
     if (di < 0) {
       editAppend(['disks'], { device, wipe: true, table: 'gpt', partitions: [newPart] })
+      focusIdx = 0
     } else {
       const parts = disks[di]!.partitions
+      // Keep a trailing "rest" partition last: insert just before it.
       const insertAt = parts.length > 0 && parts[parts.length - 1]!.size === 'rest'
         ? parts.length - 1
         : parts.length
       const next: unknown[] = [...parts]
       next.splice(insertAt, 0, newPart)
       editNode(['disks', di, 'partitions'], next)
+      focusIdx = insertAt
     }
     reconcileEncryption()
   })
-  return reloadDisk(c)
+  return reloadDisk(c, (stream) => {
+    if (focusIdx != null) {
+      stream.script(
+        `document.querySelectorAll('.partition-table tr.partition-row')[${focusIdx}]?.querySelector('input')?.focus()`,
+      )
+    }
+  })
 }
 
 export const partitionDelete = (c: AppContext) => {
@@ -198,5 +208,5 @@ export const encryptionType = (c: AppContext) => {
 export const encryptionPassword = (c: AppContext) => {
   const { enc_password } = encryptionSignals.read(c)
   if (enc_password) setEncryptionPassword(enc_password)
-  return reloadDisk(c)
+  return patchSidecar()
 }

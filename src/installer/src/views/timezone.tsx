@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { Field, Section, onOff } from './layout'
+import { Field, Section, Switch } from './layout'
 import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
@@ -33,16 +33,7 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
     </form>
     <form class="form" {...ntpSignals.seed({ ntp })}>
       <Field label="NTP" htmlFor="ntp">
-        <label class="toggle">
-          <input
-            id="ntp"
-            type="checkbox"
-            checked={ntp}
-            {...bind(ntpSignals.$.ntp)}
-            {...on('change', routes.ntp.action())}
-          />
-          <span {...onOff(ntpSignals.$.ntp)} />
-        </label>
+        <Switch id="ntp" sig={ntpSignals.$.ntp} checked={ntp} action={routes.ntp.action()} />
       </Field>
     </form>
   </Section>

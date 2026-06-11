@@ -74,15 +74,13 @@ export const start = async (c: AppContext) => {
   const device = targetDevice(archinstall)
   if (!device) throw new HTTPException(400, { message: 'no target device' })
 
-  const confirm = installSignals.read(c)
-  if (confirm.wipe_typed !== device) {
-    throw new HTTPException(400, { message: `type ${device} to confirm wipe (got ${JSON.stringify(confirm.wipe_typed)})` })
-  }
-  if (!confirm.confirm_install) {
-    throw new HTTPException(400, { message: 'install confirmation required' })
-  }
-
   const wet = isWet()
+  if (wet) {
+    const confirm = installSignals.read(c)
+    if (confirm.wipe_typed !== device) {
+      throw new HTTPException(400, { message: `type ${device} to confirm wipe (got ${JSON.stringify(confirm.wipe_typed)})` })
+    }
+  }
   const mode = wet ? 'wet' as const : 'dry-run' as const
   setInstall({
     status: 'running', mode, device, log: '',

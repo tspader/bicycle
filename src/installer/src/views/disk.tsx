@@ -171,6 +171,7 @@ export const DiskPanel = ({
           <div class="preset-row">
             {(Object.entries(PRESETS) as Array<[PresetId, { label: string }]>).map(([id, p]) => (
               <button
+                id={`preset-${id}`}
                 type="button"
                 class="btn btn-sm"
                 {...on('click', routes.diskPreset.action({ device: d.path, id }))}
@@ -184,6 +185,7 @@ export const DiskPanel = ({
         <PartitionTable device={d.path} partitions={partitions} />
         <div class="partition-footer">
           <button
+            id="partition-add"
             type="button"
             class="btn"
             {...on('click', routes.partitionAdd.action({ device: d.path }))}
@@ -205,7 +207,9 @@ const PartitionTable = ({
   device: string
   partitions: Partition[]
 }) => {
-  if (partitions.length === 0) return null
+  if (partitions.length === 0) {
+    return <p class="partition-empty">No partitions yet — apply a preset or add one below.</p>
+  }
   return (
     <table class="table partition-table">
       <thead>
@@ -402,7 +406,7 @@ export const EncryptionSection = ({
           type="password"
           placeholder={hasPassword ? '•••••• (set; leave blank to keep)' : '••••••'}
           {...bind(encryptionSignals.$.enc_password)}
-          {...on('change', routes.encryptionPassword.action())}
+          {...on('input', routes.encryptionPassword.action(), { debounceMs: 400 })}
         />
       </Field>
     </form>

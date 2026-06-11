@@ -51,6 +51,10 @@ export const deriveWarnings = (
   } else {
     let hasRoot = false
     let hasBoot = false
+    const mountCounts = new Map<string, number>()
+    const mount = (m: string | null) => {
+      if (m) mountCounts.set(m, (mountCounts.get(m) ?? 0) + 1)
+    }
     for (const d of dc.device_modifications) {
       const disk = disks.find((x) => x.path === d.device)
       if (!disk) {
@@ -62,12 +66,25 @@ export const deriveWarnings = (
         }
       }
       for (const p of d.partitions) {
-        if (p.mountpoint === '/') hasRoot = true
         if (p.flags.includes('boot') || p.flags.includes('esp')) hasBoot = true
+        // Subvolumes carry the real mounts for a btrfs partition; its own
+        // mountpoint is vestigial there and must not count as a duplicate.
+        if (p.btrfs.length > 0) {
+          for (const sv of p.btrfs) {
+            if (sv.mountpoint === '/') hasRoot = true
+            mount(sv.mountpoint)
+          }
+        } else {
+          if (p.mountpoint === '/') hasRoot = true
+          mount(p.mountpoint)
+        }
       }
     }
     if (!hasRoot) err('Partitions must include a "/" mountpoint.', 'disk')
     if (!hasBoot) err('Partitions must include a boot/esp partition.', 'disk')
+    for (const [m, count] of mountCounts) {
+      if (count > 1) err(`${m} is mounted ${count} times; mountpoints must be unique.`, 'disk')
+    }
 
     const anyEncrypted = (dc.disk_encryption?.partitions.length ?? 0) > 0
     if (anyEncrypted && !ctx.encryptionSet) {

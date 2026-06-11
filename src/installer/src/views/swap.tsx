@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { Field, Section, onOff } from './layout'
+import { Field, Section, Switch } from './layout'
 import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
@@ -16,16 +16,7 @@ export const SwapSection = ({ enabled, algorithm }: Props) => (
   <Section title="Swap" subhead="zram swap configuration.">
     <form class="form" {...swapSignals.seed({ enabled, algorithm })}>
       <Field label="Enabled" htmlFor="enabled">
-        <label class="toggle">
-          <input
-            id="enabled"
-            type="checkbox"
-            checked={enabled}
-            {...bind(swapSignals.$.enabled)}
-            {...on('change', routes.swap.action())}
-          />
-          <span {...onOff(swapSignals.$.enabled)} />
-        </label>
+        <Switch id="enabled" sig={swapSignals.$.enabled} checked={enabled} action={routes.swap.action()} />
       </Field>
       <Field label="Algorithm" htmlFor="algorithm">
         <select

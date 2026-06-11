@@ -44,10 +44,12 @@ export const git = (c: AppContext) =>
         )
         if (res.exitCode !== 0) {
           const raw = new TextDecoder().decode(res.stderr) || 'git clone failed'
-          const sanitized = raw
-            .replaceAll(url.toString(), safeUrl)
-            .replaceAll(sig.git_pass || ' ', '***')
-          const tail = sanitized.trim().split('\n').slice(-2).join(' ').slice(0, 400)
+          let sanitized = raw.replaceAll(url.toString(), safeUrl)
+          if (sig.git_pass) sanitized = sanitized.replaceAll(sig.git_pass, '***')
+          // git prefixes its progress chatter ("Cloning into '/tmp/...'") to
+          // every failure; keep only the diagnostic lines.
+          const lines = sanitized.trim().split('\n').filter((l) => !l.startsWith('Cloning into'))
+          const tail = lines.slice(-2).join(' ').slice(0, 400)
           throw new Error(tail || 'git clone failed')
         }
         // Read the entire tree into memory, then validate it parses. The clone

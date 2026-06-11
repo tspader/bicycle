@@ -4,8 +4,12 @@ import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const hostnameSignals = signals({
-  hostname: z.string().min(1).max(63),
+  hostname: z.string().trim().max(63).default(''),
 })
+
+export const HostnameStatus = ({ status }: { status: string }) => (
+  <p id="hostname-status" class="field-msg warn small">{status}</p>
+)
 
 export const HostnameSection = ({ value }: { value: string }) => (
   <Section title="Hostname" subhead="System hostname.">
@@ -17,8 +21,9 @@ export const HostnameSection = ({ value }: { value: string }) => (
           type="text"
           value={value}
           {...bind(hostnameSignals.$.hostname)}
-          {...on('change', routes.hostname.action())}
+          {...on('input', routes.hostname.action(), { debounceMs: 400 })}
         />
+        <HostnameStatus status="" />
       </Field>
     </form>
   </Section>

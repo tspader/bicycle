@@ -1,6 +1,6 @@
 import { getConfig, editDelete, editPrune, editAppend } from '../state'
 import { regions } from '../system'
-import { RegionList, RegionRow, mirrorSignals } from '../views/mirrors'
+import { RegionList, RegionItem, mirrorSignals } from '../views/mirrors'
 import { type AppContext, patch } from '@bicycle/datastar'
 import { routes } from '../routes'
 import { patchSidecar } from '../render'
@@ -17,7 +17,7 @@ export const toggle = (c: AppContext) => {
   } else {
     editAppend(['pacman', 'mirrors', 'regions'], name)
   }
-  return patchSidecar(<RegionRow name={name} isChecked={idx < 0} />)
+  return patchSidecar(<RegionItem name={name} isChecked={idx < 0} />)
 }
 
 export const list = (c: AppContext) => {

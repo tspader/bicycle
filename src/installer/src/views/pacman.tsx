@@ -3,7 +3,6 @@ import { MirrorsSection } from './mirrors'
 import { PackagesSection, type PackageList } from './packages'
 import type { PackageDetail } from '../system'
 
-
 export const PacmanView = ({ mirrors, packages }: {
   mirrors: { regions: string[]; selected: string[] }
   packages: {
@@ -15,7 +14,7 @@ export const PacmanView = ({ mirrors, packages }: {
     selectedRepos: string[]
   }
 }) => (
-  <Page heading="Pacman" subhead="Mirrors and packages.">
+  <Page heading="Pacman" subhead="Extra packages and mirror regions.">
     <PackagesSection {...packages} />
     <MirrorsSection regions={mirrors.regions} selected={mirrors.selected} />
   </Page>
