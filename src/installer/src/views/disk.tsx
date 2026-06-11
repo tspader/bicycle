@@ -1,17 +1,53 @@
+import { z } from 'zod'
 import { Page, Section, Field } from './layout'
 import { SwapSection } from './swap'
-import { PRESETS, parseSize, sizeBytes, type PresetId } from '../config'
-import type { Disk, Partition, PartitionFlag, FsType } from '@bicycle/shared'
+import { PRESETS, parseSize, sizeBytes, FsType, type PresetId } from '../config'
+import { EncryptionKind, type Disk, type Partition, type PartitionFlag } from '@bicycle/shared'
 import type { DiskInfo } from '../system'
+import { bind, on, signals } from '../datastar'
+import { routes } from '../routes'
 import { sigSlug } from '../slug'
 
-const FS_OPTIONS: FsType[] = ['fat32', 'ext4', 'btrfs', 'xfs', 'f2fs', 'linux-swap']
-const FLAG_OPTIONS: PartitionFlag[] = ['boot', 'esp', 'swap']
+const FS_OPTIONS = FsType.options
+export const FLAG_OPTIONS = ['boot', 'esp', 'swap'] as const satisfies readonly PartitionFlag[]
 const ENC_TYPES = [
   { id: 'luks', label: 'LUKS' },
   { id: 'lvm_on_luks', label: 'LVM on LUKS' },
   { id: 'luks_on_lvm', label: 'LUKS on LVM' },
 ] as const
+
+// Per-row signal groups for inline partition editing. The prefix carries the
+// device + indices, so view and server derive identical signal names from the
+// same factory.
+export const partitionSignals = (device: string, idx: number) =>
+  signals(
+    {
+      mount: z.string().default(''),
+      fs: FsType,
+      size: z.string().min(1),
+      start: z.string().default(''),
+      mount_options: z.string().default(''),
+      encrypt: z.boolean().default(false),
+      flag_boot: z.boolean().default(false),
+      flag_esp: z.boolean().default(false),
+      flag_swap: z.boolean().default(false),
+    },
+    `${sigSlug(device)}_p${idx}_`,
+  )
+
+export const subvolSignals = (device: string, idx: number, subIdx: number) =>
+  signals(
+    {
+      name: z.string().trim().min(1, 'subvolume name required'),
+      mount: z.string().default(''),
+    },
+    `${sigSlug(device)}_p${idx}_sv${subIdx}_`,
+  )
+
+export const encryptionSignals = signals({
+  enc_type: EncryptionKind,
+  enc_password: z.string().default(''),
+})
 
 const formatBytes = (n: number): string => {
   const units = [
@@ -46,7 +82,7 @@ type Props = {
   openDisk: string | null
   error: string | null
   anyEncrypted: boolean
-  encryption: { type: string; password: boolean }
+  encryption: { type: z.infer<typeof EncryptionKind>; password: boolean }
   swap: Swap
 }
 
@@ -91,12 +127,11 @@ const DisksTable = ({
       {disks.map((d) => {
         const mod = diskByDevice.get(d.path) ?? null
         const isOpen = openDisk === d.path
-        const openUrl = `/api/disk/open?${isOpen ? '' : `device=${encodeURIComponent(d.path)}`}`
         const count = mod?.partitions.length ?? 0
         return (
           <tr
             class={`row disks-row${isOpen ? ' row-selected' : ''}`}
-            data-on:click={`@post('${openUrl}')`}
+            {...on('click', routes.diskOpen.action(isOpen ? {} : { device: d.path }))}
           >
             <td class="mono">{d.path}</td>
             <td>{d.model}</td>
@@ -138,7 +173,7 @@ export const DiskPanel = ({
               <button
                 type="button"
                 class="btn btn-sm"
-                data-on:click={`@post('/api/disk/preset?device=${encodeURIComponent(d.path)}&id=${id}')`}
+                {...on('click', routes.diskPreset.action({ device: d.path, id }))}
               >
                 {p.label}
               </button>
@@ -151,7 +186,7 @@ export const DiskPanel = ({
           <button
             type="button"
             class="btn"
-            data-on:click={`@post('/api/disk/partition/add?device=${encodeURIComponent(d.path)}')`}
+            {...on('click', routes.partitionAdd.action({ device: d.path }))}
           >
             + Add partition
           </button>
@@ -211,40 +246,40 @@ const PartitionRow = ({
   p: Partition
   isFirst: boolean
 }) => {
-  const sl = `${sigSlug(device)}_p${idx}`
+  const group = partitionSignals(device, idx)
+  const $ = group.$
   const flags = p.flags ?? []
-  const signals: Record<string, unknown> = {
-    [`${sl}_mount`]: p.mount ?? '',
-    [`${sl}_fs`]: p.fs,
-    [`${sl}_size`]: p.size,
-    [`${sl}_start`]: p.start ?? '',
-    [`${sl}_mount_options`]: (p.mount_options ?? []).join(', '),
-    [`${sl}_encrypt`]: !!p.encrypt,
-  }
-  for (const f of FLAG_OPTIONS) {
-    signals[`${sl}_flag_${f}`] = flags.includes(f)
-  }
-  const saveUrl = `/api/disk/partition/save?device=${encodeURIComponent(device)}&idx=${idx}`
-  const delUrl = `/api/disk/partition/delete?device=${encodeURIComponent(device)}&idx=${idx}`
-  const save = `@post('${saveUrl}')`
+  const save = routes.partitionSave.action({ device, idx })
   return (
-    <tr class="row partition-row" data-signals={JSON.stringify(signals)}>
+    <tr
+      class="row partition-row"
+      {...group.seed({
+        mount: p.mount ?? '',
+        fs: p.fs,
+        size: p.size,
+        start: p.start ?? '',
+        mount_options: (p.mount_options ?? []).join(', '),
+        encrypt: !!p.encrypt,
+        flag_boot: flags.includes('boot'),
+        flag_esp: flags.includes('esp'),
+        flag_swap: flags.includes('swap'),
+      })}
+    >
       <td class="col-del">
         <button
           type="button" class="btn btn-icon btn-danger"
           title="Delete partition"
-          data-on:click={`@post('${delUrl}')`}
+          {...on('click', routes.partitionDelete.action({ device, idx }))}
         >×</button>
       </td>
       <td>
         <input
-          class="cell-input" type="text"
-          data-bind={`${sl}_mount`} placeholder="/mountpoint"
-          data-on:change={save}
+          class="cell-input" type="text" placeholder="/mountpoint"
+          {...bind($.mount)} {...on('change', save)}
         />
       </td>
       <td class="col-fs">
-        <select class="cell-input" data-bind={`${sl}_fs`} data-on:change={save}>
+        <select class="cell-input" {...bind($.fs)} {...on('change', save)}>
           {FS_OPTIONS.map((f) => (
             <option value={f} selected={f === p.fs}>{f}</option>
           ))}
@@ -252,39 +287,38 @@ const PartitionRow = ({
       </td>
       <td class="col-size">
         <input
-          class="cell-input" type="text"
-          data-bind={`${sl}_size`} placeholder='1GiB / "rest"'
-          data-on:change={save}
+          class="cell-input" type="text" placeholder='1GiB / "rest"'
+          {...bind($.size)} {...on('change', save)}
         />
       </td>
       <td class="col-start">
         {isFirst ? (
           <input
-            class="cell-input" type="text"
-            data-bind={`${sl}_start`} placeholder="1MiB"
-            data-on:change={save}
+            class="cell-input" type="text" placeholder="1MiB"
+            {...bind($.start)} {...on('change', save)}
           />
         ) : <span class="muted">—</span>}
       </td>
       {FLAG_OPTIONS.map((f) => (
         <td class="col-flag">
           <input
-            type="checkbox" data-bind={`${sl}_flag_${f}`}
-            checked={flags.includes(f)} data-on:change={save}
+            type="checkbox"
+            checked={flags.includes(f)}
+            {...bind($[`flag_${f}`])} {...on('change', save)}
           />
         </td>
       ))}
       <td class="col-flag">
         <input
-          type="checkbox" data-bind={`${sl}_encrypt`}
-          checked={!!p.encrypt} data-on:change={save}
+          type="checkbox"
+          checked={!!p.encrypt}
+          {...bind($.encrypt)} {...on('change', save)}
         />
       </td>
       <td>
         <input
-          class="cell-input" type="text"
-          data-bind={`${sl}_mount_options`} placeholder="..."
-          data-on:change={save}
+          class="cell-input" type="text" placeholder="..."
+          {...bind($.mount_options)} {...on('change', save)}
         />
       </td>
     </tr>
@@ -297,86 +331,80 @@ const SubvolPanel = ({
   device: string
   idx: number
   subvols: NonNullable<Partition['subvolumes']>
-}) => {
-  const addUrl = `/api/disk/partition/subvol/add?device=${encodeURIComponent(device)}&idx=${idx}`
-  return (
-    <table class="table subvol-table">
-      <thead>
-        <tr>
-          <th class="subvol-col-name">Name</th>
-          <th>Mount</th>
-          <th class="col-del" />
-        </tr>
-      </thead>
-      <tbody>
-        {subvols.map((sv, sIdx) => {
-          const sl = `${sigSlug(device)}_p${idx}_sv${sIdx}`
-          const saveUrl = `/api/disk/partition/subvol/save?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
-          const delUrl = `/api/disk/partition/subvol/delete?device=${encodeURIComponent(device)}&idx=${idx}&subIdx=${sIdx}`
-          const signals = { [`${sl}_name`]: sv.name, [`${sl}_mount`]: sv.mount ?? '' }
-          const save = `@post('${saveUrl}')`
-          return (
-            <tr class="row subvol-row" data-signals={JSON.stringify(signals)}>
-              <td class="subvol-col-name">
-                <input
-                  class="cell-input" type="text"
-                  data-bind={`${sl}_name`} placeholder="@home"
-                  data-on:change={save}
-                />
-              </td>
-              <td>
-                <input
-                  class="cell-input" type="text"
-                  data-bind={`${sl}_mount`} placeholder="/home"
-                  data-on:change={save}
-                />
-              </td>
-              <td class="col-del">
-                <button
-                  type="button" class="btn btn-icon btn-danger"
-                  title="Delete subvolume"
-                  data-on:click={`@post('${delUrl}')`}
-                >×</button>
-              </td>
-            </tr>
-          )
-        })}
-        <tr class="row subvol-add-row" data-on:click={`@post('${addUrl}')`}>
-          <td colspan={3}>+ Add subvolume</td>
-        </tr>
-      </tbody>
-    </table>
-  )
-}
+}) => (
+  <table class="table subvol-table">
+    <thead>
+      <tr>
+        <th class="subvol-col-name">Name</th>
+        <th>Mount</th>
+        <th class="col-del" />
+      </tr>
+    </thead>
+    <tbody>
+      {subvols.map((sv, subIdx) => {
+        const group = subvolSignals(device, idx, subIdx)
+        const save = routes.subvolSave.action({ device, idx, subIdx })
+        return (
+          <tr class="row subvol-row" {...group.seed({ name: sv.name, mount: sv.mount ?? '' })}>
+            <td class="subvol-col-name">
+              <input
+                class="cell-input" type="text" placeholder="@home"
+                {...bind(group.$.name)} {...on('change', save)}
+              />
+            </td>
+            <td>
+              <input
+                class="cell-input" type="text" placeholder="/home"
+                {...bind(group.$.mount)} {...on('change', save)}
+              />
+            </td>
+            <td class="col-del">
+              <button
+                type="button" class="btn btn-icon btn-danger"
+                title="Delete subvolume"
+                {...on('click', routes.subvolDelete.action({ device, idx, subIdx }))}
+              >×</button>
+            </td>
+          </tr>
+        )
+      })}
+      <tr class="row subvol-add-row" {...on('click', routes.subvolAdd.action({ device, idx }))}>
+        <td colspan={3}>+ Add subvolume</td>
+      </tr>
+    </tbody>
+  </table>
+)
 
-export const EncryptionSection = ({ type, hasPassword }: { type: string; hasPassword: boolean }) => {
-  const signals = { enc_type: type, enc_password: '' }
-  return (
-    <Section title="Encryption" subhead="Set the LUKS password for any encrypted partitions.">
-      <form class="form card" data-signals={JSON.stringify(signals)}>
-        <Field label="Type" htmlFor="enc-type">
-          <select
-            id="enc-type"
-            class="combo"
-            data-bind="enc_type"
-            data-on:change="@post('/api/disk/encryption-type')"
-          >
-            {ENC_TYPES.map((t) => (
-              <option value={t.id} selected={t.id === type}>{t.label}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Password" htmlFor="enc-pw">
-          <input
-            id="enc-pw"
-            class="combo"
-            type="password"
-            data-bind="enc_password"
-            placeholder={hasPassword ? '•••••• (set; leave blank to keep)' : '••••••'}
-            data-on:change="@post('/api/disk/encryption-password')"
-          />
-        </Field>
-      </form>
-    </Section>
-  )
-}
+export const EncryptionSection = ({
+  type, hasPassword,
+}: {
+  type: z.infer<typeof EncryptionKind>
+  hasPassword: boolean
+}) => (
+  <Section title="Encryption" subhead="Set the LUKS password for any encrypted partitions.">
+    <form class="form card" {...encryptionSignals.seed({ enc_type: type, enc_password: '' })}>
+      <Field label="Type" htmlFor="enc-type">
+        <select
+          id="enc-type"
+          class="combo"
+          {...bind(encryptionSignals.$.enc_type)}
+          {...on('change', routes.encryptionType.action())}
+        >
+          {ENC_TYPES.map((t) => (
+            <option value={t.id} selected={t.id === type}>{t.label}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Password" htmlFor="enc-pw">
+        <input
+          id="enc-pw"
+          class="combo"
+          type="password"
+          placeholder={hasPassword ? '•••••• (set; leave blank to keep)' : '••••••'}
+          {...bind(encryptionSignals.$.enc_password)}
+          {...on('change', routes.encryptionPassword.action())}
+        />
+      </Field>
+    </form>
+  </Section>
+)

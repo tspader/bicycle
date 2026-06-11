@@ -1,38 +1,33 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { Child } from 'hono/jsx'
-import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
-import { CATEGORIES } from './views/layout'
 import { syncPacman } from './system'
 import { serve, env as runtimeEnv } from './runtime'
-import { type CategoryId } from './ui-state'
+import { CATEGORY_IDS, type CategoryId } from './ui-state'
 import * as api from './api'
-import { type App, type AppContext } from './http'
+import { type App, type AppContext, readSignals } from './http'
+import { routes, type PlainRoute } from './routes'
 import { renderPage } from './render'
 import appCssPath from "./assets/app.css" with { type: "file" }
+import appJsPath from "./assets/app.js" with { type: "file" }
 import datastarPath from "./assets/datastar.js" with { type: "file" }
 import faviconPath from "./assets/favicon.ico" with { type: "file" }
 
 const app = new Hono<{ Variables: App }>()
 
-app.use('*', async (c, next) => {
-  const r = await ServerSentEventGenerator.readSignals(c.req.raw)
-  c.set('signals', r.success ? r.signals : {})
-  c.set('error', r.success ? null : r.error)
-  c.set('datastar', c.req.raw.headers.get('datastar-request') === 'true')
-  await next()
-})
+app.use('*', readSignals)
 
 const staticFile = (path: string, type: string) => () =>
   new Response(Bun.file(path), { headers: { 'content-type': type } })
 
 app.get('/static/app.css', staticFile(appCssPath, 'text/css; charset=utf-8'))
+app.get('/static/app.js', staticFile(appJsPath, 'application/javascript; charset=utf-8'))
 app.get('/static/datastar.js', staticFile(datastarPath, 'application/javascript; charset=utf-8'))
 app.get('/favicon.ico', staticFile(faviconPath, 'image/x-icon'))
 
 app.get('/', (c) => c.redirect('/config/system'))
 
-const CategoryParam = z.enum(CATEGORIES.map((c) => c.id) as [CategoryId, ...CategoryId[]])
+const CategoryParam = z.enum(CATEGORY_IDS)
 
 const buildPage = async (cat: CategoryId, c: AppContext): Promise<Child> => {
   switch (cat) {
@@ -57,54 +52,60 @@ app.get('/config/:category', async (c) => {
   return renderPage(c, parsed.data, await buildPage(parsed.data, c))
 })
 
-app.post('/api/hostname', api.system.hostname)
-app.post('/api/timezone', api.system.timezone)
-app.post('/api/ntp', api.system.ntp)
-app.post('/api/network', api.system.network)
-app.post('/api/locale', api.system.locale)
+type Handler = (c: AppContext) => Response | Promise<Response>
 
-app.post('/api/kernels', api.boot.kernels)
-app.post('/api/bootloader', api.boot.bootloader)
+const mount = (route: Pick<PlainRoute, 'method' | 'path'>, handler: Handler): void => {
+  app[route.method](route.path, handler)
+}
 
-app.post('/api/swap', api.disk.swap)
-app.post('/api/disk/open', api.disk.open)
-app.post('/api/disk/preset', api.disk.preset)
-app.post('/api/disk/partition/add', api.disk.partitionAdd)
-app.post('/api/disk/partition/delete', api.disk.partitionDelete)
-app.post('/api/disk/partition/save', api.disk.partitionSave)
-app.post('/api/disk/partition/subvol/add', api.disk.subvolAdd)
-app.post('/api/disk/partition/subvol/delete', api.disk.subvolDelete)
-app.post('/api/disk/partition/subvol/save', api.disk.subvolSave)
-app.post('/api/disk/encryption-type', api.disk.encryptionType)
-app.post('/api/disk/encryption-password', api.disk.encryptionPassword)
+mount(routes.hostname, api.system.hostname)
+mount(routes.timezone, api.system.timezone)
+mount(routes.ntp, api.system.ntp)
+mount(routes.network, api.system.network)
+mount(routes.locale, api.system.locale)
 
-app.post('/api/import/git', api.clone.git)
-app.post('/api/secrets/age-key', api.secrets.setKey)
-app.post('/api/secrets/age-key/clear', api.secrets.clearKey)
-app.post('/api/mirrors/toggle', api.mirrors.toggle)
-app.get('/api/mirrors/list', api.mirrors.list)
-app.post('/api/packages/toggle', api.packages.toggle)
-app.get('/api/packages/list', api.packages.list)
-app.get('/api/packages/detail', api.packages.detail)
-app.post('/api/users/add', api.users.add)
-app.post('/api/users/open', api.users.open)
-app.post('/api/users/close', api.users.close)
-app.post('/api/users/delete', api.users.remove)
-app.post('/api/users/group/add', api.users.groupAdd)
-app.post('/api/users/group/remove', api.users.groupRemove)
-app.post('/api/users/name', api.users.name)
-app.post('/api/users/sudo', api.users.sudo)
-app.post('/api/users/password', api.users.password)
-app.post('/api/users/root', api.users.root)
+mount(routes.kernels, api.boot.kernels)
+mount(routes.bootloader, api.boot.bootloader)
 
-app.get('/api/config.json', api.install.configJson)
+mount(routes.swap, api.disk.swap)
+mount(routes.diskOpen, api.disk.open)
+mount(routes.diskPreset, api.disk.preset)
+mount(routes.partitionAdd, api.disk.partitionAdd)
+mount(routes.partitionDelete, api.disk.partitionDelete)
+mount(routes.partitionSave, api.disk.partitionSave)
+mount(routes.subvolAdd, api.disk.subvolAdd)
+mount(routes.subvolDelete, api.disk.subvolDelete)
+mount(routes.subvolSave, api.disk.subvolSave)
+mount(routes.encryptionType, api.disk.encryptionType)
+mount(routes.encryptionPassword, api.disk.encryptionPassword)
 
-app.get('/install', api.install.page)
-app.get('/api/install/tick', api.install.tick)
-app.get('/api/install/status', api.install.status)
-app.post('/api/install/start', api.install.start)
-app.post('/api/install/reboot', api.install.reboot)
-app.post('/api/install/reset', api.install.reset)
+mount(routes.importGit, api.clone.git)
+mount(routes.ageKeySet, api.secrets.setKey)
+mount(routes.ageKeyFile, api.secrets.setKeyFile)
+mount(routes.ageKeyClear, api.secrets.clearKey)
+mount(routes.mirrorsToggle, api.mirrors.toggle)
+mount(routes.mirrorsList, api.mirrors.list)
+mount(routes.packagesToggle, api.packages.toggle)
+mount(routes.packagesList, api.packages.list)
+mount(routes.packagesDetail, api.packages.detail)
+mount(routes.usersAdd, api.users.add)
+mount(routes.usersOpen, api.users.open)
+mount(routes.usersClose, api.users.close)
+mount(routes.usersDelete, api.users.remove)
+mount(routes.usersGroupAdd, api.users.groupAdd)
+mount(routes.usersGroupRemove, api.users.groupRemove)
+mount(routes.usersName, api.users.name)
+mount(routes.usersSudo, api.users.sudo)
+mount(routes.usersPassword, api.users.password)
+mount(routes.usersRoot, api.users.root)
+
+mount(routes.configJson, api.install.configJson)
+mount(routes.installPage, api.install.page)
+mount(routes.installTick, api.install.tick)
+mount(routes.installStatus, api.install.status)
+mount(routes.installStart, api.install.start)
+mount(routes.installReboot, api.install.reboot)
+mount(routes.installReset, api.install.reset)
 
 const start = async () => {
   syncPacman().then((res) => {

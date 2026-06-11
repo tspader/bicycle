@@ -1,4 +1,4 @@
-declare module "*/datastar.js" {
+declare module "*.js" {
   const path: string;
   export default path;
 }

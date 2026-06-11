@@ -1,7 +1,6 @@
 import { HTTPException } from 'hono/http-exception'
 import { existsSync } from 'node:fs'
-import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
-import { InstallView, ProgressCard } from '../views/install'
+import { InstallView, ProgressCard, installSignals } from '../views/install'
 import { listDisks } from '../system'
 import { preflight, targetDevice } from '../config'
 import { getInstall, setInstall, appendInstallLog } from '../ui-state'
@@ -13,7 +12,8 @@ import { recipientFor, generate as generateAgeIdentity } from '../age'
 import { buildInstallSteps } from '../install-steps'
 import { spawn as runtimeSpawn } from '../runtime'
 import type { AppContext } from '../http'
-import { configState, type ConfigState, preflightCtx, renderPage } from '../render'
+import { routes } from '../routes'
+import { configState, type ConfigState, preflightCtx, renderPage, patch } from '../render'
 
 const isWet = (): boolean => existsSync('/run/archiso/bootmnt')
 
@@ -51,15 +51,15 @@ const renderInstall = async (c: AppContext) => {
 
 export const page = (c: AppContext) => renderInstall(c)
 
+// The poller passes the status it rendered with; when the install transitions,
+// fall back to a full page render so the idle/progress sections swap too.
 export const tick = (c: AppContext) => {
   const inst = getInstall()
-  const prevStatus = c.req.query('s')
-  if (prevStatus && prevStatus !== inst.status) {
+  const { s } = routes.installTick.params(c)
+  if (s && s !== inst.status) {
     return renderInstall(c)
   }
-  return ServerSentEventGenerator.stream((stream) => {
-    stream.patchElements((<ProgressCard install={inst} />).toString())
-  })
+  return patch(<ProgressCard install={inst} />)
 }
 
 export const status = (c: AppContext) => renderInstall(c)
@@ -74,12 +74,11 @@ export const start = async (c: AppContext) => {
   const device = targetDevice(archinstall)
   if (!device) throw new HTTPException(400, { message: 'no target device' })
 
-  const signals = (c.get('signals') ?? {}) as Record<string, unknown>
-  const typed = String(signals.wipe_typed ?? '')
-  if (typed !== device) {
-    throw new HTTPException(400, { message: `type ${device} to confirm wipe (got ${JSON.stringify(typed)})` })
+  const confirm = installSignals.read(c)
+  if (confirm.wipe_typed !== device) {
+    throw new HTTPException(400, { message: `type ${device} to confirm wipe (got ${JSON.stringify(confirm.wipe_typed)})` })
   }
-  if (!signals.confirm_install) {
+  if (!confirm.confirm_install) {
     throw new HTTPException(400, { message: 'install confirmation required' })
   }
 

@@ -1,5 +1,13 @@
+import { z } from 'zod'
 import { Page, Section } from './layout'
 import type { InstallState } from '../ui-state'
+import { attr, bind, expr, ne, on, onInterval, show, signals, when } from '../datastar'
+import { routes } from '../routes'
+
+export const installSignals = signals({
+  wipe_typed: z.string().default(''),
+  confirm_install: z.boolean().default(false),
+})
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]/g
 
@@ -65,10 +73,11 @@ const IdleView = ({
       </Section>
     )
   }
-  const signals = { wipe_typed: '', confirm_install: false }
+  const $ = installSignals.$
+  const mismatch = ne($.wipe_typed, device)
   return (
     <Section title="Confirm and install" subhead={`Target: ${device}`}>
-      <form class="form card" data-signals={JSON.stringify(signals)}>
+      <form class="form card" {...installSignals.seed({ wipe_typed: '', confirm_install: false })}>
         <p class="muted small">
           Wiping <span class="mono">{device}</span> will erase all data on the disk.
         </p>
@@ -77,28 +86,28 @@ const IdleView = ({
           <input
             class="combo mono"
             type="text"
-            data-bind="wipe_typed"
             placeholder={device}
             autocomplete="off"
             autocorrect="off"
             autocapitalize="off"
             spellcheck={false}
+            {...bind($.wipe_typed)}
           />
         </label>
         <div class="form-actions">
           <button
             type="button"
             class="btn"
-            data-attr-disabled={`$wipe_typed !== '${device}'`}
-            data-on:click="$confirm_install = true"
+            {...attr('disabled', mismatch)}
+            {...on('click', $.confirm_install.set(true))}
           >
             Begin install
           </button>
-          <span class="muted small" data-show={`$wipe_typed !== '${device}'`}>
+          <span class="muted small" {...show(mismatch)}>
             Device path must match exactly.
           </span>
         </div>
-        <div class="confirm-modal" data-show="$confirm_install">
+        <div class="confirm-modal" {...show($.confirm_install)}>
           <div class="card confirm-card">
             <p>
               Run archinstall in <strong>{mode === 'wet' ? 'WET' : 'dry-run'}</strong> mode against <span class="mono">{device}</span>?
@@ -109,13 +118,13 @@ const IdleView = ({
               <p class="muted small">No disks will be modified.</p>
             )}
             <div class="form-actions">
-              <button type="button" class="btn" data-on:click="$confirm_install = false">
+              <button type="button" class="btn" {...on('click', $.confirm_install.set(false))}>
                 Cancel
               </button>
               <button
                 type="button"
                 class={mode === 'wet' ? 'btn btn-danger' : 'btn'}
-                data-on:click="@post('/api/install/start')"
+                {...on('click', routes.installStart.action())}
               >
                 {mode === 'wet' ? 'Wipe and install' : 'Run dry-run'}
               </button>
@@ -137,23 +146,23 @@ export const ProgressCard = ({ install }: { install: InstallState }) => {
   const running = install.status === 'running'
   const succeeded = install.status === 'success'
   const failed = install.status === 'failure'
-  const pollAttr = running
-    ? { 'data-on-interval__duration.500ms': "@get('/api/install/tick')" }
-    : {}
+  const poll = running ? onInterval(routes.installTick.action({ s: install.status }), 500) : {}
   const text = collapseTerminal(install.log) || '(no output yet)'
   return (
-    <div id="install-progress" class="card install-progress" {...pollAttr}>
+    <div id="install-progress" class="card install-progress" {...poll}>
       <div class="install-status-row">
         <StatusPill status={install.status} />
         {install.exitCode != null ? <span class="muted small mono">exit {install.exitCode}</span> : null}
       </div>
-      <pre class="install-log mono small" id="install-log">{text}</pre>
+      <log-scroll>
+        <pre class="install-log mono small" id="install-log">{text}</pre>
+      </log-scroll>
       {succeeded ? (
         <div class="form-actions">
           <button
             type="button"
             class="btn btn-danger"
-            data-on:click="confirm('Reboot now?') && @post('/api/install/reboot')"
+            {...on('click', when(expr`confirm('Reboot now?')`, routes.installReboot.action()))}
           >
             Reboot
           </button>
@@ -165,7 +174,7 @@ export const ProgressCard = ({ install }: { install: InstallState }) => {
           <button
             type="button"
             class="btn"
-            data-on:click="@post('/api/install/reset')"
+            {...on('click', routes.installReset.action())}
           >
             Dismiss
           </button>

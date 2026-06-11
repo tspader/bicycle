@@ -1,8 +1,9 @@
 import type { Child } from 'hono/jsx'
 import { BootView } from '../views/boot'
+import { kernelSignals } from '../views/kernels'
+import { bootloaderSignals } from '../views/bootloader'
 import { editNode } from '../state'
 import { configState, editHandler } from '../render'
-import { Api } from './types'
 
 export const bootBody = (): Child => {
   const { bike } = configState()
@@ -15,6 +16,6 @@ export const bootBody = (): Child => {
   )
 }
 
-export const kernels = editHandler(Api.Kernel, (d) => editNode(['core', 'kernels'], [d.kernel]))
-export const bootloader = editHandler(Api.Bootloader, (d) =>
+export const kernels = editHandler(kernelSignals, (d) => editNode(['core', 'kernels'], [d.kernel]))
+export const bootloader = editHandler(bootloaderSignals, (d) =>
   editNode(['boot'], { loader: d.loader, uki: d.uki, removable: d.removable }))

@@ -1,5 +1,4 @@
 import type { Child } from 'hono/jsx'
-import { SudoMode } from '@bicycle/shared'
 import { getOpenUser, setOpenUser } from '../ui-state'
 import {
   getConfig, getRootHash, setRootHash, getPendingSecrets, getFiles,
@@ -7,18 +6,11 @@ import {
   setFile, deleteFile, stageSecret, unstageSecret,
 } from '../state'
 import { hashPassword } from '../auth'
-import { UsersView } from '../views/users'
+import { UsersView, userPanelSignals, rootSignals } from '../views/users'
 import { userPasswordAddr, userPasswordRef, secretRelPath } from '../secrets'
-import { type AppContext, parseSignals, requiredQuery } from '../http'
+import type { AppContext } from '../http'
+import { routes } from '../routes'
 import { renderPage, patchSidecar } from '../render'
-import { Api } from './types'
-
-const idxOf = (c: AppContext): number => Number(requiredQuery(c, 'idx'))
-
-const strSig = (c: AppContext, key: string): string => {
-  const v = (c.get('signals') as Record<string, unknown>)[key]
-  return typeof v === 'string' ? v : ''
-}
 
 // First free "user" / "user2" / ... name for a freshly added account.
 const uniqueName = (taken: Set<string>): string => {
@@ -78,7 +70,7 @@ export const add = (c: AppContext) => {
 }
 
 export const open = (c: AppContext) => {
-  setOpenUser(idxOf(c))
+  setOpenUser(routes.usersOpen.params(c).idx)
   return reload(c)
 }
 
@@ -88,7 +80,7 @@ export const close = (c: AppContext) => {
 }
 
 export const remove = (c: AppContext) => {
-  const idx = idxOf(c)
+  const { idx } = routes.usersDelete.params(c)
   const u = (getConfig().users ?? [])[idx]
   if (u) {
     editDelete(['users', idx])
@@ -101,19 +93,18 @@ export const remove = (c: AppContext) => {
 }
 
 export const groupAdd = (c: AppContext) => {
-  const idx = idxOf(c)
+  const { idx } = routes.usersGroupAdd.params(c)
   const u = (getConfig().users ?? [])[idx]
-  const g = strSig(c, 'u_new_group').trim()
+  const g = userPanelSignals.read(c).new_group.trim()
   if (u && g && !u.groups.includes(g)) editAppend(['users', idx, 'groups'], g)
   return reload(c)
 }
 
 export const groupRemove = (c: AppContext) => {
-  const idx = idxOf(c)
-  const gIdx = Number(requiredQuery(c, 'g'))
+  const { idx, g } = routes.usersGroupRemove.params(c)
   // Leave an empty `groups: []` rather than pruning — the schema requires it.
-  if ((getConfig().users ?? [])[idx]?.groups[gIdx] !== undefined) {
-    editDelete(['users', idx, 'groups', gIdx])
+  if ((getConfig().users ?? [])[idx]?.groups[g] !== undefined) {
+    editDelete(['users', idx, 'groups', g])
   }
   return reload(c)
 }
@@ -121,10 +112,10 @@ export const groupRemove = (c: AppContext) => {
 // --- inline field autosave: sidecar/preview patch only, no re-render --------
 
 export const name = (c: AppContext) => {
-  const idx = idxOf(c)
+  const { idx } = routes.usersName.params(c)
   const users = getConfig().users ?? []
   const u = users[idx]
-  const next = strSig(c, 'u_username').trim()
+  const next = userPanelSignals.read(c).username.trim()
   // Ignore empty (would break the schema) and duplicate names; keep last valid.
   if (u && next && next !== u.name && !users.some((x, i) => i !== idx && x.name === next)) {
     editScalar(['users', idx, 'name'], next)
@@ -137,17 +128,16 @@ export const name = (c: AppContext) => {
 }
 
 export const sudo = (c: AppContext) => {
-  const idx = idxOf(c)
-  const users = getConfig().users ?? []
-  const parsed = SudoMode.safeParse(strSig(c, 'u_sudo'))
-  if (users[idx] && parsed.success) editScalar(['users', idx, 'sudo'], parsed.data)
+  const { idx } = routes.usersSudo.params(c)
+  const mode = userPanelSignals.read(c).sudo
+  if ((getConfig().users ?? [])[idx]) editScalar(['users', idx, 'sudo'], mode)
   return patchSidecar()
 }
 
 export const password = (c: AppContext) => {
-  const idx = idxOf(c)
+  const { idx } = routes.usersPassword.params(c)
   const u = (getConfig().users ?? [])[idx]
-  const pw = strSig(c, 'u_password')
+  const pw = userPanelSignals.read(c).password
   // Cleartext is staged (encrypted to age at install); blank leaves it alone.
   if (u && pw) {
     editScalar(['users', idx, 'password'], userPasswordRef(u.name))
@@ -157,7 +147,7 @@ export const password = (c: AppContext) => {
 }
 
 export const root = async (c: AppContext) => {
-  const { root_password } = parseSignals(c, Api.RootPassword)
+  const { root_password } = rootSignals.read(c)
   if (root_password) setRootHash(await hashPassword(root_password))
   return patchSidecar()
 }

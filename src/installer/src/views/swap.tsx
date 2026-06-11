@@ -1,30 +1,38 @@
-import { Field, Section } from './layout'
+import { z } from 'zod'
+import { Field, Section, onOff } from './layout'
+import { bind, on, signals } from '../datastar'
+import { routes } from '../routes'
 
 const ALGORITHMS = ['zstd', 'lzo-rle', 'lzo', 'lz4', 'lz4hc'] as const
+
+export const swapSignals = signals({
+  enabled: z.boolean(),
+  algorithm: z.enum(ALGORITHMS),
+})
 
 type Props = { enabled: boolean; algorithm: (typeof ALGORITHMS)[number] }
 
 export const SwapSection = ({ enabled, algorithm }: Props) => (
   <Section title="Swap" subhead="zram swap configuration.">
-    <form class="form" data-signals={JSON.stringify({ enabled, algorithm })}>
+    <form class="form" {...swapSignals.seed({ enabled, algorithm })}>
       <Field label="Enabled" htmlFor="enabled">
         <label class="toggle">
           <input
             id="enabled"
             type="checkbox"
-            data-bind="enabled"
-            data-on:change="@post('/api/swap')"
             checked={enabled}
+            {...bind(swapSignals.$.enabled)}
+            {...on('change', routes.swap.action())}
           />
-          <span data-text="$enabled ? 'On' : 'Off'" />
+          <span {...onOff(swapSignals.$.enabled)} />
         </label>
       </Field>
       <Field label="Algorithm" htmlFor="algorithm">
         <select
           id="algorithm"
           class="combo"
-          data-bind="algorithm"
-          data-on:change="@post('/api/swap')"
+          {...bind(swapSignals.$.algorithm)}
+          {...on('change', routes.swap.action())}
         >
           {ALGORITHMS.map((a) => (
             <option value={a} selected={a === algorithm}>

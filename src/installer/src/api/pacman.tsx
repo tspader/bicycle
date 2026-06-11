@@ -1,14 +1,14 @@
 import type { Child } from 'hono/jsx'
 import { PacmanView } from '../views/pacman'
+import { packageSignals } from '../views/packages'
 import { regions, searchPackages, availableRepos } from '../system'
 import { setCurrentDetail } from '../ui-state'
-import { type AppContext, getSignal } from '../http'
+import type { AppContext } from '../http'
 import { configState, flatPackages } from '../render'
 
 export const pacmanBody = async (c: AppContext): Promise<Child> => {
   const { bike } = configState()
-  const q = getSignal(c, 'q')
-  const reposSig = getSignal(c, 'repos')
+  const { q, repos: reposSig } = packageSignals.peek(c)
   const installed = flatPackages(bike)
   const selected = bike.pacman?.mirrors?.regions ?? []
   const allRepos = await availableRepos()

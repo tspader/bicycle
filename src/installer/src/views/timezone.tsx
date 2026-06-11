@@ -1,16 +1,27 @@
-import { Field, Section } from './layout'
+import { z } from 'zod'
+import { Field, Section, onOff } from './layout'
+import { bind, on, signals } from '../datastar'
+import { routes } from '../routes'
+
+export const timezoneSignals = signals({
+  timezone: z.string().min(1),
+})
+
+export const ntpSignals = signals({
+  ntp: z.boolean(),
+})
 
 type Props = { value: string; zones: string[]; ntp: boolean }
 
 export const TimeSection = ({ value, zones, ntp }: Props) => (
   <Section title="Time" subhead="Time zone and clock sync.">
-    <form class="form" data-signals={JSON.stringify({ timezone: value })}>
+    <form class="form" {...timezoneSignals.seed({ timezone: value })}>
       <Field label="Zone" htmlFor="timezone">
         <select
           id="timezone"
           class="combo"
-          data-bind="timezone"
-          data-on:change="@post('/api/timezone')"
+          {...bind(timezoneSignals.$.timezone)}
+          {...on('change', routes.timezone.action())}
         >
           {zones.map((z) => (
             <option value={z} selected={z === value}>
@@ -20,17 +31,17 @@ export const TimeSection = ({ value, zones, ntp }: Props) => (
         </select>
       </Field>
     </form>
-    <form class="form" data-signals={JSON.stringify({ ntp })}>
+    <form class="form" {...ntpSignals.seed({ ntp })}>
       <Field label="NTP" htmlFor="ntp">
         <label class="toggle">
           <input
             id="ntp"
             type="checkbox"
-            data-bind="ntp"
-            data-on:change="@post('/api/ntp')"
             checked={ntp}
+            {...bind(ntpSignals.$.ntp)}
+            {...on('change', routes.ntp.action())}
           />
-          <span data-text="$ntp ? 'On' : 'Off'" />
+          <span {...onOff(ntpSignals.$.ntp)} />
         </label>
       </Field>
     </form>

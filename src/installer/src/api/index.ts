@@ -1,5 +1,3 @@
-export * from './types'
-
 export * as clone from './clone'
 export * as importer from './import'
 export * as system from './system'

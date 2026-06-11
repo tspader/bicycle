@@ -1,14 +1,14 @@
 import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import type { Child } from 'hono/jsx'
 import type { HtmlEscapedString } from 'hono/utils/html'
-import { z } from 'zod'
+import type { z } from 'zod'
 import { codeToHtml } from 'shiki'
-import { Layout, Preview, Warnings } from './views/layout'
-import { SignalProvider } from './signal'
+import { Layout, Preview, Warnings, ui } from './views/layout'
 import { project, liveMachine, deriveWarnings, type Warning, type AccountSummary } from './config'
 import { getConfig, getText, getIdentity, getRootHash, getEncryptionPassword } from './state'
 import { listDisks } from './system'
-import { type AppContext, parseSignals } from './http'
+import type { AppContext } from './http'
+import type { Json, SignalGroup } from './datastar'
 import type { CategoryId } from './ui-state'
 import { type BicycleConfig } from '@bicycle/shared'
 
@@ -69,42 +69,61 @@ const renderSidecar = async () => {
   return { previewHtml, warnings }
 }
 
-export const patchSidecarInto = async (
-  stream: { patchElements: (s: string) => void },
-): Promise<void> => {
-  const { previewHtml, warnings } = await renderSidecar()
-  stream.patchElements((<Preview html={previewHtml} />).toString())
-  stream.patchElements((<Warnings items={warnings} />).toString())
+// --- SSE facade ----------------------------------------------------------------
+// All Datastar SSE responses go through `sse`. The facade renders JSX directly,
+// takes signal patches as typed objects, and skips falsy fragments so
+// conditional patches need no imperative branching at the call site.
+
+export type Frag = HtmlEscapedString | Promise<HtmlEscapedString> | false | null | undefined
+
+export type PatchOptions = {
+  selector?: string
+  mode?: 'outer' | 'inner' | 'replace' | 'prepend' | 'append' | 'before' | 'after' | 'remove'
 }
 
-// --- patch combinators -------------------------------------------------------
-// Collapse the repeated `stream(stream => { patchElements...; patchSidecarInto })`
-// shape. Falsy fragments are skipped, so conditional patches need no imperative
-// branching at the call site.
+export type Stream = {
+  html: (frag: Frag, options?: PatchOptions) => void
+  signals: (patch: Record<string, Json>) => void
+  script: (code: string) => void
+}
 
-type Frag = HtmlEscapedString | Promise<HtmlEscapedString> | false | null | undefined
+export const sse = (fn: (stream: Stream) => void | Promise<void>): Response =>
+  ServerSentEventGenerator.stream(async (raw) => {
+    await fn({
+      html: (frag, options) => {
+        if (frag) raw.patchElements(frag.toString(), options)
+      },
+      signals: (patch) => raw.patchSignals(JSON.stringify(patch)),
+      script: (code) => raw.executeScript(code),
+    })
+  })
 
-const write = (stream: { patchElements: (s: string) => void }, frags: Frag[]): void => {
-  for (const f of frags) if (f) stream.patchElements(f.toString())
+export const patchSidecarInto = async (stream: Stream): Promise<void> => {
+  const { previewHtml, warnings } = await renderSidecar()
+  stream.html(<Preview html={previewHtml} />)
+  stream.html(<Warnings items={warnings} />)
 }
 
 export const patch = (...frags: Frag[]): Response =>
-  ServerSentEventGenerator.stream((stream) => write(stream, frags))
+  sse((stream) => {
+    for (const f of frags) stream.html(f)
+  })
 
 export const patchSidecar = (...frags: Frag[]): Response =>
-  ServerSentEventGenerator.stream(async (stream) => {
-    write(stream, frags)
+  sse(async (stream) => {
+    for (const f of frags) stream.html(f)
     await patchSidecarInto(stream)
   })
 
-// A field-edit route: validate the request signals against `schema`, apply the
-// resulting edit to bicycle.yml, then reflect the change in the preview/warnings
-// sidecar. Used by every inline autosave that doesn't re-render its own page.
-export const editHandler = <T extends z.ZodTypeAny>(
-  schema: T,
-  apply: (data: z.infer<T>) => void,
+// A field-edit route: validate the request signals against the view's signal
+// group, apply the resulting edit to bicycle.yml, then reflect the change in
+// the preview/warnings sidecar. Used by every inline autosave that doesn't
+// re-render its own page.
+export const editHandler = <S extends z.ZodRawShape>(
+  group: SignalGroup<S>,
+  apply: (data: z.output<z.ZodObject<S>>) => void,
 ) => (c: AppContext): Response => {
-  apply(parseSignals(c, schema))
+  apply(group.read(c))
   return patchSidecar()
 }
 
@@ -112,16 +131,14 @@ export const renderPage = async (c: AppContext, active: CategoryId | 'install', 
   const { previewHtml, warnings } = await renderSidecar()
   if (!c.get('datastar')) {
     return c.html(
-      <SignalProvider value={c.get('signals')}>
-        <Layout active={active} previewHtml={previewHtml} warnings={warnings}>{body}</Layout>
-      </SignalProvider>,
+      <Layout active={active} previewHtml={previewHtml} warnings={warnings}>{body}</Layout>,
     )
   }
-  return ServerSentEventGenerator.stream((stream) => {
-    stream.patchElements((<Preview html={previewHtml} />).toString())
-    stream.patchElements((<Warnings items={warnings} />).toString())
-    stream.patchElements((<main id="page-content" class="content">{body}</main>).toString())
-    stream.patchSignals(JSON.stringify({ activeCat: active }))
-    if (pushUrl) stream.executeScript(`history.pushState({}, '', '${pushUrl}')`)
+  return sse((stream) => {
+    stream.html(<Preview html={previewHtml} />)
+    stream.html(<Warnings items={warnings} />)
+    stream.html(<main id="page-content" class="content">{body}</main>)
+    stream.signals(ui.patch({ active_cat: active }))
+    if (pushUrl) stream.script(`history.pushState({}, '', ${JSON.stringify(pushUrl)})`)
   })
 }

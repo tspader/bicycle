@@ -1,5 +1,16 @@
-import { Page } from './layout'
+import { z } from 'zod'
+import { Page, rowClick } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
+import { bind, on, signals } from '../datastar'
+import { routes } from '../routes'
+
+export const packageSignals = signals(
+  {
+    q: z.string().default(''),
+    repos: z.array(z.string()).default([]),
+  },
+  'pkg_',
+)
 
 type Props = {
   installed: string[]
@@ -10,7 +21,7 @@ type Props = {
   selectedRepos: string[]
 }
 
-export type PackageList = { items: PackageEntry[]; next: string | null; }
+export type PackageList = { items: PackageEntry[]; next: string | null }
 
 export type RowState = { checked: Set<string>; selectedName: string | null }
 
@@ -19,15 +30,15 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage, 
   const selected = new Set(selectedRepos)
   return (
     <Page heading="Packages">
-      <div id="package-detail" class="card">
-        <PackageDetailPanel detail={detail} />
-      </div>
+      <PackageDetailCard detail={detail} />
 
-      <form class="form pkg-filters" data-signals={JSON.stringify({ q: '', repos: selectedRepos })}>
-        <input class="combo" type="text"
+      <form class="form pkg-filters" {...packageSignals.seed({ q: '', repos: selectedRepos })}>
+        <input
+          class="combo"
+          type="text"
           placeholder="Filter..."
-          data-bind="q"
-          {...{ 'data-on:input__debounce.250ms': "@get('/api/packages/list')" }}
+          {...bind(packageSignals.$.q)}
+          {...on('input', routes.packagesList.action({}), { debounceMs: 250 })}
         />
         <div class="repo-filter">
           {availableRepos.map((repo) => (
@@ -37,8 +48,8 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage, 
                 class="pkg-check"
                 value={repo}
                 checked={selected.has(repo)}
-                data-bind="repos"
-                data-on:change="@get('/api/packages/list')"
+                {...bind(packageSignals.$.repos)}
+                {...on('change', routes.packagesList.action({}))}
               />
               {repo}
             </label>
@@ -46,69 +57,45 @@ export const PackagesSection = ({ installed, detail, selectedName, initialPage, 
         </div>
       </form>
 
-      <div id="package-list" class="list">
-        <PackageList page={initialPage} state={state} />
-      </div>
+      <PackageListPanel page={initialPage} state={state} />
     </Page>
   )
 }
 
-const PackageRow = ({ p, isChecked, isSelected }: { p: PackageEntry; isChecked: boolean; isSelected: boolean }) => {
-  const detailUrl = `/api/packages/detail?name=${encodeURIComponent(p.name)}`
-  const toggleUrl = `/api/packages/toggle?name=${encodeURIComponent(p.name)}`
-  return (
-    <tr
-      class={`row pkg-row${isSelected ? ' row-selected' : ''}`}
-      id={`pkg-row-${p.name}`}
-      data-on:click={`if(evt.target.closest('input')) return; @get('${detailUrl}')`}
-    >
-      <td class="col-check">
-        <input
-          type="checkbox"
-          class="pkg-check"
-          checked={isChecked}
-          data-on:change={`@post('${toggleUrl}')`}
-        />
-      </td>
-      <td class="col-name">
-        <span class="pkg-name">{p.name}</span>
-      </td>
-      <td class="col-repo">
-        <span class="muted small"> {p.repo}</span>
-      </td>
-      <td class="col-version mono">{p.version}</td>
-    </tr>
-  )
-}
-
-const PackageHeader = () => (
-  <thead>
-    <tr>
-      <th class="col-check"></th>
-      <th>Package</th>
-      <th class="col-repo">Repo</th>
-      <th class="col-version">Version</th>
-    </tr>
-  </thead>
+export const PackageRow = ({ p, isChecked, isSelected }: { p: PackageEntry; isChecked: boolean; isSelected: boolean }) => (
+  <tr
+    class={`row pkg-row${isSelected ? ' row-selected' : ''}`}
+    id={`pkg-row-${p.name}`}
+    {...on('click', rowClick(routes.packagesDetail.action({ name: p.name })))}
+  >
+    <td class="col-check">
+      <input
+        type="checkbox"
+        class="pkg-check"
+        checked={isChecked}
+        {...on('change', routes.packagesToggle.action({ name: p.name }))}
+      />
+    </td>
+    <td class="col-name">
+      <span class="pkg-name">{p.name}</span>
+    </td>
+    <td class="col-repo">
+      <span class="muted small"> {p.repo}</span>
+    </td>
+    <td class="col-version mono">{p.version}</td>
+  </tr>
 )
 
-const PackageRows = ({ items, state }: { items: PackageEntry[]; state: RowState }) => (
-  <table class="table pkg-table">
-    <PackageHeader />
-    <tbody>
-      {items.map((p) => (
-        <PackageRow
-          p={p}
-          isChecked={state.checked.has(p.name)}
-          isSelected={state.selectedName === p.name}
-        />
-      ))}
-    </tbody>
-  </table>
-)
-
-export const PackageRowFragment = ({ p, isChecked, isSelected }: { p: PackageEntry; isChecked: boolean; isSelected: boolean }) => (
-  <PackageRow p={p} isChecked={isChecked} isSelected={isSelected} />
+export const PackageRows = ({ items, state }: { items: PackageEntry[]; state: RowState }) => (
+  <>
+    {items.map((p) => (
+      <PackageRow
+        p={p}
+        isChecked={state.checked.has(p.name)}
+        isSelected={state.selectedName === p.name}
+      />
+    ))}
+  </>
 )
 
 export const PackageMore = ({ next }: { next: string | null }) => (
@@ -117,7 +104,7 @@ export const PackageMore = ({ next }: { next: string | null }) => (
       <button
         type="button"
         class="btn"
-        data-on:click={`@get('/api/packages/list?after=${encodeURIComponent(next)}&mode=append')`}
+        {...on('click', routes.packagesList.action({ after: next, mode: 'append' }))}
       >
         Load more
       </button>
@@ -127,27 +114,30 @@ export const PackageMore = ({ next }: { next: string | null }) => (
   </div>
 )
 
-export const PackageList = ({ page, state }: { page: PackageList; state: RowState }) => (
-  <>
-    <PackageRows items={page.items} state={state} />
+export const PackageListPanel = ({ page, state }: { page: PackageList; state: RowState }) => (
+  <div id="package-list" class="list">
+    <table class="table pkg-table">
+      <thead>
+        <tr>
+          <th class="col-check"></th>
+          <th>Package</th>
+          <th class="col-repo">Repo</th>
+          <th class="col-version">Version</th>
+        </tr>
+      </thead>
+      <tbody id="package-rows">
+        <PackageRows items={page.items} state={state} />
+      </tbody>
+    </table>
     <PackageMore next={page.next} />
-  </>
+  </div>
 )
 
-export const PackageRowsFragment = ({ items, state }: { items: PackageEntry[]; state: RowState }) => (
-  <PackageRows items={items} state={state} />
-)
-
-const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
-  if (!detail) {
-    return <p class="muted">Click a package row to see details.</p>
-  }
-  return (
-    <>
-      <div class="detail-head">
-      </div>
+export const PackageDetailCard = ({ detail }: { detail: PackageDetail | null }) => (
+  <div id="package-detail" class="card">
+    {detail ? (
       <div class="detail-split">
-        <div display="flex" flex-direction="column">
+        <div>
           <h2 class="card-title">
             {detail.name}
             <span class="muted small">
@@ -173,35 +163,31 @@ const PackageDetailPanel = ({ detail }: { detail: PackageDetail | null }) => {
         </div>
         <div class="detail-deps scroll-card">
           <div class="detail-deps-inner">
-          <table class="table dep-table">
-            <thead>
-              <tr>
-                <th>Dependencies</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.depends.length === 0 ? (
+            <table class="table dep-table">
+              <thead>
                 <tr>
-                  <td class="muted">No dependencies</td>
+                  <th>Dependencies</th>
                 </tr>
-              ) : (
-                detail.depends.map((d) => (
+              </thead>
+              <tbody>
+                {detail.depends.length === 0 ? (
                   <tr>
-                    <td class="mono small">{d}</td>
+                    <td class="muted">No dependencies</td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  detail.depends.map((d) => (
+                    <tr>
+                      <td class="mono small">{d}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
-    </>
-  )
-}
-
-export const PackageDetailFragment = ({ detail }: { detail: PackageDetail | null }) => (
-  <div id="package-detail" class="card">
-    <PackageDetailPanel detail={detail} />
+    ) : (
+      <p class="muted">Click a package row to see details.</p>
+    )}
   </div>
 )

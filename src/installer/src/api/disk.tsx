@@ -1,22 +1,18 @@
 import type { Child } from 'hono/jsx'
 import { HTTPException } from 'hono/http-exception'
-import { z } from 'zod'
-import { EncryptionKind, type BicycleConfig } from '@bicycle/shared'
-import { DiskView } from '../views/disk'
+import type { BicycleConfig } from '@bicycle/shared'
+import { DiskView, FLAG_OPTIONS, partitionSignals, subvolSignals, encryptionSignals } from '../views/disk'
 import { listDisks } from '../system'
 import { getOpenDisk, setOpenDisk, getDiskError, setDiskError } from '../ui-state'
 import {
   getConfig, getEncryptionPassword, setEncryptionPassword,
   editScalar, editNode, editDelete, editAppend, editPrune,
 } from '../state'
-import { PRESETS, PartitionFlag, FsType, presetDisk, type PresetId } from '../config'
-import { type AppContext, requiredQuery } from '../http'
+import { PRESETS, presetDisk, type PresetId } from '../config'
+import type { AppContext } from '../http'
+import { routes } from '../routes'
 import { configState, renderPage, editHandler } from '../render'
-import { sigSlug } from '../slug'
-import { Api } from './types'
-
-const rawSignals = (c: AppContext): Record<string, unknown> =>
-  (c.get('signals') ?? {}) as Record<string, unknown>
+import { swapSignals } from '../views/swap'
 
 export const diskBody = async (c: AppContext): Promise<Child> => {
   const { bike } = configState()
@@ -64,28 +60,27 @@ const reconcileEncryption = (): void => {
   else if (!anyEnc && hasBlock) editDelete(['encryption'])
 }
 
-export const swap = editHandler(Api.Swap, (d) =>
+export const swap = editHandler(swapSignals, (d) =>
   editNode(['swap'], { enabled: d.enabled, algorithm: d.algorithm }))
 
 export const open = (c: AppContext) => {
-  setOpenDisk(c.req.query('device') ?? null)
+  setOpenDisk(routes.diskOpen.params(c).device ?? null)
   setDiskError(null)
   return reloadDisk(c)
 }
 
 export const preset = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
-  const id = requiredQuery(c, 'id') as PresetId
+  const { device, id } = routes.diskPreset.params(c)
   if (!(id in PRESETS)) throw new HTTPException(400, { message: `unknown preset: ${id}` })
   tryDiskMutation(() => {
-    editNode(['disks'], [presetDisk(id, device)])
+    editNode(['disks'], [presetDisk(id as PresetId, device)])
     reconcileEncryption()
   })
   return reloadDisk(c)
 }
 
 export const partitionAdd = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
+  const { device } = routes.partitionAdd.params(c)
   tryDiskMutation(() => {
     const disks = getConfig().disks ?? []
     const di = disks.findIndex((d) => d.device === device)
@@ -107,8 +102,7 @@ export const partitionAdd = (c: AppContext) => {
 }
 
 export const partitionDelete = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
-  const idx = Number(requiredQuery(c, 'idx'))
+  const { device, idx } = routes.partitionDelete.params(c)
   tryDiskMutation(() => {
     const disks = getConfig().disks ?? []
     const di = disks.findIndex((d) => d.device === device)
@@ -126,36 +120,10 @@ export const partitionDelete = (c: AppContext) => {
   return reloadDisk(c)
 }
 
-const PartitionSave = z.object({
-  mount: z.string(),
-  fs: FsType,
-  size: z.string().min(1),
-  start: z.string().optional(),
-  mount_options: z.string().optional().default(''),
-  encrypt: z.boolean().default(false),
-  flags: z.array(PartitionFlag).default([]),
-})
-
 export const partitionSave = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
-  const idx = Number(requiredQuery(c, 'idx'))
-  const sl = `${sigSlug(device)}_p${idx}`
-  const raw = rawSignals(c)
-  const flags: PartitionFlag[] = []
-  for (const f of ['boot', 'esp', 'swap'] as const) {
-    if (raw[`${sl}_flag_${f}`]) flags.push(f)
-  }
-  const parsed = PartitionSave.safeParse({
-    mount: raw[`${sl}_mount`],
-    fs: raw[`${sl}_fs`],
-    size: raw[`${sl}_size`],
-    start: raw[`${sl}_start`] || undefined,
-    mount_options: raw[`${sl}_mount_options`] ?? '',
-    encrypt: !!raw[`${sl}_encrypt`],
-    flags,
-  })
-  if (!parsed.success) throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'invalid' })
-  const f = parsed.data
+  const { device, idx } = routes.partitionSave.params(c)
+  const f = partitionSignals(device, idx).read(c)
+  const flags = FLAG_OPTIONS.filter((flag) => f[`flag_${flag}`])
   tryDiskMutation(() => {
     const disks = getConfig().disks ?? []
     const di = disks.findIndex((d) => d.device === device)
@@ -167,7 +135,7 @@ export const partitionSave = (c: AppContext) => {
       mount: f.mount.trim() || undefined,
       fs: f.fs,
       size: f.size,
-      start: idx === 0 ? (f.start?.trim() || undefined) : prev.start,
+      start: idx === 0 ? (f.start.trim() || undefined) : prev.start,
       flags: flags.length > 0 ? flags : undefined,
       mount_options: mountOptions.length > 0 ? mountOptions : undefined,
       subvolumes: f.fs === 'btrfs' && prev.subvolumes && prev.subvolumes.length > 0 ? prev.subvolumes : undefined,
@@ -201,44 +169,34 @@ const writeSubvols = (device: string, idx: number, next: { name: string; mount?:
 }
 
 export const subvolAdd = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
-  const idx = Number(requiredQuery(c, 'idx'))
+  const { device, idx } = routes.subvolAdd.params(c)
   writeSubvols(device, idx, [...currentSubvols(device, idx), { name: '@new' }])
   return reloadDisk(c)
 }
 
 export const subvolDelete = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
-  const idx = Number(requiredQuery(c, 'idx'))
-  const subIdx = Number(requiredQuery(c, 'subIdx'))
+  const { device, idx, subIdx } = routes.subvolDelete.params(c)
   writeSubvols(device, idx, currentSubvols(device, idx).filter((_x, i) => i !== subIdx))
   return reloadDisk(c)
 }
 
 export const subvolSave = (c: AppContext) => {
-  const device = requiredQuery(c, 'device')
-  const idx = Number(requiredQuery(c, 'idx'))
-  const subIdx = Number(requiredQuery(c, 'subIdx'))
-  const sl = `${sigSlug(device)}_p${idx}_sv${subIdx}`
-  const raw = rawSignals(c)
-  const name = String(raw[`${sl}_name`] ?? '').trim()
-  const mount = String(raw[`${sl}_mount`] ?? '').trim()
-  if (!name) throw new HTTPException(400, { message: 'subvolume name required' })
+  const { device, idx, subIdx } = routes.subvolSave.params(c)
+  const { name, mount } = subvolSignals(device, idx, subIdx).read(c)
   writeSubvols(device, idx, currentSubvols(device, idx).map((sv, i) =>
-    i === subIdx ? { name, mount: mount || undefined } : sv,
+    i === subIdx ? { name, mount: mount.trim() || undefined } : sv,
   ))
   return reloadDisk(c)
 }
 
 export const encryptionType = (c: AppContext) => {
-  const parsed = EncryptionKind.safeParse(rawSignals(c).enc_type)
-  if (!parsed.success) throw new HTTPException(400, { message: 'invalid encryption type' })
-  if (getConfig().encryption) editScalar(['encryption', 'type'], parsed.data)
+  const { enc_type } = encryptionSignals.read(c)
+  if (getConfig().encryption) editScalar(['encryption', 'type'], enc_type)
   return reloadDisk(c)
 }
 
 export const encryptionPassword = (c: AppContext) => {
-  const pw = String(rawSignals(c).enc_password ?? '')
-  if (pw) setEncryptionPassword(pw)
+  const { enc_password } = encryptionSignals.read(c)
+  if (enc_password) setEncryptionPassword(enc_password)
   return reloadDisk(c)
 }

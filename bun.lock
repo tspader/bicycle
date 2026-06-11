@@ -31,7 +31,6 @@
       "name": "@bicycle/installer",
       "dependencies": {
         "@bicycle/shared": "workspace:*",
-        "@starfederation/datastar": "^1.0.0-beta.11",
         "@starfederation/datastar-sdk": "1.0.0",
         "age-encryption": "catalog:",
         "hono": "catalog:",
@@ -121,8 +120,6 @@
     "@shikijs/vscode-textmate": ["@shikijs/vscode-textmate@10.0.2", "", {}, "sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg=="],
 
     "@spader/zargs": ["@spader/zargs@1.2.0", "", { "dependencies": { "yargs": "^17.7.2" } }, "sha512-xNpWIfTa8ltSTiv9PHsWV4Jg5GfF1TtTO5yiwJWTdtOfJ3yiiHXs/ThL2KGp0mg09IYYgyJqKkrCWt0RsEvkFg=="],
-
-    "@starfederation/datastar": ["@starfederation/datastar@1.0.0-beta.11", "", {}, "sha512-62TtP/Rm8HVnWxZm1rqhZo+0F57V7A6bKE0FMFMP+1ZeRoDd3lBqYUEdcbSPtIYf9fjoPEUd4TU3bgWS0CGy9w=="],
 
     "@starfederation/datastar-sdk": ["@starfederation/datastar-sdk@1.0.0", "", {}, "sha512-VT1co9LeRLJ3wynffvkxXLJaCh4PHt1YUhH3zCQYhjTuaeWjozNjQQrg+BUbkDMO58mSgeQp9pgOXRWciy0y6g=="],
 
