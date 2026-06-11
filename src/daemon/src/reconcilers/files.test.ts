@@ -1,238 +1,99 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect } from "bun:test";
 import fs from "fs";
-import os from "os";
-import path from "path";
-import { generateIdentity, identityToRecipient } from "age-encryption";
-import * as age from "../age";
+import { useSandbox, runReconcilerCase, backdate, type ReconcilerCase } from "../testing";
 import * as files from "./files";
 
-let tmp: string;
-let etc: string;
-let host: string;
-let recipient: string;
-let saved: Record<string, string | undefined> = {};
+const sb = useSandbox();
 
-const set = (k: string, v: string) => {
-  saved[k] = process.env[k];
-  process.env[k] = v;
+const THEME = {
+  vars: {
+    theme: { background: "#1F1F1F" },
+    banner: { greeting: "hello" },
+    hosts: ["alpha", "beta"],
+  },
 };
 
-beforeEach(async () => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-files-"));
-  etc = path.join(tmp, "etc");
-  host = path.join(tmp, "host");
-  fs.mkdirSync(path.join(etc, "files"), { recursive: true });
-  fs.mkdirSync(host, { recursive: true });
-
-  const identity = await generateIdentity();
-  recipient = await identityToRecipient(identity);
-  const keyPath = path.join(tmp, "age.key");
-  fs.writeFileSync(keyPath, identity);
-
-  set("BICYCLE_ETC", etc);
-  set("BICYCLE_HOST_ROOT", host);
-  set("BICYCLE_VAR", path.join(tmp, "var"));
-  set("AGE_KEY", keyPath);
-});
-
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  saved = {};
-});
-
-const stage = (rel: string, contents: string | Uint8Array) => {
-  const p = path.join(etc, "files", rel);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, contents);
-};
-
-const stageAge = async (rel: string, plaintext: string) => {
-  const ciphertext = await age.encrypt(new TextEncoder().encode(plaintext), [recipient]);
-  stage(rel, ciphertext);
-};
-
-test("mirrors plaintext file into host root with the source's mode", async () => {
-  stage("etc/foo.conf", "hello");
-  fs.chmodSync(path.join(etc, "files", "etc/foo.conf"), 0o644);
-  await files.all();
-  const dest = path.join(host, "etc/foo.conf");
-  expect(fs.readFileSync(dest, "utf8")).toBe("hello");
-  expect(fs.statSync(dest).mode & 0o777).toBe(0o644);
-});
-
-test("preserves the executable bit from the source", async () => {
-  stage("usr/local/bin/hook", "#!/bin/sh\necho hi\n");
-  fs.chmodSync(path.join(etc, "files", "usr/local/bin/hook"), 0o755);
-  await files.all();
-  expect(fs.statSync(path.join(host, "usr/local/bin/hook")).mode & 0o777).toBe(0o755);
-});
-
-test("decrypts .age files, strips suffix, and forces 0600", async () => {
-  await stageAge("etc/secret.conf.age", "decrypted");
-  // The .age source is 0644 (as git stores it) — the secret must still land 0600.
-  fs.chmodSync(path.join(etc, "files", "etc/secret.conf.age"), 0o644);
-  await files.all();
-  const dest = path.join(host, "etc/secret.conf");
-  expect(fs.existsSync(`${dest}.age`)).toBe(false);
-  expect(fs.readFileSync(dest, "utf8")).toBe("decrypted");
-  expect(fs.statSync(dest).mode & 0o777).toBe(0o600);
-});
-
-test("fixes a stale mode even when content is unchanged", async () => {
-  stage("etc/foo.conf", "hello");
-  fs.chmodSync(path.join(etc, "files", "etc/foo.conf"), 0o644);
-  await files.all();
-  const dest = path.join(host, "etc/foo.conf");
-  // Simulate a file written under the old hardcoded-0600 behaviour.
-  fs.chmodSync(dest, 0o600);
-  await files.all();
-  expect(fs.statSync(dest).mode & 0o777).toBe(0o644);
-});
-
-test("creates nested parent directories", async () => {
-  stage("a/b/c/d.txt", "deep");
-  await files.all();
-  expect(fs.readFileSync(path.join(host, "a/b/c/d.txt"), "utf8")).toBe("deep");
-});
-
-test("idempotent: second pass does not rewrite unchanged files", async () => {
-  stage("foo", "same");
-  await files.all();
-  const dest = path.join(host, "foo");
-  const before = fs.statSync(dest);
-  // Backdate so a rewrite would be detectable as mtime increase.
-  const old = new Date(before.mtimeMs - 60_000);
-  fs.utimesSync(dest, old, old);
-  const stamp = fs.statSync(dest).mtimeMs;
-  await files.all();
-  expect(fs.statSync(dest).mtimeMs).toBe(stamp);
-});
-
-test("rewrites when source content changes", async () => {
-  stage("foo", "v1");
-  await files.all();
-  const dest = path.join(host, "foo");
-  expect(fs.readFileSync(dest, "utf8")).toBe("v1");
-  stage("foo", "v2");
-  await files.all();
-  expect(fs.readFileSync(dest, "utf8")).toBe("v2");
-});
-
-test("continues past a bad .age file", async () => {
-  stage("etc/bad.age", "not-actually-age-encrypted");
-  stage("etc/good", "ok");
-  await files.all();
-  expect(fs.existsSync(path.join(host, "etc/bad"))).toBe(false);
-  expect(fs.readFileSync(path.join(host, "etc/good"), "utf8")).toBe("ok");
-});
-
-test("no-op when source root does not exist", async () => {
-  fs.rmSync(path.join(etc, "files"), { recursive: true });
-  await files.all();
-});
-
-// --- declarative suite: templates, descriptors, fan-out, pruning ------------
-//
-// A case is pure data: an ordered list of actions (staging the etc tree,
-// host-side mutations, sweeps) and a list of expectations against the host
-// root. All imperative logic lives in runFilesCase.
-
-type FilesAction =
-  | { do: "file"; rel: string; contents: string; mode?: number } // under etc/files
-  | { do: "age"; rel: string; plaintext: string } // age-encrypted, under etc/files
-  | { do: "secret"; addr: string; clear: string } // under etc/secrets
-  | { do: "yml"; text: string } // bicycle.yml
-  | { do: "host"; rel: string; contents: string } // pre-existing host file
-  | { do: "rm"; rel: string } // remove from etc tree (files/...)
-  | { do: "sweep" };
-
-type FilesCheck = {
-  path: string; // host-root relative
-  contents?: string;
-  mode?: number;
-  linkTo?: string;
-  absent?: boolean;
-};
-
-type FilesCase = {
-  name: string;
-  actions: FilesAction[];
-  expect: FilesCheck[];
-};
-
-const writeEtc = (rel: string, contents: string | Uint8Array, mode?: number) => {
-  const p = path.join(etc, rel);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, contents);
-  if (mode !== undefined) fs.chmodSync(p, mode);
-};
-
-const encryptTo = async (rel: string, plaintext: string) => {
-  const ciphertext = await age.encrypt(new TextEncoder().encode(plaintext), [recipient]);
-  writeEtc(rel, ciphertext);
-};
-
-const runFilesCase = async (c: FilesCase): Promise<void> => {
-  for (const a of c.actions) {
-    switch (a.do) {
-      case "file": writeEtc(path.join("files", a.rel), a.contents, a.mode ?? 0o644); break;
-      case "age": await encryptTo(path.join("files", a.rel), a.plaintext); break;
-      case "secret": await encryptTo(path.join("secrets", `${a.addr}.age`), a.clear); break;
-      case "yml": writeEtc("bicycle.yml", a.text); break;
-      case "host": {
-        const p = path.join(host, a.rel);
-        fs.mkdirSync(path.dirname(p), { recursive: true });
-        fs.writeFileSync(p, a.contents);
-        break;
-      }
-      case "rm": fs.rmSync(path.join(etc, "files", a.rel)); break;
-      case "sweep": await files.all(); break;
-    }
-  }
-
-  for (const check of c.expect) {
-    const dest = path.join(host, check.path);
-    let st: fs.Stats | null = null;
-    try { st = fs.lstatSync(dest); } catch {}
-    if (check.absent) {
-      expect(st).toBeNull();
-      continue;
-    }
-    expect(st).not.toBeNull();
-    if (check.linkTo !== undefined) {
-      expect(st!.isSymbolicLink()).toBe(true);
-      expect(fs.readlinkSync(dest)).toBe(check.linkTo);
-    }
-    if (check.contents !== undefined) {
-      expect(fs.readFileSync(dest, "utf8")).toBe(check.contents);
-    }
-    if (check.mode !== undefined) {
-      expect(st!.mode & 0o7777).toBe(check.mode);
-    }
-  }
-};
-
-const THEME_YML = `vars:
-  theme:
-    background: "#1F1F1F"
-  banner:
-    greeting: hello
-  hosts: [alpha, beta]
-`;
-
-const FILES_CASES: FilesCase[] = [
+const CASES: ReconcilerCase[] = [
+  {
+    name: "mirrors plaintext file into host root with the source's mode",
+    actions: [
+      { do: "file", rel: "etc/foo.conf", contents: "hello", mode: 0o644 },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "etc/foo.conf", contents: "hello", mode: 0o644 }],
+  },
+  {
+    name: "preserves the executable bit from the source",
+    actions: [
+      { do: "file", rel: "usr/local/bin/hook", contents: "#!/bin/sh\necho hi\n", mode: 0o755 },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "usr/local/bin/hook", mode: 0o755 }],
+  },
+  {
+    name: "decrypts .age files, strips suffix, and forces 0600",
+    actions: [
+      { do: "age", rel: "etc/secret.conf.age", plaintext: "decrypted" },
+      { do: "sweep" },
+    ],
+    fs: [
+      { path: "etc/secret.conf", contents: "decrypted", mode: 0o600 },
+      { path: "etc/secret.conf.age", absent: true },
+    ],
+  },
+  {
+    name: "fixes a stale mode even when content is unchanged",
+    actions: [
+      { do: "file", rel: "etc/foo.conf", contents: "hello", mode: 0o644 },
+      { do: "sweep" },
+      { do: "chmodHost", rel: "etc/foo.conf", mode: 0o600 },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "etc/foo.conf", mode: 0o644 }],
+  },
+  {
+    name: "creates nested parent directories",
+    actions: [
+      { do: "file", rel: "a/b/c/d.txt", contents: "deep" },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "a/b/c/d.txt", contents: "deep" }],
+  },
+  {
+    name: "rewrites when source content changes",
+    actions: [
+      { do: "file", rel: "foo", contents: "v1" },
+      { do: "sweep" },
+      { do: "file", rel: "foo", contents: "v2" },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "foo", contents: "v2" }],
+  },
+  {
+    name: "continues past a bad .age file",
+    actions: [
+      { do: "file", rel: "etc/bad.age", contents: "not-actually-age-encrypted" },
+      { do: "file", rel: "etc/good", contents: "ok" },
+      { do: "sweep" },
+    ],
+    fs: [
+      { path: "etc/bad", absent: true },
+      { path: "etc/good", contents: "ok" },
+    ],
+  },
+  {
+    name: "no-op when source root does not exist",
+    actions: [{ do: "sweep" }],
+    plan: [],
+  },
   {
     name: "renders a .tpl against bicycle.yml vars and strips the suffix",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "file", rel: "etc/motd.tpl", contents: "greeting: {{ banner.greeting }}\n" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "etc/motd", contents: "greeting: hello\n", mode: 0o644 },
       { path: "etc/motd.tpl", absent: true },
     ],
@@ -240,30 +101,30 @@ const FILES_CASES: FilesCase[] = [
   {
     name: "renders filters and for loops",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "file", rel: "etc/app.conf.tpl", contents: "bg={{ theme.background | strip }};{% for h in hosts %}{{ h }};{% endfor %}" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/app.conf", contents: "bg=1F1F1F;alpha;beta;" }],
+    fs: [{ path: "etc/app.conf", contents: "bg=1F1F1F;alpha;beta;" }],
   },
   {
     name: "template that resolves a secret defaults to 0600",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "secret", addr: "svc/db", clear: "hunter2" },
       { do: "file", rel: "etc/svc.env.tpl", contents: 'DB_PASSWORD={{ "svc/db" | secret }}\n' },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/svc.env", contents: "DB_PASSWORD=hunter2\n", mode: 0o600 }],
+    fs: [{ path: "etc/svc.env", contents: "DB_PASSWORD=hunter2\n", mode: 0o600 }],
   },
   {
     name: ".tpl.age decrypts then renders",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "age", rel: "etc/private.conf.tpl.age", plaintext: "greeting={{ banner.greeting }}" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/private.conf", contents: "greeting=hello", mode: 0o600 }],
+    fs: [{ path: "etc/private.conf", contents: "greeting=hello", mode: 0o600 }],
   },
   {
     name: ".age.tpl is rejected at plan time",
@@ -271,7 +132,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/bad.age.tpl", contents: "x" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "etc/bad", absent: true },
       { path: "etc/bad.age", absent: true },
     ],
@@ -279,12 +140,12 @@ const FILES_CASES: FilesCase[] = [
   {
     name: "a render error skips the target but not the sweep",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "file", rel: "etc/broken.tpl", contents: "{{ nope.missing }}" },
       { do: "file", rel: "etc/fine", contents: "ok" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "etc/broken", absent: true },
       { path: "etc/fine", contents: "ok" },
     ],
@@ -296,7 +157,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "root/.bashrc.bicycle", contents: "from: home/spader/.bashrc\n" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "home/spader/.bashrc", contents: "export EDITOR=nvim\n" },
       { path: "root/.bashrc", contents: "export EDITOR=nvim\n" },
       { path: "root/.bashrc.bicycle", absent: true },
@@ -309,17 +170,17 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/sudoers.d/extra.bicycle", contents: 'mode: "0440"\n' },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/sudoers.d/extra", contents: "spader ALL=(ALL) ALL\n", mode: 0o440 }],
+    fs: [{ path: "etc/sudoers.d/extra", contents: "spader ALL=(ALL) ALL\n", mode: 0o440 }],
   },
   {
     name: "descriptor consumes a templated sibling (renders, no conflict)",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "file", rel: "etc/motd.tpl", contents: "{{ banner.greeting }} world\n" },
       { do: "file", rel: "etc/motd.bicycle", contents: 'mode: "0640"\n' },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/motd", contents: "hello world\n", mode: 0o640 }],
+    fs: [{ path: "etc/motd", contents: "hello world\n", mode: 0o640 }],
   },
   {
     name: "template: false deploys a literal .tpl via its exact-name sibling",
@@ -328,7 +189,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/literal.tpl.bicycle", contents: "template: false\n" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "etc/literal.tpl", contents: "not {{ rendered }}" },
       { path: "etc/literal", absent: true },
     ],
@@ -340,18 +201,18 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "home/spader/.ssh/deploy.bicycle", contents: 'mode: "0644"\n' },
       { do: "sweep" },
     ],
-    expect: [{ path: "home/spader/.ssh/deploy", contents: "ssh-ed25519 AAAA\n", mode: 0o644 }],
+    fs: [{ path: "home/spader/.ssh/deploy", contents: "ssh-ed25519 AAAA\n", mode: 0o644 }],
   },
   {
     name: "explicit descriptor mode beats the secret-taint default",
     actions: [
-      { do: "yml", text: THEME_YML },
+      { do: "config", config: THEME },
       { do: "secret", addr: "svc/db", clear: "hunter2" },
       { do: "file", rel: "etc/svc.env.tpl", contents: 'DB={{ "svc/db" | secret }}\n' },
       { do: "file", rel: "etc/svc.env.bicycle", contents: 'mode: "0640"\n' },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/svc.env", contents: "DB=hunter2\n", mode: 0o640 }],
+    fs: [{ path: "etc/svc.env", contents: "DB=hunter2\n", mode: 0o640 }],
   },
   {
     name: "from may not escape files/ or reference descriptors",
@@ -365,7 +226,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "g.bicycle", contents: "from: sub/../../bicycle.yml\n" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "a", absent: true },
       { path: "b", absent: true },
       { path: "c", absent: true },
@@ -382,7 +243,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/dual.bicycle", contents: "from: etc/other\n" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "etc/dual", absent: true },
       { path: "etc/other", contents: "other" },
     ],
@@ -395,7 +256,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/amb.bicycle", contents: 'mode: "0600"\n' },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/amb", absent: true }],
+    fs: [{ path: "etc/amb", absent: true }],
   },
   {
     name: "symlink descriptor creates and converges",
@@ -404,9 +265,8 @@ const FILES_CASES: FilesCase[] = [
       { do: "sweep" },
       { do: "sweep" },
     ],
-    expect: [
-      { path: "home/spader/.config/nvim", linkTo: "/home/spader/.dotfiles/nvim" },
-    ],
+    fs: [{ path: "home/spader/.config/nvim", linkTo: "/home/spader/.dotfiles/nvim" }],
+    plan: [],
   },
   {
     name: "symlink descriptor replaces an existing regular file",
@@ -415,7 +275,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/target.bicycle", contents: "kind: symlink\nto: /elsewhere\n" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/target", linkTo: "/elsewhere" }],
+    fs: [{ path: "etc/target", linkTo: "/elsewhere" }],
   },
   {
     name: "conflicting claims on one target are all skipped",
@@ -424,7 +284,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/dup.tpl", contents: "templated" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/dup", absent: true }],
+    fs: [{ path: "etc/dup", absent: true }],
   },
   {
     name: "unknown owner falls back to default ownership but still writes",
@@ -433,7 +293,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/f.bicycle", contents: "owner: no-such-user-zz\n" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/f", contents: "content" }],
+    fs: [{ path: "etc/f", contents: "content" }],
   },
   {
     name: "a target removed from the tree is pruned on the next sweep",
@@ -444,7 +304,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "rm", rel: "etc/stale" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "etc/keep", contents: "keep" },
       { path: "etc/stale", absent: true },
     ],
@@ -459,7 +319,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "root/.profile.bicycle", contents: "from: home/spader/.bashrc\n" },
       { do: "sweep" },
     ],
-    expect: [
+    fs: [
       { path: "root/.bashrc", absent: true },
       { path: "root/.profile", contents: "rc" },
       { path: "home/spader/.bashrc", contents: "rc" },
@@ -474,7 +334,7 @@ const FILES_CASES: FilesCase[] = [
       { do: "file", rel: "etc/broken.bicycle", contents: "kind: [not, valid\n" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/precious", contents: "v1" }],
+    fs: [{ path: "etc/precious", contents: "v1" }],
   },
   {
     name: "pruning resumes once the plan is clean again",
@@ -487,10 +347,148 @@ const FILES_CASES: FilesCase[] = [
       { do: "rm", rel: "etc/broken.bicycle" },
       { do: "sweep" },
     ],
-    expect: [{ path: "etc/precious", absent: true }],
+    fs: [{ path: "etc/precious", absent: true }],
+  },
+  {
+    name: "plan: undeployed file yields an exists diff and writes nothing",
+    actions: [{ do: "file", rel: "etc/foo.conf", contents: "hello" }],
+    plan: [{ type: "file", id: "etc/foo.conf", field: "exists", expected: true, actual: false }],
+    fs: [{ path: "etc/foo.conf", absent: true }],
+  },
+  {
+    name: "plan: clean after a sweep",
+    actions: [
+      { do: "file", rel: "etc/foo.conf", contents: "hello" },
+      { do: "sweep" },
+    ],
+    plan: [],
+  },
+  {
+    name: "plan: host content drift yields a content diff",
+    actions: [
+      { do: "file", rel: "etc/foo.conf", contents: "hello" },
+      { do: "sweep" },
+      { do: "host", rel: "etc/foo.conf", contents: "tampered" },
+    ],
+    plan: [{ type: "file", id: "etc/foo.conf", field: "content" }],
+  },
+  {
+    name: "plan: host mode drift yields a mode diff",
+    actions: [
+      { do: "file", rel: "etc/foo.conf", contents: "hello", mode: 0o644 },
+      { do: "sweep" },
+      { do: "chmodHost", rel: "etc/foo.conf", mode: 0o600 },
+    ],
+    plan: [{ type: "file", id: "etc/foo.conf", field: "mode", expected: "0644", actual: "0600" }],
+  },
+  {
+    name: "plan: drift on an encrypted target is redacted",
+    actions: [
+      { do: "age", rel: "etc/secret.conf.age", plaintext: "v1" },
+      { do: "sweep" },
+      { do: "host", rel: "etc/secret.conf", contents: "tampered" },
+    ],
+    plan: [{ type: "file", id: "etc/secret.conf", field: "content", redacted: true }],
+  },
+  {
+    name: "plan: removed source yields a prune diff",
+    actions: [
+      { do: "file", rel: "etc/stale", contents: "stale" },
+      { do: "sweep" },
+      { do: "rm", rel: "etc/stale" },
+    ],
+    plan: [{ type: "file", id: "etc/stale", field: "exists", expected: false, actual: true }],
+  },
+  {
+    name: "plan: an errored plan suppresses prune diffs",
+    actions: [
+      { do: "file", rel: "etc/precious", contents: "v1" },
+      { do: "sweep" },
+      { do: "rm", rel: "etc/precious" },
+      { do: "file", rel: "etc/broken.bicycle", contents: "kind: [not, valid\n" },
+    ],
+    plan: [],
+  },
+  {
+    name: "plan: changed symlink descriptor yields a target diff",
+    actions: [
+      { do: "file", rel: "etc/link.bicycle", contents: "kind: symlink\nto: /old\n" },
+      { do: "sweep" },
+      { do: "file", rel: "etc/link.bicycle", contents: "kind: symlink\nto: /new\n" },
+    ],
+    plan: [{ type: "symlink", id: "etc/link", field: "target", expected: "/new", actual: "/old" }],
+  },
+  {
+    name: "kind switch symlink->file replaces the link itself",
+    actions: [
+      { do: "file", rel: "etc/link.bicycle", contents: "kind: symlink\nto: /nonexistent-bicycle-test-9b3c\n" },
+      { do: "sweep" },
+      { do: "rm", rel: "etc/link.bicycle" },
+      { do: "file", rel: "etc/link", contents: "now a file" },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "etc/link", contents: "now a file", mode: 0o644 }],
+    plan: [],
+  },
+  {
+    name: "declared file whose dest is a directory: kind diff, dir intact",
+    actions: [
+      { do: "hostDir", rel: "etc/appdir" },
+      { do: "host", rel: "etc/appdir/data", contents: "user data" },
+      { do: "file", rel: "etc/appdir", contents: "managed" },
+      { do: "sweep" },
+    ],
+    fs: [
+      { path: "etc/appdir", dir: true },
+      { path: "etc/appdir/data", contents: "user data" },
+    ],
+    plan: [{ type: "file", id: "etc/appdir", field: "kind", expected: "file", actual: "dir" }],
+  },
+  {
+    name: "owner-only descriptor yields owner diff, no spurious group diff",
+    skipIf: process.getuid !== undefined && process.getuid() === 0,
+    actions: [
+      { do: "file", rel: "etc/owned", contents: "x" },
+      { do: "file", rel: "etc/owned.bicycle", contents: "owner: root\n" },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "etc/owned", contents: "x" }],
+    plan: [{ type: "file", id: "etc/owned", field: "owner", expected: 0 }],
+  },
+  {
+    name: "secret-bearing template converges (plan empty after sweep)",
+    actions: [
+      { do: "config", config: {} },
+      { do: "secret", addr: "svc/db", clear: "hunter2" },
+      { do: "file", rel: "etc/svc.env.tpl", contents: 'DB={{ "svc/db" | secret }}\n' },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "etc/svc.env", contents: "DB=hunter2\n", mode: 0o600 }],
+    plan: [],
+  },
+  {
+    name: "a stale symlink target is pruned",
+    actions: [
+      { do: "file", rel: "etc/link.bicycle", contents: "kind: symlink\nto: /nonexistent-bicycle-test-9b3c\n" },
+      { do: "sweep" },
+      { do: "rm", rel: "etc/link.bicycle" },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "etc/link", absent: true }],
+    plan: [],
   },
 ];
 
-for (const c of FILES_CASES) {
-  test(c.name, () => runFilesCase(c));
+for (const c of CASES) {
+  test.skipIf(c.skipIf === true)(c.name, () => runReconcilerCase(sb, files, files.all, c));
 }
+
+test("idempotent: second pass does not rewrite unchanged files", async () => {
+  fs.mkdirSync(sb.etcPath("files"), { recursive: true });
+  fs.writeFileSync(sb.etcPath("files/foo"), "same");
+  await files.all();
+  const dest = sb.hostPath("foo");
+  const stamp = backdate(dest);
+  await files.all();
+  expect(fs.statSync(dest).mtimeMs).toBe(stamp);
+});

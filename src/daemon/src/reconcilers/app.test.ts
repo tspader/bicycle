@@ -1,69 +1,114 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect } from "bun:test";
 import { $ } from "bun";
 import fs from "fs";
-import os from "os";
 import path from "path";
-import { generateIdentity, identityToRecipient } from "age-encryption";
-import * as age from "../age";
+import { useSandbox, writeSecret, backdate } from "../testing";
 import * as app from "./app";
 
-let tmp: string;
-let etc: string;
-let state: string;
-let recipient: string;
-let saved: Record<string, string | undefined> = {};
+const sb = useSandbox();
 
-const set = (k: string, v: string) => {
-  saved[k] = process.env[k];
-  process.env[k] = v;
+const isRoot = process.getuid !== undefined && process.getuid() === 0;
+
+type EnvCase = {
+  name: string;
+  env?: Record<string, string>;
+  vars?: unknown;
+  secrets?: Record<string, string>;
+  expect?: Record<string, string>;
+  throws?: true;
 };
 
-beforeEach(async () => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-app-"));
-  etc = path.join(tmp, "etc");
-  state = path.join(tmp, "var");
-  fs.mkdirSync(path.join(etc, "secrets"), { recursive: true });
-  fs.mkdirSync(path.join(etc, "apps"), { recursive: true });
-  fs.mkdirSync(state, { recursive: true });
+const ENV_CASES: EnvCase[] = [
+  { name: "undefined input returns empty", expect: {} },
+  { name: "passes through literals", env: { A: "1", B: "two" }, expect: { A: "1", B: "two" } },
+  {
+    name: "interpolates ${secret:...} tokens",
+    secrets: { "foo/bar": "sekret" },
+    env: { X: "v=${secret:foo/bar}" },
+    expect: { X: "v=sekret" },
+  },
+  {
+    name: "missing secret propagates as error",
+    env: { X: "${secret:nope}" },
+    throws: true,
+  },
+  {
+    name: "interpolates vars (scalars and nested paths)",
+    env: { PUID: "${admin.uid}", TZ: "${tz}" },
+    vars: { admin: { uid: 1000 }, tz: "UTC" },
+    expect: { PUID: "1000", TZ: "UTC" },
+  },
+  {
+    name: "mixes vars and secrets in one string",
+    secrets: { "api/key": "k123" },
+    env: { URL: "https://${host}.lan/api?k=${secret:api/key}" },
+    vars: { host: "miniflux" },
+    expect: { URL: "https://miniflux.lan/api?k=k123" },
+  },
+];
 
-  const identity = await generateIdentity();
-  recipient = await identityToRecipient(identity);
-  const keyPath = path.join(tmp, "age.key");
-  fs.writeFileSync(keyPath, identity);
+for (const c of ENV_CASES) {
+  test(`resolveAppEnv: ${c.name}`, async () => {
+    for (const [addr, clear] of Object.entries(c.secrets ?? {})) {
+      await writeSecret(sb, addr, clear);
+    }
+    const run = app.resolveAppEnv(c.env, c.vars ?? {});
+    if (c.throws) await expect(run).rejects.toThrow();
+    else expect(await run).toEqual(c.expect!);
+  });
+}
 
-  set("BICYCLE_ETC", etc);
-  set("BICYCLE_VAR", state);
-  set("AGE_KEY", keyPath);
-});
-
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  saved = {};
-});
-
-const writeSecret = async (addr: string, value: string) => {
-  const dest = path.join(etc, "secrets", `${addr}.age`);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const ct = await age.encrypt(new TextEncoder().encode(value), [recipient]);
-  fs.writeFileSync(dest, ct);
+type ArgsCase = {
+  name: string;
+  base: string;
+  generated: string | null;
+  user: string | null;
+  expect: string[];
 };
 
-const writeAppConfig = (name: string, body: string) => {
-  const dir = path.join(etc, "apps", name);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "config.yml"), body);
-};
+const ARGS_CASES: ArgsCase[] = [
+  {
+    name: "base only when no overrides",
+    base: "/s/compose.yml",
+    generated: null,
+    user: null,
+    expect: ["-f", "/s/compose.yml"],
+  },
+  {
+    name: "generated then user override",
+    base: "/s/c.yml",
+    generated: "/s/g.yml",
+    user: "/e/u.yml",
+    expect: ["-f", "/s/c.yml", "-f", "/s/g.yml", "-f", "/e/u.yml"],
+  },
+  {
+    name: "only generated, no user",
+    base: "/s/c.yml",
+    generated: "/s/g.yml",
+    user: null,
+    expect: ["-f", "/s/c.yml", "-f", "/s/g.yml"],
+  },
+  {
+    name: "only user, no generated",
+    base: "/s/c.yml",
+    generated: null,
+    user: "/e/u.yml",
+    expect: ["-f", "/s/c.yml", "-f", "/e/u.yml"],
+  },
+];
+
+for (const c of ARGS_CASES) {
+  test(`buildComposeArgs: ${c.name}`, () => {
+    expect(app.buildComposeArgs(c.base, c.generated, c.user)).toEqual(c.expect);
+  });
+}
 
 type CatalogEntry = { compose: string; bicycle?: string };
 
 const makeCatalogRepo = async (
   entries: Record<string, CatalogEntry>,
 ): Promise<{ url: string; sha: string }> => {
-  const repo = path.join(tmp, "catalog");
+  const repo = path.join(sb.root, "catalog");
   fs.mkdirSync(repo, { recursive: true });
   for (const [name, e] of Object.entries(entries)) {
     fs.mkdirSync(path.join(repo, name), { recursive: true });
@@ -72,230 +117,241 @@ const makeCatalogRepo = async (
   }
   await $`git -C ${repo} init -q -b main`.quiet();
   await $`git -C ${repo} -c user.email=t@t -c user.name=t add .`.quiet();
-  await $`git -C ${repo} -c user.email=t@t -c user.name=t commit -qm initial`.quiet();
+  await $`git -C ${repo} -c user.email=t@t -c user.name=t commit -q --allow-empty -m initial`.quiet();
   await $`git -C ${repo} config uploadpack.allowAnySHA1InWant true`.quiet();
   const sha = (await $`git -C ${repo} rev-parse HEAD`.quiet().text()).trim();
   return { url: repo, sha };
 };
 
-test("resolveAppEnv: undefined input returns empty", async () => {
-  expect(await app.resolveAppEnv(undefined, {})).toEqual({});
-});
+type PlanCase = {
+  name: string;
+  catalog: Record<string, CatalogEntry>;
+  app: string;
+  noAppConfig?: boolean;
+  env?: Record<string, string>;
+  userOverride?: string;
+  secrets?: Record<string, string>;
+  nullPlan?: boolean;
+  throws?: RegExp;
+  expect?: {
+    env?: Record<string, string>;
+    mounts?: { hostRel: string; owner?: { uid: number; gid: number } }[];
+    overrideVolumes?: Record<string, number>;
+  };
+};
 
-test("resolveAppEnv: passes through literals", async () => {
-  expect(await app.resolveAppEnv({ A: "1", B: "two" }, {})).toEqual({ A: "1", B: "two" });
-});
-
-test("resolveAppEnv: interpolates ${secret:...} tokens", async () => {
-  await writeSecret("foo/bar", "sekret");
-  expect(await app.resolveAppEnv({ X: "v=${secret:foo/bar}" }, {})).toEqual({ X: "v=sekret" });
-});
-
-test("resolveAppEnv: missing secret propagates as error", async () => {
-  await expect(app.resolveAppEnv({ X: "${secret:nope}" }, {})).rejects.toThrow();
-});
-
-test("resolveAppEnv: interpolates vars (scalars and nested paths)", async () => {
-  expect(
-    await app.resolveAppEnv(
-      { PUID: "${admin.uid}", TZ: "${tz}" },
-      { admin: { uid: 1000 }, tz: "UTC" },
-    ),
-  ).toEqual({ PUID: "1000", TZ: "UTC" });
-});
-
-test("resolveAppEnv: mixes vars and secrets in one string", async () => {
-  await writeSecret("api/key", "k123");
-  expect(
-    await app.resolveAppEnv(
-      { URL: "https://${host}.lan/api?k=${secret:api/key}" },
-      { host: "miniflux" },
-    ),
-  ).toEqual({ URL: "https://miniflux.lan/api?k=k123" });
-});
-
-test("buildComposeArgs: base only when no overrides", () => {
-  expect(app.buildComposeArgs("/s/compose.yml", null, null)).toEqual(["-f", "/s/compose.yml"]);
-});
-
-test("buildComposeArgs: generated then user override", () => {
-  expect(app.buildComposeArgs("/s/c.yml", "/s/g.yml", "/e/u.yml")).toEqual([
-    "-f", "/s/c.yml", "-f", "/s/g.yml", "-f", "/e/u.yml",
-  ]);
-});
-
-test("buildComposeArgs: only generated, no user", () => {
-  expect(app.buildComposeArgs("/s/c.yml", "/s/g.yml", null)).toEqual([
-    "-f", "/s/c.yml", "-f", "/s/g.yml",
-  ]);
-});
-
-test("buildComposeArgs: only user, no generated", () => {
-  expect(app.buildComposeArgs("/s/c.yml", null, "/e/u.yml")).toEqual([
-    "-f", "/s/c.yml", "-f", "/e/u.yml",
-  ]);
-});
-
-test("plan: returns null when app config missing", async () => {
-  fs.mkdirSync(path.join(etc, "apps", "ghost"), { recursive: true });
-  expect(await app.plan("ghost", "file:///does/not/matter")).toBeNull();
-});
-
-test("plan: throws when catalog lacks <name>/compose.yml at ref", async () => {
-  const { url, sha } = await makeCatalogRepo({ other: { compose: "services: {}\n" } });
-  writeAppConfig("myapp", `ref: ${sha}\n`);
-  await expect(app.plan("myapp", url)).rejects.toThrow(/catalog has no myapp\/compose\.yml/);
-});
-
-test("plan: no manifest yields empty mounts and null overrideContent", async () => {
-  const { url, sha } = await makeCatalogRepo({
-    myapp: { compose: "services:\n  myapp:\n    image: x\n" },
-  });
-  await writeSecret("myapp/pass", "hunter2");
-  writeAppConfig("myapp", `ref: ${sha}\nenv:\n  PASS: \${secret:myapp/pass}\n  PLAIN: literal\n`);
-
-  const p = await app.plan("myapp", url);
-  expect(p).not.toBeNull();
-  expect(p!.name).toBe("myapp");
-  expect(p!.ref).toBe(sha);
-  expect(p!.env).toEqual({ PASS: "hunter2", PLAIN: "literal" });
-  expect(p!.mounts).toEqual([]);
-  expect(p!.overrideContent).toBeNull();
-  expect(p!.userOverride).toBeNull();
-  expect(p!.stateCompose).toBe(path.join(state, "apps", "myapp", "compose.yml"));
-  expect(p!.stateOverride).toBe(path.join(state, "apps", "myapp", "override.yml"));
-});
-
-test("plan: manifest populates mounts and overrideContent", async () => {
-  const { url, sha } = await makeCatalogRepo({
-    caddy: {
-      compose: "services:\n  caddy:\n    image: caddy\n",
-      bicycle: `services:
+const PLAN_CASES: PlanCase[] = [
+  {
+    name: "returns null when app config missing",
+    catalog: {},
+    app: "ghost",
+    noAppConfig: true,
+    nullPlan: true,
+  },
+  {
+    name: "throws when catalog lacks <name>/compose.yml at ref",
+    catalog: { other: { compose: "services: {}\n" } },
+    app: "myapp",
+    throws: /catalog has no myapp\/compose\.yml/,
+  },
+  {
+    name: "no manifest yields empty mounts and null overrideContent",
+    catalog: { myapp: { compose: "services:\n  myapp:\n    image: x\n" } },
+    app: "myapp",
+    secrets: { "myapp/pass": "hunter2" },
+    env: { PASS: "${secret:myapp/pass}", PLAIN: "literal" },
+    expect: { env: { PASS: "hunter2", PLAIN: "literal" }, mounts: [] },
+  },
+  {
+    name: "manifest populates mounts and overrideContent",
+    catalog: {
+      caddy: {
+        compose: "services:\n  caddy:\n    image: caddy\n",
+        bicycle: `services:
   caddy:
     data:
       - path: /data
         owner: "0:0"
       - path: /config
 `,
+      },
     },
-  });
-  writeAppConfig("caddy", `ref: ${sha}\n`);
-  const p = await app.plan("caddy", url);
-  expect(p!.mounts.map((m) => m.hostPath)).toEqual([
-    path.join(state, "apps", "caddy", "caddy", "data"),
-    path.join(state, "apps", "caddy", "caddy", "config"),
-  ]);
-  expect(p!.mounts[0]!.owner).toEqual({ uid: 0, gid: 0 });
-  expect(p!.mounts[1]!.owner).toBeUndefined();
-  expect(p!.overrideContent).not.toBeNull();
-  const parsed = Bun.YAML.parse(p!.overrideContent!) as any;
-  expect(parsed.services.caddy.volumes).toHaveLength(2);
-});
-
-test("plan: missing required env throws naming app and missing keys", async () => {
-  const { url, sha } = await makeCatalogRepo({
-    web: {
-      compose: "services:\n  web:\n    image: x\n",
-      bicycle: "env:\n  required: [TOKEN, BASE_URL]\n",
+    app: "caddy",
+    expect: {
+      mounts: [
+        { hostRel: "apps/caddy/caddy/data", owner: { uid: 0, gid: 0 } },
+        { hostRel: "apps/caddy/caddy/config" },
+      ],
+      overrideVolumes: { caddy: 2 },
     },
-  });
-  writeAppConfig("web", `ref: ${sha}\nenv:\n  TOKEN: t\n`);
-  await expect(app.plan("web", url)).rejects.toThrow(
-    /app "web" missing required env: BASE_URL/,
-  );
-});
-
-test("plan: required env present passes", async () => {
-  const { url, sha } = await makeCatalogRepo({
-    web: {
-      compose: "services:\n  web:\n    image: x\n",
-      bicycle: "env:\n  required: [TOKEN]\n",
+  },
+  {
+    name: "missing required env throws naming app and missing keys",
+    catalog: {
+      web: {
+        compose: "services:\n  web:\n    image: x\n",
+        bicycle: "env:\n  required: [TOKEN, BASE_URL]\n",
+      },
     },
+    app: "web",
+    env: { TOKEN: "t" },
+    throws: /app "web" missing required env: BASE_URL/,
+  },
+  {
+    name: "required env present passes",
+    catalog: {
+      web: {
+        compose: "services:\n  web:\n    image: x\n",
+        bicycle: "env:\n  required: [TOKEN]\n",
+      },
+    },
+    app: "web",
+    env: { TOKEN: "abc" },
+    expect: { env: { TOKEN: "abc" } },
+  },
+  {
+    name: "detects user override file",
+    catalog: { myapp: { compose: "services:\n  myapp:\n    image: x\n" } },
+    app: "myapp",
+    userOverride: "services:\n  myapp:\n    environment: {}\n",
+    expect: {},
+  },
+];
+
+for (const c of PLAN_CASES) {
+  test(`plan: ${c.name}`, async () => {
+    const { url, sha } = c.nullPlan
+      ? { url: "file:///does/not/matter", sha: "" }
+      : await makeCatalogRepo(c.catalog);
+    const appDir = path.join(sb.etc, "apps", c.app);
+    fs.mkdirSync(appDir, { recursive: true });
+    if (!c.noAppConfig) {
+      fs.writeFileSync(
+        path.join(appDir, "config.yml"),
+        Bun.YAML.stringify({ ref: sha, ...(c.env ? { env: c.env } : {}) }),
+      );
+    }
+    for (const [addr, clear] of Object.entries(c.secrets ?? {})) {
+      await writeSecret(sb, addr, clear);
+    }
+    const overridePath = path.join(appDir, "compose.yml");
+    if (c.userOverride !== undefined) fs.writeFileSync(overridePath, c.userOverride);
+
+    if (c.throws) {
+      await expect(app.plan(c.app, url)).rejects.toThrow(c.throws);
+      return;
+    }
+    const p = await app.plan(c.app, url);
+    if (c.nullPlan) {
+      expect(p).toBeNull();
+      return;
+    }
+
+    expect(p).not.toBeNull();
+    expect(p!.name).toBe(c.app);
+    expect(p!.ref).toBe(sha);
+    expect(p!.stateCompose).toBe(path.join(sb.state, "apps", c.app, "compose.yml"));
+    expect(p!.stateOverride).toBe(path.join(sb.state, "apps", c.app, "override.yml"));
+    expect(p!.userOverride).toBe(c.userOverride !== undefined ? overridePath : null);
+
+    if (c.expect?.env) expect(p!.env).toEqual(c.expect.env);
+    if (c.expect?.mounts) {
+      const actual = p!.mounts.map((m) => ({
+        hostRel: path.relative(sb.state, m.hostPath),
+        ...(m.owner ? { owner: m.owner } : {}),
+      }));
+      expect(actual).toEqual(c.expect.mounts);
+    }
+    if (c.expect?.overrideVolumes) {
+      expect(p!.overrideContent).not.toBeNull();
+      const parsed = Bun.YAML.parse(p!.overrideContent!) as any;
+      for (const [service, count] of Object.entries(c.expect.overrideVolumes)) {
+        expect(parsed.services[service].volumes).toHaveLength(count);
+      }
+    } else {
+      expect(p!.overrideContent).toBeNull();
+    }
   });
-  writeAppConfig("web", `ref: ${sha}\nenv:\n  TOKEN: abc\n`);
-  const p = await app.plan("web", url);
-  expect(p!.env).toEqual({ TOKEN: "abc" });
-});
+}
 
-test("plan: detects user override file", async () => {
-  const { url, sha } = await makeCatalogRepo({
-    myapp: { compose: "services:\n  myapp:\n    image: x\n" },
-  });
-  writeAppConfig("myapp", `ref: ${sha}\n`);
-  const overridePath = path.join(etc, "apps", "myapp", "compose.yml");
-  fs.writeFileSync(overridePath, "services:\n  myapp:\n    environment: {}\n");
+type MountCase = {
+  name: string;
+  pre?: { dirs?: string[]; files?: Record<string, string> };
+  target: string;
+  owner?: "self" | { uid: number; gid: number };
+  skipIfRoot?: boolean;
+  expect: { dir?: boolean; stableMtimeOf?: string };
+};
 
-  const p = await app.plan("myapp", url);
-  expect(p!.userOverride).toBe(overridePath);
-});
+const MOUNT_CASES: MountCase[] = [
+  {
+    name: "creates dir when absent",
+    target: "mnt/a",
+    expect: { dir: true },
+  },
+  {
+    name: "same-owner is a no-op (mtime unchanged)",
+    pre: { dirs: ["mnt/b"] },
+    target: "mnt/b",
+    owner: "self",
+    expect: { stableMtimeOf: "mnt/b" },
+  },
+  {
+    name: "tolerates EPERM on chown when non-root attempts foreign uid",
+    pre: { dirs: ["mnt/c"] },
+    target: "mnt/c",
+    owner: { uid: 1, gid: 1 },
+    skipIfRoot: true,
+    expect: {},
+  },
+  {
+    name: "recurses into pre-existing files without rewriting same-owner entries",
+    pre: { dirs: ["mnt/rec/sub"], files: { "mnt/rec/sub/f.txt": "hi" } },
+    target: "mnt/rec",
+    owner: "self",
+    expect: { stableMtimeOf: "mnt/rec/sub/f.txt" },
+  },
+  {
+    name: "recursing with a foreign owner swallows EPERM",
+    pre: { dirs: ["mnt/rec2/sub"], files: { "mnt/rec2/sub/f.txt": "hi" } },
+    target: "mnt/rec2",
+    owner: { uid: 1, gid: 1 },
+    skipIfRoot: true,
+    expect: {},
+  },
+];
 
-test("ensureMount: creates dir when absent", () => {
-  const dir = path.join(tmp, "mnt", "a");
-  app.ensureMount({ service: "x", hostPath: dir, containerPath: "/a" });
-  expect(fs.statSync(dir).isDirectory()).toBe(true);
-});
+for (const c of MOUNT_CASES) {
+  test.skipIf(c.skipIfRoot === true && isRoot)(`ensureMount: ${c.name}`, () => {
+    for (const d of c.pre?.dirs ?? []) {
+      fs.mkdirSync(path.join(sb.root, d), { recursive: true });
+    }
+    for (const [rel, contents] of Object.entries(c.pre?.files ?? {})) {
+      fs.writeFileSync(path.join(sb.root, rel), contents);
+    }
 
-test("ensureMount: same-owner is a no-op (mtime unchanged)", () => {
-  const dir = path.join(tmp, "mnt", "b");
-  fs.mkdirSync(dir, { recursive: true });
-  const st = fs.statSync(dir);
-  const before = st.mtimeMs;
-  // Backdate so any rewrite/chown is detectable.
-  const old = new Date(before - 60_000);
-  fs.utimesSync(dir, old, old);
-  const stamp = fs.statSync(dir).mtimeMs;
-  app.ensureMount({
-    service: "x",
-    hostPath: dir,
-    containerPath: "/b",
-    owner: { uid: st.uid, gid: st.gid },
-  });
-  expect(fs.statSync(dir).mtimeMs).toBe(stamp);
-});
+    let stablePath: string | null = null;
+    let stamp = 0;
+    if (c.expect.stableMtimeOf) {
+      stablePath = path.join(sb.root, c.expect.stableMtimeOf);
+      stamp = backdate(stablePath);
+    }
 
-test("ensureMount: tolerates EPERM on chown when non-root attempts foreign uid", () => {
-  const dir = path.join(tmp, "mnt", "c");
-  fs.mkdirSync(dir, { recursive: true });
-  if (process.getuid && process.getuid() === 0) return; // skip when running as root
-  // Pick a uid we cannot become; chown will EPERM but ensureMount must swallow it.
-  expect(() =>
+    const target = path.join(sb.root, c.target);
+    const ownerOf = (p: string) => {
+      const st = fs.statSync(p);
+      return { uid: st.uid, gid: st.gid };
+    };
     app.ensureMount({
       service: "x",
-      hostPath: dir,
-      containerPath: "/c",
-      owner: { uid: 1, gid: 1 },
-    }),
-  ).not.toThrow();
-});
+      hostPath: target,
+      containerPath: "/x",
+      ...(c.owner === undefined
+        ? {}
+        : { owner: c.owner === "self" ? ownerOf(target) : c.owner }),
+    });
 
-test("ensureMount: recurses into pre-existing files (the original bug)", () => {
-  const dir = path.join(tmp, "mnt", "rec");
-  fs.mkdirSync(path.join(dir, "sub"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "sub", "f.txt"), "hi");
-  const st = fs.statSync(path.join(dir, "sub", "f.txt"));
-  const before = st.mtimeMs;
-  const old = new Date(before - 60_000);
-  fs.utimesSync(path.join(dir, "sub", "f.txt"), old, old);
-
-  app.ensureMount({
-    service: "x",
-    hostPath: dir,
-    containerPath: "/r",
-    owner: { uid: st.uid, gid: st.gid },
+    if (c.expect.dir) expect(fs.statSync(target).isDirectory()).toBe(true);
+    if (stablePath) expect(fs.statSync(stablePath).mtimeMs).toBe(stamp);
   });
-  expect(fs.statSync(path.join(dir, "sub", "f.txt")).mtimeMs).toBe(
-    fs.statSync(path.join(dir, "sub", "f.txt")).mtimeMs,
-  );
-
-  // Different-owner under non-root: EPERM swallowed, no throw.
-  if (process.getuid && process.getuid() !== 0) {
-    expect(() =>
-      app.ensureMount({
-        service: "x",
-        hostPath: dir,
-        containerPath: "/r",
-        owner: { uid: 1, gid: 1 },
-      }),
-    ).not.toThrow();
-  }
-});
+}

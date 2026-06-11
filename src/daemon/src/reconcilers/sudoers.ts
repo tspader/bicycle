@@ -1,7 +1,8 @@
 import { $ } from "bun";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import type { SudoMode } from "@bicycle/shared";
+import type { Diff, SudoMode } from "@bicycle/shared";
 import * as config from "../config";
 import { env } from "../env";
 import { paths } from "../paths";
@@ -20,26 +21,50 @@ export const ruleFor = (u: SudoUser): string | null => {
 export const rulesFor = (users: SudoUser[]): string[] =>
   users.map(ruleFor).filter((l): l is string => l !== null);
 
-const dropInPath = (): string =>
-  path.join(env.HOST_ROOT, "etc", "sudoers.d", "bicycle");
+const TARGET = "etc/sudoers.d/bicycle";
+
+const dropInPath = (): string => path.join(env.HOST_ROOT, TARGET);
+
+const render = (lines: string[]): string =>
+  `# Managed by Bicycle. Do not edit.\n${lines.join("\n")}\n`;
+
+const sha = (s: string): string =>
+  crypto.createHash("sha256").update(s).digest("hex");
+
+export const plan = async (): Promise<Diff[]> => {
+  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
+  const dest = dropInPath();
+  const lines = rulesFor(config.bicycle().users ?? []);
+  const current = fs.existsSync(dest) ? fs.readFileSync(dest, "utf8") : null;
+  if (lines.length === 0) {
+    if (current === null) return [];
+    return [{ type: "file", id: TARGET, field: "exists", expected: false, actual: true }];
+  }
+  const want = render(lines);
+  if (current === want) return [];
+  return [{
+    type: "file",
+    id: TARGET,
+    field: "content",
+    expected: sha(want),
+    actual: current === null ? null : sha(current),
+  }];
+};
 
 export const all = async (): Promise<void> => {
   if (!fs.existsSync(paths.etc.bicycleYaml)) return;
+  if ((await plan()).length === 0) return;
   const dest = dropInPath();
   const lines = rulesFor(config.bicycle().users ?? []);
 
   // No sudo users: ensure our drop-in is gone rather than leaving a stale grant.
   if (lines.length === 0) {
-    if (fs.existsSync(dest)) {
-      fs.rmSync(dest);
-      log.info({ dest }, "sudoers: removed (no sudo users)");
-    }
+    fs.rmSync(dest);
+    log.info({ dest }, "sudoers: removed (no sudo users)");
     return;
   }
 
-  const content = `# Managed by Bicycle. Do not edit.\n${lines.join("\n")}\n`;
-  if (fs.existsSync(dest) && fs.readFileSync(dest, "utf8") === content) return;
-
+  const content = render(lines);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   // Temp name carries a dot so sudo's #includedir skips it while present; only
   // the final `bicycle` (no dot) is ever loaded.

@@ -1,46 +1,37 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect } from "bun:test";
 import { $ } from "bun";
 import fs from "fs";
-import os from "os";
 import path from "path";
+import { useSandbox } from "../testing";
 import * as manifest from "./manifest";
+
+const sb = useSandbox();
 
 const hasDockerCompose = await (async () => {
   const r = await $`docker compose version`.quiet().nothrow();
   return r.exitCode === 0;
 })();
 
-let tmp: string;
-let savedVar: string | undefined;
-
-beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-manifest-"));
-  savedVar = process.env.BICYCLE_VAR;
-  process.env.BICYCLE_VAR = path.join(tmp, "var");
-});
-
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  if (savedVar === undefined) delete process.env.BICYCLE_VAR;
-  else process.env.BICYCLE_VAR = savedVar;
-});
-
-const writeManifest = (name: string, body: string): string => {
-  const p = path.join(tmp, `${name}.yml`);
-  fs.writeFileSync(p, body);
-  return p;
+type LoadCase = {
+  name: string;
+  yml?: string;
+  expect?: unknown;
+  throws?: RegExp;
 };
 
-test("load: returns {} when manifest file absent", () => {
-  expect(manifest.load(path.join(tmp, "nope.yml"))).toEqual({});
-});
-
-test("load: returns {} for empty file", () => {
-  expect(manifest.load(writeManifest("a", ""))).toEqual({});
-});
-
-test("load: parses services and env sections", () => {
-  const p = writeManifest("a", `
+const LOAD_CASES: LoadCase[] = [
+  {
+    name: "returns {} when manifest file absent",
+    expect: {},
+  },
+  {
+    name: "returns {} for empty file",
+    yml: "",
+    expect: {},
+  },
+  {
+    name: "parses services and env sections",
+    yml: `
 services:
   db:
     data:
@@ -49,198 +40,276 @@ services:
 env:
   required: [A, B]
   optional: [C]
-`);
-  const m = manifest.load(p);
-  expect(m.services?.db?.data).toEqual([
-    { path: "/var/lib/postgresql/data", owner: "999:999" },
-  ]);
-  expect(m.env).toEqual({ required: ["A", "B"], optional: ["C"] });
-});
-
-test("load: rejects non-mapping top-level", () => {
-  const p = writeManifest("a", "- 1\n- 2\n");
-  expect(() => manifest.load(p)).toThrow(/must be a YAML mapping/);
-});
-
-test("load: rejects unknown top-level key (typo catch)", () => {
-  const p = writeManifest("a", "datas: []\n");
-  expect(() => manifest.load(p)).toThrow(/unknown key "datas"/);
-});
-
-test("load: rejects unknown key inside services.<svc>", () => {
-  const p = writeManifest("a", "services:\n  db:\n    dat:\n      - path: /x\n");
-  expect(() => manifest.load(p)).toThrow(/services\.db: unknown key "dat"/);
-});
-
-test("load: rejects unknown key inside data entry", () => {
-  const p = writeManifest("a", `
+`,
+    expect: {
+      services: {
+        db: { data: [{ path: "/var/lib/postgresql/data", owner: "999:999" }] },
+      },
+      env: { required: ["A", "B"], optional: ["C"] },
+    },
+  },
+  {
+    name: "rejects non-mapping top-level",
+    yml: "- 1\n- 2\n",
+    throws: /must be a YAML mapping/,
+  },
+  {
+    name: "rejects unknown top-level key (typo catch)",
+    yml: "datas: []\n",
+    throws: /unknown key "datas"/,
+  },
+  {
+    name: "rejects unknown key inside services.<svc>",
+    yml: "services:\n  db:\n    dat:\n      - path: /x\n",
+    throws: /services\.db: unknown key "dat"/,
+  },
+  {
+    name: "rejects unknown key inside data entry",
+    yml: `
 services:
   db:
     data:
       - path: /x
         owner: "1:1"
         mod: "0755"
-`);
-  expect(() => manifest.load(p)).toThrow(/services\.db\.data\[0\]: unknown key "mod"/);
-});
+`,
+    throws: /services\.db\.data\[0\]: unknown key "mod"/,
+  },
+  {
+    name: "rejects unknown key inside env",
+    yml: "env:\n  requried: [X]\n",
+    throws: /env: unknown key "requried"/,
+  },
+];
 
-test("load: rejects unknown key inside env", () => {
-  const p = writeManifest("a", "env:\n  requried: [X]\n");
-  expect(() => manifest.load(p)).toThrow(/env: unknown key "requried"/);
-});
+for (const c of LOAD_CASES) {
+  test(`load: ${c.name}`, () => {
+    const p = path.join(sb.root, "manifest.yml");
+    if (c.yml !== undefined) fs.writeFileSync(p, c.yml);
+    if (c.throws) expect(() => manifest.load(p)).toThrow(c.throws);
+    else expect(manifest.load(p)).toEqual(c.expect as ReturnType<typeof manifest.load>);
+  });
+}
 
-test("parseOwner: valid uid:gid", () => {
-  expect(manifest.parseOwner("999:1000")).toEqual({ uid: 999, gid: 1000 });
-});
+type OwnerCase = {
+  name: string;
+  owner: string;
+  expect?: { uid: number; gid: number };
+  throws?: RegExp | true;
+};
 
-test("parseOwner: trims whitespace", () => {
-  expect(manifest.parseOwner("  0:0  ")).toEqual({ uid: 0, gid: 0 });
-});
+const OWNER_CASES: OwnerCase[] = [
+  { name: "valid uid:gid", owner: "999:1000", expect: { uid: 999, gid: 1000 } },
+  { name: "trims whitespace", owner: "  0:0  ", expect: { uid: 0, gid: 0 } },
+  { name: "rejects missing gid", owner: "999", throws: /expected "uid:gid"/ },
+  { name: "rejects non-numeric", owner: "abc:def", throws: true },
+  { name: "rejects empty gid", owner: "999:", throws: true },
+];
 
-test("parseOwner: rejects malformed", () => {
-  expect(() => manifest.parseOwner("999")).toThrow(/expected "uid:gid"/);
-  expect(() => manifest.parseOwner("abc:def")).toThrow();
-  expect(() => manifest.parseOwner("999:")).toThrow();
-});
+for (const c of OWNER_CASES) {
+  test(`parseOwner: ${c.name}`, () => {
+    if (c.throws) {
+      const m = expect(() => manifest.parseOwner(c.owner));
+      if (c.throws === true) m.toThrow();
+      else m.toThrow(c.throws);
+    } else {
+      expect(manifest.parseOwner(c.owner)).toEqual(c.expect!);
+    }
+  });
+}
 
-test("planMounts: empty manifest yields no mounts", () => {
-  expect(manifest.planMounts({}, "x")).toEqual([]);
-});
+type MountExpect = {
+  service: string;
+  hostRel: string;
+  containerPath: string;
+  owner?: { uid: number; gid: number };
+};
 
-test("planMounts: single entry produces expected host path", () => {
-  const mounts = manifest.planMounts(
-    { services: { app: { data: [{ path: "/app/data", owner: "1:2" }] } } },
-    "myapp",
-  );
-  expect(mounts).toEqual([
-    {
-      service: "app",
-      hostPath: path.join(tmp, "var", "apps", "myapp", "app", "data"),
-      containerPath: "/app/data",
-      owner: { uid: 1, gid: 2 },
-    },
-  ]);
-});
+type MountsCase = {
+  name: string;
+  manifest: Parameters<typeof manifest.planMounts>[0];
+  app: string;
+  expect?: MountExpect[];
+  throws?: RegExp;
+};
 
-test("planMounts: multiple entries for one service", () => {
-  const mounts = manifest.planMounts(
-    { services: { caddy: { data: [{ path: "/data" }, { path: "/config" }] } } },
-    "caddy",
-  );
-  expect(mounts.map((m) => m.hostPath)).toEqual([
-    path.join(tmp, "var", "apps", "caddy", "caddy", "data"),
-    path.join(tmp, "var", "apps", "caddy", "caddy", "config"),
-  ]);
-  expect(mounts.every((m) => m.owner === undefined)).toBe(true);
-});
-
-test("planMounts: multiple services", () => {
-  const mounts = manifest.planMounts(
-    {
+const MOUNTS_CASES: MountsCase[] = [
+  {
+    name: "empty manifest yields no mounts",
+    manifest: {},
+    app: "x",
+    expect: [],
+  },
+  {
+    name: "single entry produces expected host path",
+    manifest: { services: { app: { data: [{ path: "/app/data", owner: "1:2" }] } } },
+    app: "myapp",
+    expect: [
+      {
+        service: "app",
+        hostRel: "apps/myapp/app/data",
+        containerPath: "/app/data",
+        owner: { uid: 1, gid: 2 },
+      },
+    ],
+  },
+  {
+    name: "multiple entries for one service",
+    manifest: { services: { caddy: { data: [{ path: "/data" }, { path: "/config" }] } } },
+    app: "caddy",
+    expect: [
+      { service: "caddy", hostRel: "apps/caddy/caddy/data", containerPath: "/data" },
+      { service: "caddy", hostRel: "apps/caddy/caddy/config", containerPath: "/config" },
+    ],
+  },
+  {
+    name: "multiple services",
+    manifest: {
       services: {
         web: { data: [{ path: "/srv" }] },
         db: { data: [{ path: "/var/lib/postgresql/data" }] },
       },
     },
-    "miniflux",
-  );
-  expect(mounts.map((m) => `${m.service}:${m.hostPath}`)).toEqual([
-    `web:${path.join(tmp, "var", "apps", "miniflux", "web", "srv")}`,
-    `db:${path.join(tmp, "var", "apps", "miniflux", "db", "data")}`,
-  ]);
-});
+    app: "miniflux",
+    expect: [
+      { service: "web", hostRel: "apps/miniflux/web/srv", containerPath: "/srv" },
+      { service: "db", hostRel: "apps/miniflux/db/data", containerPath: "/var/lib/postgresql/data" },
+    ],
+  },
+  {
+    name: "rejects relative container path",
+    manifest: { services: { x: { data: [{ path: "data" }] } } },
+    app: "a",
+    throws: /absolute container path/,
+  },
+  {
+    name: "rejects root-only container path",
+    manifest: { services: { x: { data: [{ path: "/" }] } } },
+    app: "a",
+    throws: /cannot derive host subdir/,
+  },
+];
 
-test("planMounts: rejects relative container path", () => {
-  expect(() =>
-    manifest.planMounts({ services: { x: { data: [{ path: "data" }] } } }, "a"),
-  ).toThrow(/absolute container path/);
-});
-
-test("planMounts: rejects root-only container path", () => {
-  expect(() =>
-    manifest.planMounts({ services: { x: { data: [{ path: "/" }] } } }, "a"),
-  ).toThrow(/cannot derive host subdir/);
-});
-
-test("generateOverride: returns null for empty mounts", () => {
-  expect(manifest.generateOverride([])).toBeNull();
-});
-
-test("generateOverride: single mount produces parseable yaml/json", () => {
-  const out = manifest.generateOverride([
-    { service: "app", hostPath: "/h/data", containerPath: "/app/data" },
-  ]);
-  const parsed = Bun.YAML.parse(out!);
-  expect(parsed).toEqual({
-    services: {
-      app: {
-        volumes: [{ type: "bind", source: "/h/data", target: "/app/data" }],
-      },
-    },
+for (const c of MOUNTS_CASES) {
+  test(`planMounts: ${c.name}`, () => {
+    if (c.throws) {
+      expect(() => manifest.planMounts(c.manifest, c.app)).toThrow(c.throws);
+      return;
+    }
+    const actual: MountExpect[] = manifest.planMounts(c.manifest, c.app).map((m) => ({
+      service: m.service,
+      hostRel: path.relative(sb.state, m.hostPath),
+      containerPath: m.containerPath,
+      ...(m.owner ? { owner: m.owner } : {}),
+    }));
+    expect(actual).toEqual(c.expect!);
   });
-});
+}
 
-test("generateOverride: multiple entries same service grouped under one volumes list", () => {
-  const out = manifest.generateOverride([
-    { service: "caddy", hostPath: "/h/data", containerPath: "/data" },
-    { service: "caddy", hostPath: "/h/config", containerPath: "/config" },
-  ]);
-  const parsed = Bun.YAML.parse(out!) as any;
-  expect(Object.keys(parsed.services)).toEqual(["caddy"]);
-  expect(parsed.services.caddy.volumes).toHaveLength(2);
-  expect(parsed.services.caddy.volumes[0]).toEqual({
-    type: "bind", source: "/h/data", target: "/data",
-  });
-  expect(parsed.services.caddy.volumes[1]).toEqual({
-    type: "bind", source: "/h/config", target: "/config",
-  });
-});
-
-test("generateOverride: multiple services emit distinct service blocks", () => {
-  const out = manifest.generateOverride([
-    { service: "web", hostPath: "/h/web", containerPath: "/srv" },
-    { service: "db", hostPath: "/h/db", containerPath: "/var/lib/postgresql/data" },
-  ]);
-  const parsed = Bun.YAML.parse(out!) as any;
-  expect(Object.keys(parsed.services).sort()).toEqual(["db", "web"]);
-});
-
-test("validateEnv: undefined spec is a no-op", () => {
-  expect(() => manifest.validateEnv(undefined, {}, "x")).not.toThrow();
-});
-
-test("validateEnv: all required present", () => {
-  expect(() =>
-    manifest.validateEnv({ required: ["A", "B"] }, { A: "1", B: "2", C: "3" }, "x"),
-  ).not.toThrow();
-});
-
-test("validateEnv: missing var lists app name and missing keys", () => {
-  expect(() =>
-    manifest.validateEnv({ required: ["A", "B", "C"] }, { A: "1" }, "myapp"),
-  ).toThrow(/app "myapp" missing required env: B, C/);
-});
-
-test("validateEnv: optional is informational only", () => {
-  expect(() =>
-    manifest.validateEnv({ optional: ["X"] }, {}, "x"),
-  ).not.toThrow();
-});
-
-const runComposeConfig = async (base: string, override: string): Promise<any> => {
-  const r = await $`docker compose -f ${base} -f ${override} config --format json`.quiet().nothrow();
-  if (r.exitCode !== 0) {
-    throw new Error(`compose config failed: ${r.stderr.toString()}`);
-  }
-  return JSON.parse(r.stdout.toString());
+type OverrideCase = {
+  name: string;
+  mounts: manifest.Mount[];
+  expect: unknown;
 };
 
-test.skipIf(!hasDockerCompose)(
-  "integration: docker compose merges generated override into base",
-  async () => {
-    const base = path.join(tmp, "compose.yml");
-    const override = path.join(tmp, "override.yml");
-    fs.writeFileSync(base, `
+const OVERRIDE_CASES: OverrideCase[] = [
+  {
+    name: "returns null for empty mounts",
+    mounts: [],
+    expect: null,
+  },
+  {
+    name: "single mount produces parseable yaml",
+    mounts: [{ service: "app", hostPath: "/h/data", containerPath: "/app/data" }],
+    expect: {
+      services: {
+        app: { volumes: [{ type: "bind", source: "/h/data", target: "/app/data" }] },
+      },
+    },
+  },
+  {
+    name: "multiple entries same service grouped under one volumes list",
+    mounts: [
+      { service: "caddy", hostPath: "/h/data", containerPath: "/data" },
+      { service: "caddy", hostPath: "/h/config", containerPath: "/config" },
+    ],
+    expect: {
+      services: {
+        caddy: {
+          volumes: [
+            { type: "bind", source: "/h/data", target: "/data" },
+            { type: "bind", source: "/h/config", target: "/config" },
+          ],
+        },
+      },
+    },
+  },
+  {
+    name: "multiple services emit distinct service blocks",
+    mounts: [
+      { service: "web", hostPath: "/h/web", containerPath: "/srv" },
+      { service: "db", hostPath: "/h/db", containerPath: "/var/lib/postgresql/data" },
+    ],
+    expect: {
+      services: {
+        web: { volumes: [{ type: "bind", source: "/h/web", target: "/srv" }] },
+        db: { volumes: [{ type: "bind", source: "/h/db", target: "/var/lib/postgresql/data" }] },
+      },
+    },
+  },
+];
+
+for (const c of OVERRIDE_CASES) {
+  test(`generateOverride: ${c.name}`, () => {
+    const out = manifest.generateOverride(c.mounts);
+    if (c.expect === null) expect(out).toBeNull();
+    else expect(Bun.YAML.parse(out!)).toEqual(c.expect);
+  });
+}
+
+type EnvCase = {
+  name: string;
+  spec?: { required?: string[]; optional?: string[] };
+  env: Record<string, string>;
+  throws?: RegExp;
+};
+
+const ENV_CASES: EnvCase[] = [
+  { name: "undefined spec is a no-op", env: {} },
+  {
+    name: "all required present",
+    spec: { required: ["A", "B"] },
+    env: { A: "1", B: "2", C: "3" },
+  },
+  {
+    name: "missing var lists app name and missing keys",
+    spec: { required: ["A", "B", "C"] },
+    env: { A: "1" },
+    throws: /app "myapp" missing required env: B, C/,
+  },
+  { name: "optional is informational only", spec: { optional: ["X"] }, env: {} },
+];
+
+for (const c of ENV_CASES) {
+  test(`validateEnv: ${c.name}`, () => {
+    const run = () => manifest.validateEnv(c.spec, c.env, "myapp");
+    if (c.throws) expect(run).toThrow(c.throws);
+    else expect(run).not.toThrow();
+  });
+}
+
+type ComposeCase = {
+  name: string;
+  base: string;
+  mounts: manifest.Mount[];
+  expectTargets: Record<string, string[]>;
+  expectBind?: { service: string; target: string; source: string };
+};
+
+const COMPOSE_CASES: ComposeCase[] = [
+  {
+    name: "merges generated override into base",
+    base: `
 name: bicycle-test-merge
 services:
   app:
@@ -248,29 +317,16 @@ services:
     command: ["true"]
     volumes:
       - /etc/hostname:/etc/hostname:ro
-`);
-    const out = manifest.generateOverride([
+`,
+    mounts: [
       { service: "app", hostPath: "/tmp/bicycle-test-merge/data", containerPath: "/data" },
-    ]);
-    fs.writeFileSync(override, out!);
-
-    const merged = await runComposeConfig(base, override);
-    const targets = merged.services.app.volumes.map((v: any) => v.target);
-    expect(targets).toContain("/etc/hostname");
-    expect(targets).toContain("/data");
-
-    const dataVol = merged.services.app.volumes.find((v: any) => v.target === "/data");
-    expect(dataVol.type).toBe("bind");
-    expect(dataVol.source).toBe("/tmp/bicycle-test-merge/data");
+    ],
+    expectTargets: { app: ["/etc/hostname", "/data"] },
+    expectBind: { service: "app", target: "/data", source: "/tmp/bicycle-test-merge/data" },
   },
-);
-
-test.skipIf(!hasDockerCompose)(
-  "integration: override across multiple services merges per-service",
-  async () => {
-    const base = path.join(tmp, "compose.yml");
-    const override = path.join(tmp, "override.yml");
-    fs.writeFileSync(base, `
+  {
+    name: "override across multiple services merges per-service",
+    base: `
 name: bicycle-test-multi
 services:
   web:
@@ -279,15 +335,38 @@ services:
   db:
     image: alpine:3
     command: ["true"]
-`);
-    const out = manifest.generateOverride([
+`,
+    mounts: [
       { service: "web", hostPath: "/tmp/bicycle-test-multi/web", containerPath: "/srv" },
       { service: "db", hostPath: "/tmp/bicycle-test-multi/db", containerPath: "/var/lib/db" },
-    ]);
-    fs.writeFileSync(override, out!);
-
-    const merged = await runComposeConfig(base, override);
-    expect(merged.services.web.volumes.map((v: any) => v.target)).toContain("/srv");
-    expect(merged.services.db.volumes.map((v: any) => v.target)).toContain("/var/lib/db");
+    ],
+    expectTargets: { web: ["/srv"], db: ["/var/lib/db"] },
   },
-);
+];
+
+for (const c of COMPOSE_CASES) {
+  test.skipIf(!hasDockerCompose)(`integration: ${c.name}`, async () => {
+    const base = path.join(sb.root, "compose.yml");
+    const override = path.join(sb.root, "override.yml");
+    fs.writeFileSync(base, c.base);
+    fs.writeFileSync(override, manifest.generateOverride(c.mounts)!);
+
+    const r = await $`docker compose -f ${base} -f ${override} config --format json`.quiet().nothrow();
+    if (r.exitCode !== 0) {
+      throw new Error(`compose config failed: ${r.stderr.toString()}`);
+    }
+    const merged = JSON.parse(r.stdout.toString());
+
+    for (const [service, targets] of Object.entries(c.expectTargets)) {
+      const actual = merged.services[service].volumes.map((v: any) => v.target);
+      for (const t of targets) expect(actual).toContain(t);
+    }
+    if (c.expectBind) {
+      const vol = merged.services[c.expectBind.service].volumes.find(
+        (v: any) => v.target === c.expectBind!.target,
+      );
+      expect(vol.type).toBe("bind");
+      expect(vol.source).toBe(c.expectBind.source);
+    }
+  });
+}

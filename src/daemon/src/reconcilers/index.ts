@@ -1,3 +1,4 @@
+import type { Diff } from "@bicycle/shared";
 import * as network from "./network";
 import * as app from "./app";
 import * as git from "./git";
@@ -52,4 +53,28 @@ export const run = async (
   for (const name of ORDER) {
     if (want.has(name)) await ALL[name].all();
   }
+};
+
+const PLANNERS: Partial<Record<ReconcilerName, () => Promise<Diff[]>>> = {
+  groups: groups.plan,
+  users: users.plan,
+  sudoers: sudoers.plan,
+  dirs: dirs.plan,
+  files: files.plan,
+  packages: packages.plan,
+  systemd: systemd.plan,
+};
+
+export const PLANNABLE = ORDER.filter((name) => name in PLANNERS);
+
+export const plan = async (
+  names: readonly ReconcilerName[] = ORDER,
+): Promise<Diff[]> => {
+  const want = new Set<ReconcilerName>(names);
+  const diffs: Diff[] = [];
+  for (const name of ORDER) {
+    const planner = PLANNERS[name];
+    if (want.has(name) && planner) diffs.push(...(await planner()));
+  }
+  return diffs;
 };

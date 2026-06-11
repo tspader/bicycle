@@ -1,5 +1,6 @@
 import type { Command } from "@spader/zargs";
 import * as reconcilers from "../reconcilers";
+import { parseOnly } from "./only";
 import { log } from "../logger";
 
 // One-shot, in-process reconcile of a subset of reconcilers, then exit. Unlike
@@ -18,19 +19,14 @@ export const command: Command = {
     },
   },
   handler: async (argv) => {
-    const raw = argv.only as unknown;
-    let names: readonly reconcilers.ReconcilerName[] = reconcilers.ORDER;
-    if (raw !== undefined) {
-      const list = (Array.isArray(raw) ? raw : [raw]).map(String);
-      const bad = list.filter((n) => !reconcilers.isReconcilerName(n));
-      if (bad.length > 0) {
-        log.error(
-          { bad, valid: reconcilers.ORDER },
-          "reconcile-once: unknown reconciler name(s)",
-        );
-        process.exit(2);
-      }
-      names = list as reconcilers.ReconcilerName[];
+    const { names, bad } = parseOnly(argv.only);
+    if (bad.length > 0) {
+      log.error(
+        { bad, valid: reconcilers.ORDER },
+        "reconcile-once: unknown reconciler name(s)",
+      );
+      process.exitCode = 2;
+      return;
     }
     log.info({ names }, "reconcile-once: running");
     await reconcilers.run(names);

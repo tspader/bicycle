@@ -3,6 +3,7 @@ import { z } from 'zod'
 export * as vars from './vars'
 export { loadBicycleDoc } from './loader'
 export type { LoadedDoc } from './loader'
+export type { Diff, DiffValue } from './diff'
 
 export const Kernel = z.enum(['linux', 'linux-lts', 'linux-zen', 'linux-hardened'])
 export type Kernel = z.infer<typeof Kernel>

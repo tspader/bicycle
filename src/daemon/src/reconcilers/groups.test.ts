@@ -1,44 +1,53 @@
-import { test, beforeEach, afterEach } from "bun:test";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { test } from "bun:test";
+import { useSandbox, runPlanCase, type PlanCase } from "../testing";
 import * as groups from "./groups";
 
-let tmp: string;
-let saved: string | undefined;
+const sb = useSandbox();
 
-beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-groups-"));
-  saved = process.env.BICYCLE_ETC;
-  process.env.BICYCLE_ETC = tmp;
-});
+const CASES: PlanCase[] = [
+  {
+    name: "no bicycle.yml yields no diffs",
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "no groups block is clean",
+    config: {},
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "empty groups is clean",
+    config: { groups: [] },
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "existing group with matching gid is clean",
+    config: { groups: [{ name: "root", gid: 0 }] },
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "gid mismatch yields a gid diff",
+    config: { groups: [{ name: "root", gid: 54321 }] },
+    plan: [{ type: "group", id: "root", field: "gid", expected: 54321, actual: 0 }],
+  },
+  {
+    name: "missing group yields an exists diff",
+    config: { groups: [{ name: "bicycle-test-nogroup-9b3c", gid: 54321 }] },
+    plan: [
+      {
+        type: "group",
+        id: "bicycle-test-nogroup-9b3c",
+        field: "exists",
+        expected: true,
+        actual: false,
+      },
+    ],
+  },
+];
 
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  if (saved === undefined) delete process.env.BICYCLE_ETC;
-  else process.env.BICYCLE_ETC = saved;
-});
-
-const writeBicycleYaml = (body: string) => {
-  fs.writeFileSync(path.join(tmp, "bicycle.yml"), body);
-};
-
-test("no bicycle.yml: no-op without throwing", async () => {
-  await groups.all();
-});
-
-test("no groups block: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\n`);
-  await groups.all();
-});
-
-test("groups empty: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\ngroups: []\n`);
-  await groups.all();
-});
-
-test("existing group with matching gid: no-op", async () => {
-  // root group always exists at gid 0
-  writeBicycleYaml(`catalog:\n  url: "x"\ngroups:\n  - { name: root, gid: 0 }\n`);
-  await groups.all();
-});
+for (const c of CASES) {
+  test(c.name, () => runPlanCase(sb, groups, c));
+}

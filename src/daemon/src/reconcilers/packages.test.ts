@@ -1,34 +1,42 @@
-import { test, beforeEach, afterEach } from "bun:test";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { test } from "bun:test";
+import { useSandbox, runPlanCase, type PlanCase } from "../testing";
 import * as packages from "./packages";
 
-let tmp: string;
-let saved: string | undefined;
+const sb = useSandbox();
 
-beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-packages-"));
-  saved = process.env.BICYCLE_ETC;
-  process.env.BICYCLE_ETC = tmp;
-});
+const CASES: PlanCase[] = [
+  {
+    name: "no bicycle.yml yields no diffs",
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "no packages block is clean",
+    config: {},
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "empty packages.extra is clean",
+    config: { packages: { extra: [] } },
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "missing package yields an installed diff",
+    config: { packages: { extra: ["definitely-not-a-real-package-9b3c"] } },
+    plan: [
+      {
+        type: "package",
+        id: "definitely-not-a-real-package-9b3c",
+        field: "installed",
+        expected: true,
+        actual: false,
+      },
+    ],
+  },
+];
 
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  if (saved === undefined) delete process.env.BICYCLE_ETC;
-  else process.env.BICYCLE_ETC = saved;
-});
-
-const writeBicycleYaml = (body: string) => {
-  fs.writeFileSync(path.join(tmp, "bicycle.yml"), body);
-};
-
-test("no packages block: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\n`);
-  await packages.all();
-});
-
-test("packages.extra empty: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\npackages:\n  extra: []\n`);
-  await packages.all();
-});
+for (const c of CASES) {
+  test(c.name, () => runPlanCase(sb, packages, c));
+}

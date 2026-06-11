@@ -1,45 +1,70 @@
-import { test, beforeEach, afterEach } from "bun:test";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { test } from "bun:test";
+import { useSandbox, runPlanCase, type PlanCase } from "../testing";
 import * as users from "./users";
 
-let tmp: string;
-let saved: string | undefined;
+const sb = useSandbox();
 
-beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-users-"));
-  saved = process.env.BICYCLE_ETC;
-  process.env.BICYCLE_ETC = tmp;
-});
+const CASES: PlanCase[] = [
+  {
+    name: "no bicycle.yml yields no diffs",
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "no users block is clean",
+    config: {},
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "empty users is clean",
+    config: { users: [] },
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "existing root user with no extra groups is clean",
+    config: { users: [{ name: "root", sudo: "none", groups: [] }] },
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "missing user yields an exists diff",
+    config: { users: [{ name: "bicycle-test-nouser-9b3c", sudo: "none", groups: [] }] },
+    plan: [
+      {
+        type: "user",
+        id: "bicycle-test-nouser-9b3c",
+        field: "exists",
+        expected: true,
+        actual: false,
+      },
+    ],
+  },
+  {
+    name: "uid mismatch yields a uid diff",
+    config: { users: [{ name: "root", uid: 54321, sudo: "none", groups: [] }] },
+    plan: [{ type: "user", id: "root", field: "uid", expected: 54321, actual: 0 }],
+  },
+  {
+    name: "missing supplementary group yields a groups diff",
+    config: { users: [{ name: "root", sudo: "none", groups: ["bicycle-test-nogroup-9b3c"] }] },
+    plan: [
+      {
+        type: "user",
+        id: "root",
+        field: "groups",
+        expected: ["bicycle-test-nogroup-9b3c"],
+      },
+    ],
+  },
+  {
+    name: "sudo user implies wheel membership in expected groups",
+    config: { users: [{ name: "root", sudo: "password", groups: [] }] },
+    plan: [{ type: "user", id: "root", field: "groups", expected: ["wheel"] }],
+  },
+];
 
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  if (saved === undefined) delete process.env.BICYCLE_ETC;
-  else process.env.BICYCLE_ETC = saved;
-});
-
-const writeBicycleYaml = (body: string) => {
-  fs.writeFileSync(path.join(tmp, "bicycle.yml"), body);
-};
-
-test("no bicycle.yml: no-op without throwing", async () => {
-  await users.all();
-});
-
-test("no users block: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\n`);
-  await users.all();
-});
-
-test("users empty: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\nusers: []\n`);
-  await users.all();
-});
-
-test("existing root user with no extra groups: no-op", async () => {
-  // root always exists; declaring it with empty groups and no sudo
-  // should not try to modify anything.
-  writeBicycleYaml(`catalog:\n  url: "x"\nusers:\n  - { name: root, sudo: none, groups: [] }\n`);
-  await users.all();
-});
+for (const c of CASES) {
+  test(c.name, () => runPlanCase(sb, users, c));
+}

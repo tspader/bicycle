@@ -1,6 +1,6 @@
 import { $ } from "bun";
 import fs from "fs";
-import type { SudoMode } from "@bicycle/shared";
+import type { Diff, SudoMode } from "@bicycle/shared";
 import * as config from "../config";
 import { paths } from "../paths";
 import { log } from "../logger";
@@ -97,27 +97,48 @@ const addToGroups = async (name: string, missing: string[]): Promise<void> => {
   }
 };
 
-export const all = async (): Promise<void> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return;
-  const cfg = config.bicycle();
-  const wanted = cfg.users ?? [];
+export const plan = async (): Promise<Diff[]> => {
+  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
+  const wanted = config.bicycle().users ?? [];
+  const diffs: Diff[] = [];
   for (const u of wanted) {
-    const want = wantedGroups(u);
     const existing = await passwd(u.name);
     if (!existing) {
-      const created = await createUser(u.name, u.uid, want);
-      // Set the password only on first creation. If creation failed, skip.
-      if (created && u.password) await setPassword(u.name, u.password, cfg.vars);
+      diffs.push({ type: "user", id: u.name, field: "exists", expected: true, actual: false });
       continue;
     }
     if (u.uid !== undefined && existing.uid !== u.uid) {
+      diffs.push({ type: "user", id: u.name, field: "uid", expected: u.uid, actual: existing.uid });
+    }
+    const want = wantedGroups(u);
+    const have = new Set(existing.groups);
+    if (want.some((g) => !have.has(g))) {
+      diffs.push({ type: "user", id: u.name, field: "groups", expected: want, actual: existing.groups });
+    }
+  }
+  return diffs;
+};
+
+export const all = async (): Promise<void> => {
+  if (!fs.existsSync(paths.etc.bicycleYaml)) return;
+  const cfg = config.bicycle();
+  const wanted = new Map((cfg.users ?? []).map((u) => [u.name, u]));
+  for (const d of await plan()) {
+    const u = wanted.get(d.id);
+    if (!u) continue;
+    if (d.field === "exists") {
+      const created = await createUser(u.name, u.uid, wantedGroups(u));
+      // Set the password only on first creation. If creation failed, skip.
+      if (created && u.password) await setPassword(u.name, u.password, cfg.vars);
+    } else if (d.field === "uid") {
       log.warn(
-        { user: u.name, wantUid: u.uid, haveUid: existing.uid },
+        { user: u.name, wantUid: d.expected, haveUid: d.actual },
         "users: uid mismatch; refusing to modify live user, run 'usermod -u <uid> <name>' manually",
       );
+    } else if (d.field === "groups") {
+      const have = new Set(d.actual as string[]);
+      const missing = (d.expected as string[]).filter((g) => !have.has(g));
+      await addToGroups(u.name, missing);
     }
-    const have = new Set(existing.groups);
-    const missing = want.filter((g) => !have.has(g));
-    await addToGroups(u.name, missing);
   }
 };

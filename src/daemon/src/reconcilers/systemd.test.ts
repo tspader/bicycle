@@ -1,34 +1,49 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { test } from "bun:test";
+import { useSandbox, runPlanCase, type PlanCase } from "../testing";
 import * as systemd from "./systemd";
 
-let tmp: string;
-let saved: string | undefined;
+const sb = useSandbox();
 
-beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-systemd-"));
-  saved = process.env.BICYCLE_ETC;
-  process.env.BICYCLE_ETC = tmp;
-});
+const CASES: PlanCase[] = [
+  {
+    name: "no bicycle.yml yields no diffs",
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "no systemd block is clean",
+    config: {},
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "empty systemd.enable is clean",
+    config: { systemd: { enable: [] } },
+    sweep: true,
+    plan: [],
+  },
+  {
+    name: "unknown unit yields enabled and active diffs",
+    config: { systemd: { enable: ["bicycle-test-nonexistent-9b3c.service"] } },
+    plan: [
+      {
+        type: "unit",
+        id: "bicycle-test-nonexistent-9b3c.service",
+        field: "enabled",
+        expected: true,
+        actual: false,
+      },
+      {
+        type: "unit",
+        id: "bicycle-test-nonexistent-9b3c.service",
+        field: "active",
+        expected: true,
+        actual: false,
+      },
+    ],
+  },
+];
 
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  if (saved === undefined) delete process.env.BICYCLE_ETC;
-  else process.env.BICYCLE_ETC = saved;
-});
-
-const writeBicycleYaml = (body: string) => {
-  fs.writeFileSync(path.join(tmp, "bicycle.yml"), body);
-};
-
-test("no systemd block: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\n`);
-  await systemd.all();
-});
-
-test("systemd.enable empty: no-op without throwing", async () => {
-  writeBicycleYaml(`catalog:\n  url: "x"\nsystemd:\n  enable: []\n`);
-  await systemd.all();
-});
+for (const c of CASES) {
+  test(c.name, () => runPlanCase(sb, systemd, c));
+}

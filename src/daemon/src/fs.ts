@@ -1,5 +1,16 @@
 import fs from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
+
+export const chmodExact = (target: string, mode: number): void => {
+  fs.chmodSync(target, mode);
+  if ((mode & 0o7000) === 0) return;
+  if ((fs.statSync(target).mode & 0o7777) === mode) return;
+  const r = spawnSync("chmod", [mode.toString(8), target]);
+  if (r.status !== 0) {
+    throw new Error(`chmod ${mode.toString(8)} ${target}: ${r.stderr?.toString().trim()}`);
+  }
+};
 
 export const chownIgnoreEperm = (target: string, uid: number, gid: number): void => {
   try {

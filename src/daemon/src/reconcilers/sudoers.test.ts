@@ -1,50 +1,29 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect } from "bun:test";
 import fs from "fs";
-import os from "os";
-import path from "path";
+import { useSandbox, runReconcilerCase, writeConfig, backdate, type ReconcilerCase } from "../testing";
 import * as sudoers from "./sudoers";
 
-let tmp: string;
-let etc: string;
-let host: string;
-let dropIn: string;
-let saved: Record<string, string | undefined> = {};
-
-const set = (k: string, v: string) => {
-  saved[k] = process.env[k];
-  process.env[k] = v;
-};
+const sb = useSandbox();
 
 const hasVisudo = Bun.which("visudo") !== null;
 
-beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bicycle-sudoers-"));
-  etc = path.join(tmp, "etc");
-  host = path.join(tmp, "host");
-  fs.mkdirSync(etc, { recursive: true });
-  fs.mkdirSync(host, { recursive: true });
-  dropIn = path.join(host, "etc", "sudoers.d", "bicycle");
-  set("BICYCLE_ETC", etc);
-  set("BICYCLE_HOST_ROOT", host);
-});
+type RuleCase = {
+  name: string;
+  sudo: "none" | "password" | "passwordless";
+  rule: string | null;
+};
 
-afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  saved = {};
-});
+const RULE_CASES: RuleCase[] = [
+  { name: "none yields no rule", sudo: "none", rule: null },
+  { name: "password yields a full rule", sudo: "password", rule: "a ALL=(ALL:ALL) ALL" },
+  { name: "passwordless yields NOPASSWD", sudo: "passwordless", rule: "a ALL=(ALL:ALL) NOPASSWD: ALL" },
+];
 
-const writeYaml = (body: string) =>
-  fs.writeFileSync(path.join(etc, "bicycle.yml"), body);
-
-test("ruleFor maps each sudo mode", () => {
-  expect(sudoers.ruleFor({ name: "a", sudo: "none" })).toBeNull();
-  expect(sudoers.ruleFor({ name: "a", sudo: "password" })).toBe("a ALL=(ALL:ALL) ALL");
-  expect(sudoers.ruleFor({ name: "a", sudo: "passwordless" })).toBe("a ALL=(ALL:ALL) NOPASSWD: ALL");
-});
+for (const c of RULE_CASES) {
+  test(`ruleFor: ${c.name}`, () => {
+    expect(sudoers.ruleFor({ name: "a", sudo: c.sudo })).toBe(c.rule);
+  });
+}
 
 test("rulesFor keeps only sudoers, preserving order", () => {
   expect(sudoers.rulesFor([
@@ -57,41 +36,136 @@ test("rulesFor keeps only sudoers, preserving order", () => {
   ]);
 });
 
-test("no bicycle.yml: no-op", async () => {
-  await sudoers.all();
-  expect(fs.existsSync(dropIn)).toBe(false);
-});
+const DROP_IN = "etc/sudoers.d/bicycle";
 
-test("no sudo users: removes a stale drop-in", async () => {
-  fs.mkdirSync(path.dirname(dropIn), { recursive: true });
-  fs.writeFileSync(dropIn, "stale\n");
-  writeYaml(`catalog:\n  url: "x"\nusers:\n  - { name: bob, sudo: none, groups: [] }\n`);
-  await sudoers.all();
-  expect(fs.existsSync(dropIn)).toBe(false);
-});
+const CASES: ReconcilerCase[] = [
+  {
+    name: "no bicycle.yml: no-op",
+    actions: [{ do: "sweep" }],
+    fs: [{ path: DROP_IN, absent: true }],
+    plan: [],
+  },
+  {
+    name: "no sudo users and no drop-in is clean",
+    actions: [
+      { do: "config", config: { users: [{ name: "bob", sudo: "none", groups: [] }] } },
+      { do: "sweep" },
+    ],
+    fs: [{ path: DROP_IN, absent: true }],
+    plan: [],
+  },
+  {
+    name: "no sudo users: removes a stale drop-in",
+    actions: [
+      { do: "host", rel: DROP_IN, contents: "stale\n" },
+      { do: "config", config: { users: [{ name: "bob", sudo: "none", groups: [] }] } },
+      { do: "sweep" },
+    ],
+    fs: [{ path: DROP_IN, absent: true }],
+    plan: [],
+  },
+  {
+    name: "plan: stale drop-in with no sudo users yields an exists diff",
+    actions: [
+      { do: "host", rel: DROP_IN, contents: "stale\n" },
+      { do: "config", config: { users: [{ name: "bob", sudo: "none", groups: [] }] } },
+    ],
+    plan: [{ type: "file", id: DROP_IN, field: "exists", expected: false, actual: true }],
+  },
+  {
+    name: "plan: sudo user with no drop-in yields a content diff",
+    actions: [
+      { do: "config", config: { users: [{ name: "alice", sudo: "password", groups: [] }] } },
+    ],
+    plan: [
+      {
+        type: "file",
+        id: DROP_IN,
+        field: "content",
+        expected: "b36f8829084b847e622ef0d22aa32ba8b47a43ef28148f378b3963a34579a5f1",
+        actual: null,
+      },
+    ],
+  },
+  {
+    name: "visudo-rejected update leaves the last valid drop-in",
+    needs: "visudo",
+    actions: [
+      { do: "config", config: { users: [{ name: "alice", sudo: "password", groups: [] }] } },
+      { do: "sweep" },
+      { do: "config", config: { users: [{ name: "a b", sudo: "password", groups: [] }] } },
+      { do: "sweep" },
+    ],
+    fs: [
+      {
+        path: DROP_IN,
+        mode: 0o440,
+        contents: "# Managed by Bicycle. Do not edit.\nalice ALL=(ALL:ALL) ALL\n",
+      },
+      { path: `${DROP_IN}.tmp`, absent: true },
+    ],
+    plan: [{ type: "file", id: DROP_IN, field: "content" }],
+  },
+  {
+    name: "repairs a manually edited drop-in",
+    needs: "visudo",
+    actions: [
+      { do: "config", config: { users: [{ name: "alice", sudo: "password", groups: [] }] } },
+      { do: "sweep" },
+      { do: "chmodHost", rel: DROP_IN, mode: 0o640 },
+      { do: "host", rel: DROP_IN, contents: "# Managed by Bicycle. Do not edit.\nalice ALL=(ALL:ALL) NOPASSWD: ALL\n" },
+      { do: "sweep" },
+    ],
+    fs: [
+      {
+        path: DROP_IN,
+        mode: 0o440,
+        contents: "# Managed by Bicycle. Do not edit.\nalice ALL=(ALL:ALL) ALL\n",
+      },
+    ],
+    plan: [],
+  },
+  {
+    name: "writes a validated drop-in for sudo users",
+    needs: "visudo",
+    actions: [
+      {
+        do: "config",
+        config: {
+          users: [
+            { name: "alice", sudo: "password", groups: ["wheel"] },
+            { name: "deploy", sudo: "passwordless", groups: [] },
+            { name: "bob", sudo: "none", groups: [] },
+          ],
+        },
+      },
+      { do: "sweep" },
+    ],
+    fs: [
+      {
+        path: DROP_IN,
+        mode: 0o440,
+        contents:
+          "# Managed by Bicycle. Do not edit.\n" +
+          "alice ALL=(ALL:ALL) ALL\n" +
+          "deploy ALL=(ALL:ALL) NOPASSWD: ALL\n",
+      },
+    ],
+    plan: [],
+  },
+];
 
-test.skipIf(!hasVisudo)("writes a validated drop-in for sudo users", async () => {
-  writeYaml(
-    `catalog:\n  url: "x"\nusers:\n` +
-    `  - { name: alice, sudo: password, groups: [wheel] }\n` +
-    `  - { name: deploy, sudo: passwordless, groups: [] }\n` +
-    `  - { name: bob, sudo: none, groups: [] }\n`,
+for (const c of CASES) {
+  test.skipIf(c.needs === "visudo" && !hasVisudo)(c.name, () =>
+    runReconcilerCase(sb, sudoers, sudoers.all, c),
   );
-  await sudoers.all();
-  const out = fs.readFileSync(dropIn, "utf8");
-  expect(out).toContain("alice ALL=(ALL:ALL) ALL");
-  expect(out).toContain("deploy ALL=(ALL:ALL) NOPASSWD: ALL");
-  expect(out).not.toContain("bob");
-  expect(fs.statSync(dropIn).mode & 0o777).toBe(0o440);
-});
+}
 
 test.skipIf(!hasVisudo)("idempotent: unchanged config does not rewrite", async () => {
-  writeYaml(`catalog:\n  url: "x"\nusers:\n  - { name: alice, sudo: password, groups: [] }\n`);
+  writeConfig(sb, { users: [{ name: "alice", sudo: "password", groups: [] }] });
   await sudoers.all();
-  const before = fs.statSync(dropIn).mtimeMs;
-  const old = new Date(before - 60_000);
-  fs.utimesSync(dropIn, old, old);
-  const stamp = fs.statSync(dropIn).mtimeMs;
+  const dropIn = sb.hostPath(DROP_IN);
+  const stamp = backdate(dropIn);
   await sudoers.all();
   expect(fs.statSync(dropIn).mtimeMs).toBe(stamp);
 });
