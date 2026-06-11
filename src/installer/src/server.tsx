@@ -9,6 +9,7 @@ import { type App, type AppContext, type PlainRoute, readSignals } from '@bicycl
 import { routes } from './routes'
 import { renderPage } from './render'
 import appCssPath from "./assets/app.css" with { type: "file" }
+import baseCssPath from "@bicycle/ui/base.css" with { type: "file" }
 import appJsPath from "./assets/app.js" with { type: "file" }
 import datastarPath from "@bicycle/datastar/client" with { type: "file" }
 import faviconPath from "./assets/favicon.ico" with { type: "file" }
@@ -20,6 +21,7 @@ app.use('*', readSignals)
 const staticFile = (path: string, type: string) => () =>
   new Response(Bun.file(path), { headers: { 'content-type': type } })
 
+app.get('/static/base.css', staticFile(baseCssPath, 'text/css; charset=utf-8'))
 app.get('/static/app.css', staticFile(appCssPath, 'text/css; charset=utf-8'))
 app.get('/static/app.js', staticFile(appJsPath, 'application/javascript; charset=utf-8'))
 app.get('/static/datastar.js', staticFile(datastarPath, 'application/javascript; charset=utf-8'))

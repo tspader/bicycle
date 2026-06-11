@@ -9,7 +9,10 @@
     "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@bicycle/daemon": "workspace:*",
     "@bicycle/datastar": "workspace:*",
+    "@bicycle/shared": "workspace:*",
+    "@bicycle/ui": "workspace:*",
     "hono": "catalog:",
     "zod": "catalog:"
   },

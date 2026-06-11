@@ -1,0 +1,12 @@
+{
+  "name": "@bicycle/ui",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./base.css": "./assets/base.css"
+  },
+  "scripts": {
+    "typecheck": "true",
+    "clean": "rm -rf node_modules .turbo"
+  }
+}

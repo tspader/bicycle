@@ -10,8 +10,9 @@
     "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@bicycle/shared": "workspace:*",
     "@bicycle/datastar": "workspace:*",
+    "@bicycle/shared": "workspace:*",
+    "@bicycle/ui": "workspace:*",
     "age-encryption": "catalog:",
     "hono": "catalog:",
     "shiki": "^4.0.2",
