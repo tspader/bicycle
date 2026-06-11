@@ -1,7 +1,7 @@
 import { Field, Section } from './layout'
 import { KERNELS, type Kernel } from '../system'
 import { Kernel as KernelEnum } from '../config'
-import { bind, on, signals } from '../datastar'
+import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const kernelSignals = signals({

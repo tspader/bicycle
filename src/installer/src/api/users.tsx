@@ -8,7 +8,7 @@ import {
 import { hashPassword } from '../auth'
 import { UsersView, userPanelSignals, rootSignals } from '../views/users'
 import { userPasswordAddr, userPasswordRef, secretRelPath } from '../secrets'
-import type { AppContext } from '../http'
+import type { AppContext } from '@bicycle/datastar'
 import { routes } from '../routes'
 import { renderPage, patchSidecar } from '../render'
 

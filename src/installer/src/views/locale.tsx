@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { Field, Section } from './layout'
 import type { LocaleConfig } from '../config'
-import { type Sig, bind, on, signals } from '../datastar'
+import { type Sig, bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const localeSignals = signals({

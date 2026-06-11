@@ -22,8 +22,10 @@
   "workspaces": {
     "packages": [
       "src/shared",
+      "src/datastar",
       "src/installer",
       "src/daemon",
+      "src/web",
       "tools"
     ],
     "catalog": {

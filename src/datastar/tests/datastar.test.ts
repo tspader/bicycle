@@ -3,9 +3,8 @@ import { z } from 'zod'
 import {
   Sig, expr, seq, eq, ne, not, when, get, post,
   on, onInterval, effect, show, text, attr, cls, bind, signals,
-} from '../src/datastar'
-import { route } from '../src/routes'
-import type { AppContext } from '../src/http'
+  route, type AppContext,
+} from '../src/index'
 
 const sig = new Sig<string>('foo')
 

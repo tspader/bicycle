@@ -27,11 +27,24 @@
         "typescript": "catalog:",
       },
     },
+    "src/datastar": {
+      "name": "@bicycle/datastar",
+      "version": "0.0.0",
+      "dependencies": {
+        "@starfederation/datastar-sdk": "1.0.0",
+        "hono": "catalog:",
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "src/installer": {
       "name": "@bicycle/installer",
       "dependencies": {
+        "@bicycle/datastar": "workspace:*",
         "@bicycle/shared": "workspace:*",
-        "@starfederation/datastar-sdk": "1.0.0",
         "age-encryption": "catalog:",
         "hono": "catalog:",
         "shiki": "^4.0.2",
@@ -47,6 +60,18 @@
       "name": "@bicycle/shared",
       "version": "0.0.0",
       "dependencies": {
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "src/web": {
+      "name": "@bicycle/web",
+      "dependencies": {
+        "@bicycle/datastar": "workspace:*",
+        "hono": "catalog:",
         "zod": "catalog:",
       },
       "devDependencies": {
@@ -83,9 +108,13 @@
   "packages": {
     "@bicycle/daemon": ["@bicycle/daemon@workspace:src/daemon"],
 
+    "@bicycle/datastar": ["@bicycle/datastar@workspace:src/datastar"],
+
     "@bicycle/installer": ["@bicycle/installer@workspace:src/installer"],
 
     "@bicycle/shared": ["@bicycle/shared@workspace:src/shared"],
+
+    "@bicycle/web": ["@bicycle/web@workspace:src/web"],
 
     "@clack/core": ["@clack/core@1.3.1", "", { "dependencies": { "fast-wrap-ansi": "^0.2.0", "sisteransi": "^1.0.5" } }, "sha512-fT1qHVGAag4IEkrupZ6lRRbNCs1vS9P01KB/sG8zKgvUztbYtFBtQpjSITNwooDZ83tpsPzP0mRNs1/KVszCRA=="],
 

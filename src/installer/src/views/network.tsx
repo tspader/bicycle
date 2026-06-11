@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { Field, Section } from './layout'
-import { bind, on, signals } from '../datastar'
+import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 const MODES = [

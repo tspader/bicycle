@@ -9,7 +9,7 @@ import {
   editScalar, editNode, editDelete, editAppend, editPrune,
 } from '../state'
 import { PRESETS, presetDisk, type PresetId } from '../config'
-import type { AppContext } from '../http'
+import type { AppContext } from '@bicycle/datastar'
 import { routes } from '../routes'
 import { configState, renderPage, editHandler } from '../render'
 import { swapSignals } from '../views/swap'

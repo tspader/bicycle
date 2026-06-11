@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { Page, Section } from './layout'
 import type { InstallState } from '../ui-state'
-import { attr, bind, expr, ne, on, onInterval, show, signals, when } from '../datastar'
+import { attr, bind, expr, ne, on, onInterval, show, signals, when } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const installSignals = signals({

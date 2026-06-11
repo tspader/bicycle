@@ -5,9 +5,9 @@ import { loadBicycleDoc, type BicycleConfig } from '@bicycle/shared'
 import { locateTreeRoot, importTree } from '../import-tree'
 import { loadTree } from '../state'
 import { env as runtimeEnv } from '../runtime'
-import type { AppContext } from '../http'
+import { type AppContext, type Stream, sse } from '@bicycle/datastar'
 import { gitImportSignals, importStatusSignals } from '../views/import'
-import { type Stream, sse, machine, patchSidecarInto } from '../render'
+import { machine, patchSidecarInto } from '../render'
 
 // Validate imported text up front so a bad config fails the import rather than
 // silently breaking every later page render.

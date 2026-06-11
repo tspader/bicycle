@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { Page, rowClick } from './layout'
 import type { PackageEntry, PackageDetail } from '../system'
-import { bind, on, signals } from '../datastar'
+import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const packageSignals = signals(

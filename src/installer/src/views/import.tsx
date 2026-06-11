@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { Field, Page, Section } from './layout'
-import { attr, bind, effect, expr, not, on, signals, text, when } from '../datastar'
+import { attr, bind, effect, expr, not, on, signals, text, when } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const gitImportSignals = signals(

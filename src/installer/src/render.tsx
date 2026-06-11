@@ -1,14 +1,14 @@
-import { ServerSentEventGenerator } from '@starfederation/datastar-sdk/web'
 import type { Child } from 'hono/jsx'
-import type { HtmlEscapedString } from 'hono/utils/html'
 import type { z } from 'zod'
 import { codeToHtml } from 'shiki'
 import { Layout, Preview, Warnings, ui } from './views/layout'
 import { project, liveMachine, deriveWarnings, type Warning, type AccountSummary } from './config'
 import { getConfig, getText, getIdentity, getRootHash, getEncryptionPassword } from './state'
 import { listDisks } from './system'
-import type { AppContext } from './http'
-import type { Json, SignalGroup } from './datastar'
+import {
+  type AppContext, type Frag, type SignalGroup, type Stream,
+  sse, patch,
+} from '@bicycle/datastar'
 import type { CategoryId } from './ui-state'
 import { type BicycleConfig } from '@bicycle/shared'
 
@@ -69,45 +69,11 @@ const renderSidecar = async () => {
   return { previewHtml, warnings }
 }
 
-// --- SSE facade ----------------------------------------------------------------
-// All Datastar SSE responses go through `sse`. The facade renders JSX directly,
-// takes signal patches as typed objects, and skips falsy fragments so
-// conditional patches need no imperative branching at the call site.
-
-export type Frag = HtmlEscapedString | Promise<HtmlEscapedString> | false | null | undefined
-
-export type PatchOptions = {
-  selector?: string
-  mode?: 'outer' | 'inner' | 'replace' | 'prepend' | 'append' | 'before' | 'after' | 'remove'
-}
-
-export type Stream = {
-  html: (frag: Frag, options?: PatchOptions) => void
-  signals: (patch: Record<string, Json>) => void
-  script: (code: string) => void
-}
-
-export const sse = (fn: (stream: Stream) => void | Promise<void>): Response =>
-  ServerSentEventGenerator.stream(async (raw) => {
-    await fn({
-      html: (frag, options) => {
-        if (frag) raw.patchElements(frag.toString(), options)
-      },
-      signals: (patch) => raw.patchSignals(JSON.stringify(patch)),
-      script: (code) => raw.executeScript(code),
-    })
-  })
-
 export const patchSidecarInto = async (stream: Stream): Promise<void> => {
   const { previewHtml, warnings } = await renderSidecar()
   stream.html(<Preview html={previewHtml} />)
   stream.html(<Warnings items={warnings} />)
 }
-
-export const patch = (...frags: Frag[]): Response =>
-  sse((stream) => {
-    for (const f of frags) stream.html(f)
-  })
 
 export const patchSidecar = (...frags: Frag[]): Response =>
   sse(async (stream) => {

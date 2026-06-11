@@ -1,9 +1,9 @@
 import { getConfig, editDelete, editPrune, editAppend } from '../state'
 import { regions } from '../system'
 import { RegionList, RegionRow, mirrorSignals } from '../views/mirrors'
-import type { AppContext } from '../http'
+import { type AppContext, patch } from '@bicycle/datastar'
 import { routes } from '../routes'
-import { patch, patchSidecar } from '../render'
+import { patchSidecar } from '../render'
 
 export const toggle = (c: AppContext) => {
   const { name } = routes.mirrorsToggle.params(c)

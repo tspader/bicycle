@@ -11,9 +11,9 @@ import {
 import { recipientFor, generate as generateAgeIdentity } from '../age'
 import { buildInstallSteps } from '../install-steps'
 import { spawn as runtimeSpawn } from '../runtime'
-import type { AppContext } from '../http'
+import { type AppContext, patch } from '@bicycle/datastar'
 import { routes } from '../routes'
-import { configState, type ConfigState, preflightCtx, renderPage, patch } from '../render'
+import { configState, type ConfigState, preflightCtx, renderPage } from '../render'
 
 const isWet = (): boolean => existsSync('/run/archiso/bootmnt')
 

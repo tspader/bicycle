@@ -1,8 +1,8 @@
 import { AgeIdentityString } from '../age-key'
 import { setIdentity } from '../state'
-import type { AppContext } from '../http'
+import { type AppContext, type Stream, sse } from '@bicycle/datastar'
 import { AgeSection, ageSignals, importStatusSignals } from '../views/import'
-import { type Stream, sse, patchSidecarInto } from '../render'
+import { patchSidecarInto } from '../render'
 
 const announce = (stream: Stream, status: string, error: string): void =>
   stream.signals(importStatusSignals.patch({ status, error }))

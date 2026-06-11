@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { Page, Section, Field, TextField, SelectField } from './layout'
+import { Page, Section, Field } from './layout'
 import { SudoMode, type User } from '@bicycle/shared'
-import { bind, expr, on, seq, signals, text } from '../datastar'
+import { bind, expr, on, seq, signals, text } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 export const userPanelSignals = signals(

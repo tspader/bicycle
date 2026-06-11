@@ -1,21 +1,16 @@
 {
-  "name": "@bicycle/installer",
+  "name": "@bicycle/web",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "bun run src/server.tsx",
     "dev": "bun --hot run src/server.tsx",
-    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@bicycle/shared": "workspace:*",
     "@bicycle/datastar": "workspace:*",
-    "age-encryption": "catalog:",
     "hono": "catalog:",
-    "shiki": "^4.0.2",
-    "yaml": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -9,9 +9,9 @@ import {
   PackageDetailCard,
   packageSignals,
 } from '../views/packages'
-import type { AppContext } from '../http'
+import { type AppContext, sse, patch } from '@bicycle/datastar'
 import { routes } from '../routes'
-import { sse, patch, patchSidecar, flatPackages } from '../render'
+import { patchSidecar, flatPackages } from '../render'
 
 export const toggle = async (c: AppContext) => {
   const { name } = routes.packagesToggle.params(c)

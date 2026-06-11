@@ -5,12 +5,12 @@ import { syncPacman } from './system'
 import { serve, env as runtimeEnv } from './runtime'
 import { CATEGORY_IDS, type CategoryId } from './ui-state'
 import * as api from './api'
-import { type App, type AppContext, readSignals } from './http'
-import { routes, type PlainRoute } from './routes'
+import { type App, type AppContext, type PlainRoute, readSignals } from '@bicycle/datastar'
+import { routes } from './routes'
 import { renderPage } from './render'
 import appCssPath from "./assets/app.css" with { type: "file" }
 import appJsPath from "./assets/app.js" with { type: "file" }
-import datastarPath from "./assets/datastar.js" with { type: "file" }
+import datastarPath from "@bicycle/datastar/client" with { type: "file" }
 import faviconPath from "./assets/favicon.ico" with { type: "file" }
 
 const app = new Hono<{ Variables: App }>()

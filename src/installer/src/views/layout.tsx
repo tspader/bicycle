@@ -5,7 +5,7 @@ import type { Warning } from '../config/preflight'
 import {
   type Code, type Props, type Sig,
   signals, expr, seq, eq, get, on, bind, cls, show, text, when,
-} from '../datastar'
+} from '@bicycle/datastar'
 
 type Category = { id: CategoryId; label: string }
 

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { Field, Section, onOff } from './layout'
-import { type Sig, bind, on, signals } from '../datastar'
+import { type Sig, bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 
 const LOADERS = ['systemd-boot', 'grub', 'efistub', 'limine', 'refind'] as const

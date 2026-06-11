@@ -1,21 +1,21 @@
 {
-  "name": "@bicycle/installer",
+  "name": "@bicycle/datastar",
+  "version": "0.0.0",
   "type": "module",
   "private": true,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./assets/datastar.js"
+  },
   "scripts": {
-    "start": "bun run src/server.tsx",
-    "dev": "bun --hot run src/server.tsx",
-    "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@bicycle/shared": "workspace:*",
-    "@bicycle/datastar": "workspace:*",
-    "age-encryption": "catalog:",
+    "@starfederation/datastar-sdk": "1.0.0",
     "hono": "catalog:",
-    "shiki": "^4.0.2",
-    "yaml": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

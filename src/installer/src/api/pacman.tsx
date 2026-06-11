@@ -3,7 +3,7 @@ import { PacmanView } from '../views/pacman'
 import { packageSignals } from '../views/packages'
 import { regions, searchPackages, availableRepos } from '../system'
 import { setCurrentDetail } from '../ui-state'
-import type { AppContext } from '../http'
+import type { AppContext } from '@bicycle/datastar'
 import { configState, flatPackages } from '../render'
 
 export const pacmanBody = async (c: AppContext): Promise<Child> => {

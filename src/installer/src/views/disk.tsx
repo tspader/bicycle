@@ -4,7 +4,7 @@ import { SwapSection } from './swap'
 import { PRESETS, parseSize, sizeBytes, FsType, type PresetId } from '../config'
 import { EncryptionKind, type Disk, type Partition, type PartitionFlag } from '@bicycle/shared'
 import type { DiskInfo } from '../system'
-import { bind, on, signals } from '../datastar'
+import { bind, on, signals } from '@bicycle/datastar'
 import { routes } from '../routes'
 import { sigSlug } from '../slug'
 
