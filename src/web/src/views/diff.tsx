@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { Child } from 'hono/jsx'
 import type { Diff } from '@bicycle/shared'
 import { kinds } from '@bicycle/daemon'
-import { signals, route, on, expr, seq, when, bind, text, type Code } from '@bicycle/datastar'
+import { signals, route, on, expr, seq, when, bind, text, get, type Code } from '@bicycle/datastar'
 import * as state from '../state'
 
 export type { Diff }
@@ -15,6 +15,14 @@ export const ui = signals({
   diff: z.string().default(''),
   scan: z.string().default(''),
 })
+
+// Each kind is its own page (the installer's /config/:category pattern):
+// pushState keeps the URL honest, the GET morphs the fragments in place.
+export const pageUrl = (kind: string | null): string =>
+  kind === null ? '/diff' : `/diff/${kind}`
+
+export const navigate = (kind: string | null): Code<void> =>
+  seq(expr`history.pushState({}, '', ${pageUrl(kind)})`, get(pageUrl(kind)))
 
 export const routes = {
   diff: route('get', '/diff'),
@@ -254,6 +262,10 @@ const row = (r: Row): Child => (renderers[r.kind] ?? ((x: Row) => <DefaultRow r=
 const filtered = (): boolean =>
   state.filter.q.trim() !== '' || state.filter.dirs.size !== state.DIRECTIONS.length
 
+// The groups the current page shows; counts and content stay in agreement.
+const pageGroups = (vm: VM): GroupVM[] =>
+  state.nav.page === null ? vm.groups : vm.groups.filter((g) => g.kind === state.nav.page)
+
 // The confirm body lists what the reconciler will act on (capped), so the
 // scary dialog is at least a specific one. expr`` JSON-encodes the hole.
 const applyConfirm = (g: GroupVM): string => {
@@ -272,6 +284,8 @@ const applyConfirm = (g: GroupVM): string => {
 
 const GroupCard = ({ g }: { g: GroupVM }) => {
   const allSelected = g.rows.length > 0 && g.rows.every((r) => r.selected)
+  // On a kind page the name and staleness live in the page header above.
+  const titled = state.nav.page === null
   return (
     <section class="group" id={`kind-${g.kind}`}>
       <header class="group-head rowgrid">
@@ -283,10 +297,10 @@ const GroupCard = ({ g }: { g: GroupVM }) => {
             {...on('click', routes.selectGroup.action({ kind: g.kind }))}
           />
         </span>
-        <h2 class="group-name">{g.kind}</h2>
+        {titled ? <h2 class="group-name">{g.kind}</h2> : null}
         <span class="group-count">
           {filtered() && g.rows.length !== g.total ? `${g.rows.length} of ${g.total}` : `${g.total}`}
-          {g.scannedAt !== undefined ? (
+          {titled && g.scannedAt !== undefined ? (
             <span class="group-stale">
               {' · '}
               {g.scannedAt === null ? 'never scanned' : `scanned ${ago(g.scannedAt)}`}
@@ -345,14 +359,21 @@ export const Rail = ({ vm }: { vm: VM }) => (
   <aside class="rail" id="rail">
     <div class="brand">&gt;&gt; bicycle</div>
     <nav class="rail-nav">
-      <a class="rail-link" href="#top">
+      <a
+        class={`rail-link${state.nav.page === null ? ' rail-link-active' : ''}`}
+        href={pageUrl(null)}
+        {...on('click', navigate(null), { prevent: true })}
+      >
         <span>All</span>
         <span class="rail-count">{vm.visible}</span>
       </a>
       {vm.groups.map((g) => (
         <a
-          class={`rail-link${g.rows.length === 0 && g.total === 0 ? ' rail-link-clean' : ''}`}
-          href={`#kind-${g.kind}`}
+          class={`rail-link${g.rows.length === 0 && g.total === 0 ? ' rail-link-clean' : ''}${
+            state.nav.page === g.kind ? ' rail-link-active' : ''
+          }`}
+          href={pageUrl(g.kind)}
+          {...on('click', navigate(g.kind), { prevent: true })}
         >
           <span>{g.kind}</span>
           {g.total === 0 && g.scannedAt === null ? (
@@ -375,7 +396,7 @@ export const Rail = ({ vm }: { vm: VM }) => (
 
 const DirChip = ({ dir, vm }: { dir: state.Direction; vm: VM }) => {
   const active = state.filter.dirs.has(dir)
-  const count = vm.groups.flatMap((g) => g.rows).filter((r) => r.dir === dir).length
+  const count = pageGroups(vm).flatMap((g) => g.rows).filter((r) => r.dir === dir).length
   return (
     <button
       type="button"
@@ -467,9 +488,39 @@ export const Toast = ({ notice }: { notice: Notice }) => (
   </div>
 )
 
+const PageHead = ({ vm }: { vm: VM }) => {
+  const g = state.nav.page === null ? null : pageGroups(vm)[0]
+  if (!g) {
+    return (
+      <header class="page-head">
+        <h1 class="page-title">All</h1>
+        <p class="page-sub">
+          {vm.total} divergence{vm.total === 1 ? '' : 's'} · {vm.ignored} ignored
+        </p>
+      </header>
+    )
+  }
+  return (
+    <header class="page-head">
+      <h1 class="page-title">{g.kind}</h1>
+      <p class="page-sub">
+        {g.total} divergence{g.total === 1 ? '' : 's'}
+        {g.scannedAt !== undefined
+          ? ` · ${g.scannedAt === null ? 'never scanned' : `scanned ${ago(g.scannedAt)}`}`
+          : ''}
+      </p>
+    </header>
+  )
+}
+
 export const DiffContent = ({ vm }: { vm: VM }) => (
   <main class="content" id="diff-content">
-    {vm.visible === 0 && vm.total === 0 ? (
+    <PageHead vm={vm} />
+    {state.nav.page !== null ? (
+      // A kind page always shows its card — empty states ("clean", "no data")
+      // are the whole point of landing here.
+      pageGroups(vm).map((g) => <GroupCard g={g} />)
+    ) : vm.visible === 0 && vm.total === 0 ? (
       <CleanState vm={vm} />
     ) : (
       vm.groups
@@ -490,6 +541,8 @@ export const DiffPage = ({ vm, cssHref }: { vm: VM; cssHref: string }) => (
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>bicycle diff</title>
       <script type="module" src="/static/datastar.js" />
+      {/* Rail navigation pushes history entries; back/forward re-render. */}
+      <script dangerouslySetInnerHTML={{ __html: "addEventListener('popstate', () => location.reload())" }} />
       <link rel="stylesheet" href="/static/base.css" />
       <link rel="stylesheet" href={cssHref} />
     </head>

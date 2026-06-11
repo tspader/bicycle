@@ -39,10 +39,24 @@ const invalidatePlan = (): void => {
   planCache = null
 }
 
-app[routes.diff.method](routes.diff.path, async (c) => {
-  invalidatePlan() // a page load is the natural refresh gesture
-  return c.html(<DiffPage vm={buildVM(await getPlan())} cssHref="/static/diff.css" />)
-})
+// '/diff' is the all-kinds overview; '/diff/:kind' is one category's page.
+// Rail clicks arrive as datastar GETs and morph fragments off the cached
+// plan; a real page load is the natural refresh gesture and replans.
+const diffPage = async (c: AppContext, kind: string | null) => {
+  if (!c.get('datastar')) invalidatePlan()
+  const plan = await getPlan()
+  if (kind !== null && !plan.kinds.some((k) => k.kind === kind)) {
+    return c.redirect(routes.diff.url())
+  }
+  state.nav.page = kind
+  if (!c.get('datastar')) {
+    return c.html(<DiffPage vm={buildVM(plan)} cssHref="/static/diff.css" />)
+  }
+  return patched()
+}
+
+app[routes.diff.method](routes.diff.path, (c) => diffPage(c, null))
+app.get('/diff/:kind', (c) => diffPage(c, c.req.param('kind')))
 
 // Every mutation re-renders the dynamic fragments. The filter input itself
 // is never patched, so typing focus survives morphs.

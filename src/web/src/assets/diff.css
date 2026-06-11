@@ -43,6 +43,12 @@
 }
 .rail-link:hover { color: var(--fg-1); background: var(--bg-row-hover); }
 .rail-link-clean { color: var(--fg-faint); }
+.rail-link-active,
+.rail-link-active:hover {
+  color: var(--fg-strong);
+  background: var(--bg-row-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 .rail-count {
   font-family: var(--font-mono);
@@ -175,7 +181,18 @@
 
 /* ── content / groups ──────────────────────────────────────────────── */
 
-.content { padding: var(--s-6) var(--s-7) 96px; display: grid; gap: var(--s-6); }
+.content { padding: var(--s-6) var(--s-7) 96px; display: grid; gap: var(--s-6); align-content: start; }
+
+/* ── page header ───────────────────────────────────────────────────── */
+
+.page-head { display: flex; align-items: baseline; gap: var(--s-4); }
+.page-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.page-sub { font-size: var(--text-xs); color: var(--fg-muted); font-family: var(--font-mono); }
 
 .group {
   background: var(--bg-card);
@@ -214,7 +231,9 @@
   font-weight: 600;
   grid-column: 2 / 3;
 }
-.group-count { font-size: var(--text-xs); color: var(--fg-muted); font-family: var(--font-mono); }
+/* Pinned to the ident column so the header lines up with or without the
+   group name (kind pages put the name in the page header instead). */
+.group-count { font-size: var(--text-xs); color: var(--fg-muted); font-family: var(--font-mono); grid-column: 3 / 4; }
 .group-stale { color: var(--fg-faint); }
 .group-actions { text-align: right; grid-column: 7 / 8; }
 .group-empty { padding: var(--s-4) var(--s-5); color: var(--fg-faint); font-size: var(--text-sm); }
