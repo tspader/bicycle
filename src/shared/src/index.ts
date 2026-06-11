@@ -97,10 +97,38 @@ const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 
 const VarScalar = z.union([z.string(), z.number(), z.boolean()])
 const VarValue: z.ZodType<unknown> = z.lazy(() =>
-  z.union([VarScalar, z.record(z.string().regex(IDENT), VarValue)]),
+  z.union([VarScalar, z.array(VarValue), z.record(z.string().regex(IDENT), VarValue)]),
 )
 export const Vars = z.record(z.string().regex(IDENT), VarValue)
 export type Vars = z.infer<typeof Vars>
+
+// A `<target>.bicycle` descriptor under files/ IS the entry for the target its
+// name encodes (its path minus the .bicycle suffix); the body encodes the HOW.
+// kind=file deploys content resolved as `from ?? the sibling file at the
+// descriptor's own name` — `from` is a path relative to files/ (fan-out), the
+// sibling default is what lets a bare `mode:`/`owner:` descriptor adorn its
+// adjacent file. kind=symlink creates a symlink pointing at `to`. `template`
+// overrides the .tpl-suffix inference on the content source.
+export const FileDescriptor = z.object({
+  kind: z.enum(['file', 'symlink']).default('file'),
+  from: z.string().min(1).optional(),
+  to: z.string().min(1).optional(),
+  mode: z.string().regex(OCTAL_MODE, 'mode must be octal like "0644" or "0440"').optional(),
+  owner: z.string().min(1).optional(),
+  group: z.string().min(1).optional(),
+  template: z.boolean().optional(),
+}).strict().superRefine((d, ctx) => {
+  if (d.kind === 'file') {
+    if (d.to) ctx.addIssue({ code: 'custom', message: 'to is only valid for kind=symlink' })
+  } else {
+    if (!d.to) ctx.addIssue({ code: 'custom', message: 'kind=symlink requires to' })
+    else if (!d.to.startsWith('/')) ctx.addIssue({ code: 'custom', message: 'to must be an absolute host path' })
+    if (d.from !== undefined || d.mode !== undefined || d.template !== undefined) {
+      ctx.addIssue({ code: 'custom', message: 'from/mode/template are only valid for kind=file' })
+    }
+  }
+})
+export type FileDescriptor = z.infer<typeof FileDescriptor>
 
 export const BicycleConfig = z.object({
   vars: Vars.optional(),

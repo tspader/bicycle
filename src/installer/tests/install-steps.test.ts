@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildInstallSteps, type InstallStep } from '../src/install-steps'
+import type { TreeFile } from '../src/import-tree'
 import { generate, recipientFor, decryptText } from '../src/age'
+
+const tf = (text: string, mode = 0o644): TreeFile =>
+  ({ bytes: new TextEncoder().encode(text), mode })
 
 const TEXT = 'core:\n  hostname: box\n  timezone: UTC\n  kernels: [linux]\n  ntp: true\n'
 
@@ -17,10 +21,11 @@ const runFs = async (steps: InstallStep[]) => {
 const etc = () => join(mountRoot, 'etc/bicycle')
 
 test('writes the whole config tree, then installs + reconciles', async () => {
-  const files = new Map<string, Uint8Array>([
-    ['apps/x/config.yml', new TextEncoder().encode('app: 1')],
-    ['files/etc/foo.conf', new TextEncoder().encode('foo')],
-    ['secrets/svc/token.age', new TextEncoder().encode('cipher')],
+  const files = new Map<string, TreeFile>([
+    ['apps/x/config.yml', tf('app: 1')],
+    ['files/etc/foo.conf', tf('foo')],
+    ['files/usr/local/bin/hook', tf('#!/bin/sh\n', 0o755)],
+    ['secrets/svc/token.age', tf('cipher', 0o644)],
   ])
   const steps = buildInstallSteps({ text: TEXT, files, identity: null, mountRoot })
 
@@ -39,6 +44,11 @@ test('writes the whole config tree, then installs + reconciles', async () => {
   expect(readFileSync(join(etc(), 'files/etc/foo.conf'), 'utf8')).toBe('foo')
   expect(readFileSync(join(etc(), 'secrets/svc/token.age'), 'utf8')).toBe('cipher')
   expect(existsSync(join(etc(), 'age.key'))).toBe(false)
+  // Modes survive the install: scripts stay executable, secrets clamp to 0600
+  // even if the source tree carried a looser mode.
+  expect(statSync(join(etc(), 'files/usr/local/bin/hook')).mode & 0o777).toBe(0o755)
+  expect(statSync(join(etc(), 'files/etc/foo.conf')).mode & 0o777).toBe(0o644)
+  expect(statSync(join(etc(), 'secrets/svc/token.age')).mode & 0o777).toBe(0o600)
 })
 
 test('writes the age identity at mode 0600', async () => {
@@ -73,8 +83,8 @@ test('encrypts staged UI secrets to the resolved recipients + writes recipients'
 test('does not overwrite an imported recipients file', async () => {
   const identity = await generate()
   const recipient = await recipientFor(identity)
-  const files = new Map<string, Uint8Array>([
-    ['recipients', new TextEncoder().encode('age1imported\n')],
+  const files = new Map<string, TreeFile>([
+    ['recipients', tf('age1imported\n')],
   ])
   const steps = buildInstallSteps({
     text: TEXT,

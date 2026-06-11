@@ -38,6 +38,16 @@ test('importTree reads text and adopts an adjacent age.key as identity', () => {
   expect(tree.files.has('bicycle.yml')).toBe(false)
 })
 
+test('importTree captures each file\'s mode', () => {
+  writeFileSync(join(tmp, 'bicycle.yml'), MIN_YAML)
+  mkdirSync(join(tmp, 'files/usr/local/bin'), { recursive: true })
+  writeFileSync(join(tmp, 'files/usr/local/bin/hook'), '#!/bin/sh\n', { mode: 0o755 })
+  writeFileSync(join(tmp, 'files/etc.conf'), 'x', { mode: 0o644 })
+  const tree = importTree(tmp)
+  expect(tree.files.get('files/usr/local/bin/hook')!.mode).toBe(0o755)
+  expect(tree.files.get('files/etc.conf')!.mode).toBe(0o644)
+})
+
 test('importTree skips top-level .git but keeps supporting files', () => {
   writeFileSync(join(tmp, 'bicycle.yml'), MIN_YAML)
   mkdirSync(join(tmp, '.git'))
@@ -49,8 +59,8 @@ test('importTree skips top-level .git but keeps supporting files', () => {
   writeFileSync(join(tmp, 'recipients'), 'age1abc\n')
   const tree = importTree(tmp)
   expect([...tree.files.keys()].some((k) => k.startsWith('.git'))).toBe(false)
-  expect(new TextDecoder().decode(tree.files.get('secrets/foo.age')!)).toBe('cipher')
-  expect(new TextDecoder().decode(tree.files.get('apps/x/config.yml')!)).toBe('app: 1')
+  expect(new TextDecoder().decode(tree.files.get('secrets/foo.age')!.bytes)).toBe('cipher')
+  expect(new TextDecoder().decode(tree.files.get('apps/x/config.yml')!.bytes)).toBe('app: 1')
   expect(tree.files.has('recipients')).toBe(true)
 })
 

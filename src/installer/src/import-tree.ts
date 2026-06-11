@@ -1,9 +1,14 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+
+// Mode travels with the bytes so the install lays files down with the same
+// permissions a git clone of the tree would have (git tracks the exec bit, so
+// in practice this is 0644 vs 0755 — scripts under files/ stay executable).
+export type TreeFile = { bytes: Uint8Array; mode: number }
 
 export type ImportedTree = {
   text: string
-  files: Map<string, Uint8Array>
+  files: Map<string, TreeFile>
   identity: string | null
 }
 
@@ -13,15 +18,20 @@ export type ImportedTree = {
 // only the root entries are filtered.
 const SKIP_TOP = new Set(['bicycle.yml', 'age.key', '.git'])
 
-const readFiles = (root: string): Map<string, Uint8Array> => {
-  const files = new Map<string, Uint8Array>()
+const readFiles = (root: string): Map<string, TreeFile> => {
+  const files = new Map<string, TreeFile>()
   const walk = (dir: string, prefix: string): void => {
     for (const ent of readdirSync(dir, { withFileTypes: true })) {
       if (prefix === '' && SKIP_TOP.has(ent.name)) continue
       const rel = prefix === '' ? ent.name : `${prefix}/${ent.name}`
       const abs = join(dir, ent.name)
       if (ent.isDirectory()) walk(abs, rel)
-      else if (ent.isFile()) files.set(rel, new Uint8Array(readFileSync(abs)))
+      else if (ent.isFile()) {
+        files.set(rel, {
+          bytes: new Uint8Array(readFileSync(abs)),
+          mode: statSync(abs).mode & 0o7777,
+        })
+      }
     }
   }
   walk(root, '')

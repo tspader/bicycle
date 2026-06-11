@@ -1,10 +1,11 @@
 import type { Document } from 'yaml'
 import type { BicycleConfig } from '@bicycle/shared'
+import type { TreeFile } from './import-tree'
 import * as doc from './doc'
 
 export type ConfigTree = {
   text: string
-  files: Map<string, Uint8Array>
+  files: Map<string, TreeFile>
   identity: string | null
 }
 
@@ -29,7 +30,7 @@ network:
 `
 
 let text = DEFAULT_CONFIG
-let files = new Map<string, Uint8Array>()
+let files = new Map<string, TreeFile>()
 let identity: string | null = null
 
 // archinstall-only credentials. These are NOT part of bicycle.yml (the daemon
@@ -46,7 +47,7 @@ const pendingSecrets = new Map<string, string>()
 
 export const getText = (): string => text
 export const getConfig = (): BicycleConfig => doc.resolved(text)
-export const getFiles = (): ReadonlyMap<string, Uint8Array> => files
+export const getFiles = (): ReadonlyMap<string, TreeFile> => files
 export const getIdentity = (): string | null => identity
 export const getRootHash = (): string | null => rootHash
 export const getEncryptionPassword = (): string | null => encryptionPassword
@@ -57,7 +58,7 @@ export const getPendingSecrets = (): ReadonlyMap<string, string> => pendingSecre
 // UI secrets belong to the prior config, so they're dropped.
 export const loadTree = (next: {
   text: string
-  files: Map<string, Uint8Array>
+  files: Map<string, TreeFile>
   identity?: string | null
 }): void => {
   text = next.text
@@ -95,8 +96,8 @@ export const setEncryptionPassword = (next: string | null): void => {
   encryptionPassword = next
 }
 
-export const setFile = (path: string, bytes: Uint8Array): void => {
-  files.set(path, bytes)
+export const setFile = (path: string, file: TreeFile): void => {
+  files.set(path, file)
 }
 export const deleteFile = (path: string): void => {
   files.delete(path)

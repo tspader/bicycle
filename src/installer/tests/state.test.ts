@@ -37,7 +37,7 @@ test('staged secrets are tracked and clearable', () => {
 test('loadTree replaces text/files/identity and clears staged secrets', () => {
   stageSecret('x/y', 'z')
   setIdentity(null)
-  const files = new Map<string, Uint8Array>([['recipients', new TextEncoder().encode('age1x\n')]])
+  const files = new Map([['recipients', { bytes: new TextEncoder().encode('age1x\n'), mode: 0o644 }]])
   loadTree({ text: 'core:\n  hostname: imported\n  timezone: UTC\n  kernels: [linux]\n  ntp: true\n', files, identity: FAKE_AGE })
   expect(getConfig().core?.hostname).toBe('imported')
   expect(getFiles().has('recipients')).toBe(true)

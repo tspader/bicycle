@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync, chmodSync, chownSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { encrypt } from './age'
 import { secretRelPath } from './secrets'
+import type { TreeFile } from './import-tree'
 
 export type InstallStep =
   // A native filesystem operation run from this process. Preferred for
@@ -17,8 +18,10 @@ export type InstallStepInput = {
   text: string
   // The supporting tree, keyed by path relative to /etc/bicycle (apps/**,
   // files/**, secrets/**.age, recipients). Curated on import — never contains
-  // age.key or .git.
-  files: ReadonlyMap<string, Uint8Array>
+  // age.key or .git. Each entry carries its source mode so e.g. executable
+  // scripts under files/ survive the install (secrets are clamped 0600
+  // regardless).
+  files: ReadonlyMap<string, TreeFile>
   // age identity written to <etcRoot>/age.key (mode 0600). Never part of files.
   identity: string | null
   // Cleartext secrets entered in the UI, encrypted here to `recipients` and
@@ -43,10 +46,15 @@ const chownIfRoot = (path: string): void => {
 
 const isSecret = (rel: string): boolean => rel === 'age.key' || rel.startsWith('secrets/')
 
-const writeInto = (etcRoot: string, rel: string, bytes: Uint8Array | string): void => {
+const writeInto = (
+  etcRoot: string,
+  rel: string,
+  bytes: Uint8Array | string,
+  srcMode?: number,
+): void => {
   const dest = join(etcRoot, rel)
   mkdirSync(dirname(dest), { recursive: true })
-  const mode = isSecret(rel) ? 0o600 : 0o644
+  const mode = isSecret(rel) ? 0o600 : srcMode ?? 0o644
   writeFileSync(dest, bytes, { mode })
   chmodSync(dest, mode)
   chownIfRoot(dest)
@@ -74,7 +82,7 @@ export const buildInstallSteps = (input: InstallStepInput): InstallStep[] => {
       mkdirSync(etcRoot, { recursive: true, mode: 0o755 })
       chownIfRoot(etcRoot)
       writeInto(etcRoot, 'bicycle.yml', input.text)
-      for (const [rel, bytes] of input.files) writeInto(etcRoot, rel, bytes)
+      for (const [rel, f] of input.files) writeInto(etcRoot, rel, f.bytes, f.mode)
     },
   })
 

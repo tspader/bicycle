@@ -44,6 +44,7 @@ export const paths = {
     const state = env.VAR;
     return {
       root: state,
+      filesManifest: path.join(state, "files-manifest.json"),
       cache: {
         catalog: (app: string, ref: string) => {
           const root = path.join(state, "cache", "catalog", app, ref);

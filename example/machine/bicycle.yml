@@ -32,6 +32,10 @@ vars:
     uid: 1000
   media:
     gid: 1001
+  theme:
+    background: "#1F1F1F"
+    foreground: "#DDDDDD"
+    accent: "#569cd6"
 users:
   - name: spader
     uid: ${admin.uid}

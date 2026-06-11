@@ -156,7 +156,7 @@ const postArchinstall = async (): Promise<number> => {
   let recipients: string[] = []
   if (pending.length > 0) {
     const imported = files.get('recipients')
-    if (imported) recipients = parseRecipients(new TextDecoder().decode(imported))
+    if (imported) recipients = parseRecipients(new TextDecoder().decode(imported.bytes))
     if (recipients.length === 0) {
       files.delete('recipients')
       if (!identity) {

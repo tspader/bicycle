@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Showcase: the sibling sysinfo.bicycle descriptor makes this executable
+# (mode 0755) no matter how the tree was transported. Run `sysinfo` after
+# first boot.
+set -euo pipefail
+echo "host:   $(hostname)"
+echo "kernel: $(uname -r)"
+echo "uptime: $(uptime -p)"
+df -h / | tail -1 | awk '{print "disk:   " $3 " used / " $2 " (" $5 ")"}'

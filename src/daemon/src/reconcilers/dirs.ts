@@ -1,24 +1,10 @@
-import { $ } from "bun";
 import fs from "fs";
 import path from "path";
 import * as config from "../config";
 import { env } from "../env";
 import { paths } from "../paths";
+import { lookupUid, lookupGid } from "../nss";
 import { log } from "../logger";
-
-const lookupUid = async (name: string): Promise<number | null> => {
-  const r = await $`getent passwd ${name}`.quiet().nothrow();
-  if (r.exitCode !== 0) return null;
-  const uid = Number(r.stdout.toString().trim().split(":")[2]);
-  return Number.isInteger(uid) ? uid : null;
-};
-
-const lookupGid = async (name: string): Promise<number | null> => {
-  const r = await $`getent group ${name}`.quiet().nothrow();
-  if (r.exitCode !== 0) return null;
-  const gid = Number(r.stdout.toString().trim().split(":")[2]);
-  return Number.isInteger(gid) ? gid : null;
-};
 
 const resolve = (rel: string): string => {
   const hostRoot = env.HOST_ROOT;

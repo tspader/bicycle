@@ -35,29 +35,41 @@ const makeDebouncer = (delayMs: number, enqueue: (job: Job) => Promise<void>) =>
 
 const fullSweep: Job = () => reconcilers.run();
 
-const classify = (abs: string): Job | null => {
+// Classified changes carry a debounce key. Anything that resolves to a global
+// sweep uses a CONSTANT key so a burst of changes (a git pull touching N
+// files) collapses into one job instead of enqueueing N serial sweeps.
+const classify = (abs: string): { key: string; job: Job } | null => {
   const filesRoot = paths.etc.files;
   const appsRoot = paths.etc.apps;
   const secretsRoot = paths.etc.secrets;
 
   if (abs === paths.etc.bicycleYaml) {
-    return async () => {
-      log.info({ path: abs }, "daemon: bicycle.yml changed");
-      await fullSweep();
+    return {
+      key: "sweep",
+      job: async () => {
+        log.info({ path: abs }, "daemon: bicycle.yml changed");
+        await fullSweep();
+      },
     };
   }
 
+  // Secrets feed both templated files ({{ ... | secret }}) and app env.
   if (abs.startsWith(secretsRoot + path.sep) || abs === secretsRoot) {
-    return async () => {
-      log.info({ path: abs }, "daemon: secret changed");
-      await reconcilers.app.all();
+    return {
+      key: "secrets",
+      job: async () => {
+        log.info({ path: abs }, "daemon: secret changed");
+        await reconcilers.files.all();
+        await reconcilers.app.all();
+      },
     };
   }
 
+  // Any files/ change reconciles via a full sweep: descriptors and templates
+  // fan content out, so a single changed source can affect any number of
+  // targets. The sweep is sha-gated, so this stays cheap.
   if (abs.startsWith(filesRoot + path.sep)) {
-    return async () => {
-      await reconcilers.files.one(abs);
-    };
+    return { key: "files", job: () => reconcilers.files.all() };
   }
 
   if (abs.startsWith(appsRoot + path.sep)) {
@@ -66,9 +78,12 @@ const classify = (abs: string): Job | null => {
     if (!name) return null;
     const base = path.basename(abs);
     if (base !== "config.yml" && base !== "compose.yml") return null;
-    return async () => {
-      log.info({ app: name, path: abs }, "daemon: app input changed");
-      await reconcilers.app.one(name);
+    return {
+      key: abs,
+      job: async () => {
+        log.info({ app: name, path: abs }, "daemon: app input changed");
+        await reconcilers.app.one(name);
+      },
     };
   }
 
@@ -100,9 +115,9 @@ export const command: Command = {
       try {
         if (!filename) return;
         const abs = path.join(paths.etc.root, filename);
-        const job = classify(abs);
-        if (!job) return;
-        debounce(abs, job);
+        const classified = classify(abs);
+        if (!classified) return;
+        debounce(classified.key, classified.job);
       } catch (err) {
         log.error({ err, filename }, "daemon: watcher callback failed");
       }
