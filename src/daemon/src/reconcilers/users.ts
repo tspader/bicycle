@@ -5,11 +5,12 @@ import * as config from "../config";
 import { paths } from "../paths";
 import { log } from "../logger";
 import { interpolate } from "../interpolate";
+import { bin } from "./bin";
 
 type Existing = { name: string; uid: number; gid: number; groups: string[] };
 
 const passwd = async (name: string): Promise<Existing | null> => {
-  const r = await $`getent passwd ${name}`.quiet().nothrow();
+  const r = await $`${bin("getent")} passwd ${name}`.quiet().nothrow();
   if (r.exitCode !== 0) return null;
   const parts = r.stdout.toString().trim().split(":");
   const uid = Number(parts[2]);
@@ -18,8 +19,24 @@ const passwd = async (name: string): Promise<Existing | null> => {
   return { name: parts[0]!, uid, gid, groups: await supplementary(name) };
 };
 
+export const HUMAN_ID_MIN = 1000;
+export const HUMAN_ID_MAX = 60000;
+
+export const allPasswd = async (): Promise<{ name: string; uid: number }[]> => {
+  const r = await $`${bin("getent")} passwd`.quiet().nothrow();
+  if (r.exitCode !== 0) return [];
+  const out: { name: string; uid: number }[] = [];
+  for (const line of r.stdout.toString().split("\n")) {
+    const parts = line.split(":");
+    const uid = Number(parts[2]);
+    if (!parts[0] || !Number.isInteger(uid)) continue;
+    out.push({ name: parts[0], uid });
+  }
+  return out;
+};
+
 const supplementary = async (name: string): Promise<string[]> => {
-  const r = await $`id -nG ${name}`.quiet().nothrow();
+  const r = await $`${bin("id")} -nG ${name}`.quiet().nothrow();
   if (r.exitCode !== 0) return [];
   return r.stdout.toString().trim().split(/\s+/).filter(Boolean);
 };
@@ -37,7 +54,7 @@ const createUser = async (
   if (groups.length > 0) args.push("-G", groups.join(","));
   args.push("--", name);
   log.info({ user: name, uid, groups }, "users: creating");
-  const r = await $`useradd ${args}`.quiet().nothrow();
+  const r = await $`${bin("useradd")} ${args}`.quiet().nothrow();
   if (r.exitCode !== 0) {
     log.error(
       { user: name, exitCode: r.exitCode, stderr: r.stderr.toString().trim() },
@@ -74,7 +91,7 @@ const setPassword = async (
     return;
   }
   const line = Buffer.from(`${name}:${clear}\n`);
-  const r = await $`chpasswd < ${line}`.quiet().nothrow();
+  const r = await $`${bin("chpasswd")} < ${line}`.quiet().nothrow();
   if (r.exitCode !== 0) {
     log.error(
       { user: name, exitCode: r.exitCode, stderr: r.stderr.toString().trim() },
@@ -88,7 +105,7 @@ const setPassword = async (
 const addToGroups = async (name: string, missing: string[]): Promise<void> => {
   if (missing.length === 0) return;
   log.info({ user: name, groups: missing }, "users: adding to groups");
-  const r = await $`usermod -aG ${missing.join(",")} ${name}`.quiet().nothrow();
+  const r = await $`${bin("usermod")} -aG ${missing.join(",")} ${name}`.quiet().nothrow();
   if (r.exitCode !== 0) {
     log.error(
       { user: name, groups: missing, exitCode: r.exitCode, stderr: r.stderr.toString().trim() },
@@ -116,6 +133,18 @@ export const plan = async (): Promise<Diff[]> => {
       diffs.push({ type: "user", id: u.name, field: "groups", expected: want, actual: existing.groups });
     }
   }
+  const declared = new Set(wanted.map((u) => u.name));
+  for (const e of await allPasswd()) {
+    if (e.uid < HUMAN_ID_MIN || e.uid >= HUMAN_ID_MAX || declared.has(e.name)) continue;
+    diffs.push({
+      type: "user",
+      id: e.name,
+      field: "exists",
+      expected: null,
+      actual: true,
+      meta: { uid: e.uid },
+    });
+  }
   return diffs;
 };
 
@@ -124,6 +153,7 @@ export const all = async (): Promise<void> => {
   const cfg = config.bicycle();
   const wanted = new Map((cfg.users ?? []).map((u) => [u.name, u]));
   for (const d of await plan()) {
+    if (d.expected === null) continue;
     const u = wanted.get(d.id);
     if (!u) continue;
     if (d.field === "exists") {

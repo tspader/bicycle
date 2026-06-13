@@ -14,13 +14,16 @@
       "name": "@bicycle/daemon",
       "dependencies": {
         "@bicycle/shared": "workspace:*",
+        "@clack/prompts": "catalog:",
         "@spader/zargs": "catalog:",
         "age-encryption": "catalog:",
         "hono": "catalog:",
         "liquidjs": "^10.27.0",
         "pino": "catalog:",
         "pino-pretty": "catalog:",
+        "yaml": "catalog:",
         "yargs": "catalog:",
+        "zod": "catalog:",
       },
       "devDependencies": {
         "@types/bun": "catalog:",
@@ -45,6 +48,7 @@
       "dependencies": {
         "@bicycle/datastar": "workspace:*",
         "@bicycle/shared": "workspace:*",
+        "@bicycle/ui": "workspace:*",
         "age-encryption": "catalog:",
         "hono": "catalog:",
         "shiki": "^4.0.2",
@@ -61,6 +65,7 @@
       "name": "@bicycle/shared",
       "version": "0.0.0",
       "dependencies": {
+        "yaml": "catalog:",
         "zod": "catalog:",
       },
       "devDependencies": {
@@ -68,10 +73,16 @@
         "typescript": "catalog:",
       },
     },
+    "src/ui": {
+      "name": "@bicycle/ui",
+    },
     "src/web": {
       "name": "@bicycle/web",
       "dependencies": {
+        "@bicycle/daemon": "workspace:*",
         "@bicycle/datastar": "workspace:*",
+        "@bicycle/shared": "workspace:*",
+        "@bicycle/ui": "workspace:*",
         "hono": "catalog:",
         "zod": "catalog:",
       },
@@ -114,6 +125,8 @@
     "@bicycle/installer": ["@bicycle/installer@workspace:src/installer"],
 
     "@bicycle/shared": ["@bicycle/shared@workspace:src/shared"],
+
+    "@bicycle/ui": ["@bicycle/ui@workspace:src/ui"],
 
     "@bicycle/web": ["@bicycle/web@workspace:src/web"],
 

@@ -1,9 +1,13 @@
 import { z } from 'zod'
 
 export * as vars from './vars'
+export * as ignore from './ignore'
+export * as yamledit from './yamledit'
 export { loadBicycleDoc } from './loader'
 export type { LoadedDoc } from './loader'
-export type { Diff, DiffValue } from './diff'
+export type { Diff, DiffValue, Json } from './diff'
+export { DiffSchema, DiffValueSchema, JsonSchema } from './diff'
+export type { Path as YamlPath } from './yamledit'
 
 export const Kernel = z.enum(['linux', 'linux-lts', 'linux-zen', 'linux-hardened'])
 export type Kernel = z.infer<typeof Kernel>
@@ -131,6 +135,12 @@ export const FileDescriptor = z.object({
 })
 export type FileDescriptor = z.infer<typeof FileDescriptor>
 
+export const Detector = z.object({
+  name: z.string().regex(/^[a-z][a-z0-9-]*$/, 'detector name must be kebab-case'),
+  exec: z.array(z.string().min(1)).min(1),
+}).strict()
+export type Detector = z.infer<typeof Detector>
+
 export const BicycleConfig = z.object({
   vars: Vars.optional(),
   core: z.object({
@@ -178,5 +188,6 @@ export const BicycleConfig = z.object({
   systemd: z.object({
     enable: z.array(z.string().min(1)).optional(),
   }).strict().optional(),
+  detectors: z.array(Detector).optional(),
 }).strict()
 export type BicycleConfig = z.infer<typeof BicycleConfig>

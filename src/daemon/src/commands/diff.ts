@@ -1,20 +1,7 @@
 import type { Command } from "@spader/zargs";
-import type { Diff, DiffValue } from "@bicycle/shared";
-import * as reconcilers from "../reconcilers";
-import { parseOnly } from "./only";
+import * as kinds from "../kinds";
+import { ago } from "../kinds/render";
 import { log } from "../logger";
-
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-
-const fmt = (v: DiffValue): string => {
-  if (v === null) return "<none>";
-  if (Array.isArray(v)) return v.join(",");
-  if (typeof v === "string" && SHA256_HEX.test(v)) return `sha256:${v.slice(0, 12)}`;
-  return String(v);
-};
-
-export const render = (d: Diff): string =>
-  `~ ${d.type} ${d.id} ${d.field}: ${fmt(d.actual)} -> ${fmt(d.expected)}${d.redacted ? " (redacted)" : ""}`;
 
 export const command: Command = {
   description:
@@ -24,7 +11,7 @@ export const command: Command = {
   options: {
     only: {
       type: "array",
-      description: `reconcilers to plan (any of: ${reconcilers.PLANNABLE.join(", ")})`,
+      description: `kinds to plan (any of: ${kinds.names().join(", ")})`,
     },
     json: {
       type: "boolean",
@@ -33,20 +20,34 @@ export const command: Command = {
     },
   },
   handler: async (argv) => {
-    const { names, bad } = parseOnly(argv.only);
+    const { names, bad } = kinds.parseOnly(argv.only);
     if (bad.length > 0) {
-      log.error({ bad, valid: reconcilers.PLANNABLE }, "diff: unknown reconciler name(s)");
+      log.error({ bad, valid: kinds.names() }, "diff: unknown kind name(s)");
       process.exitCode = 2;
       return;
     }
 
-    const diffs = await reconcilers.plan(names);
+    const result = await kinds.plan(names);
     if (argv.json) {
-      for (const d of diffs) console.log(JSON.stringify(d));
+      for (const d of result.diffs) console.log(JSON.stringify(d));
     } else {
-      for (const d of diffs) console.log(render(d));
-      console.log(diffs.length === 0 ? "clean" : `${diffs.length} diff(s)`);
+      for (const entry of result.kinds) {
+        const line = kinds.byName(entry.kind)?.render.line;
+        for (const d of entry.diffs) console.log(line ? line(d) : JSON.stringify(d));
+      }
+      for (const entry of result.kinds) {
+        if (entry.scannedAt === undefined) continue;
+        console.log(
+          entry.scannedAt === null
+            ? `# ${entry.kind}: never scanned — run \`bicycle scan --only ${entry.kind}\``
+            : `# ${entry.kind}: scanned ${ago(entry.scannedAt)}`,
+        );
+      }
+      const ignored = result.ignored > 0 ? ` (${result.ignored} ignored)` : "";
+      console.log(
+        result.diffs.length === 0 ? `clean${ignored}` : `${result.diffs.length} diff(s)${ignored}`,
+      );
     }
-    process.exitCode = diffs.length === 0 ? 0 : 1;
+    process.exitCode = result.diffs.length === 0 ? 0 : 1;
   },
 };

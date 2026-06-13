@@ -82,15 +82,21 @@ typedef struct {
 
 typedef sp_str_ht(bc_mtree_entry_t) bc_mtree_ht_t;
 
+typedef sp_str_ht(bool) bc_claim_set_t;
+
 // Work items are just borrowed string slices into bc->work.arena. The arena
 // is a plain bump allocator owned by bc_t, populated by the producer before
 // workers spawn (well, concurrently with their consumption) and torn down
 // only after every worker has joined.
-typedef sp_str_t bc_work_t;
+typedef struct {
+  sp_str_t path;
+  sp_str_t pkg;
+} bc_work_t;
 
 typedef enum {
-  BC_WRITE_FILE    = 1,
-  BC_WRITE_FINDING = 2,
+  BC_WRITE_FILE     = 1,
+  BC_WRITE_FINDING  = 2,
+  BC_WRITE_PROGRESS = 3,
 } bc_write_kind_t;
 
 typedef enum {
@@ -122,14 +128,22 @@ typedef struct {
   bc_finding_detail_t detail;
   sp_str_t path;
   sp_str_t pkg;
-  s64 created_at;
+  struct { s64 expected; s64 actual; } num;
+  struct { sp_str_t expected; sp_str_t actual; } str;
+  struct { u8 expected [32]; u8 actual [32]; } sha;
+  struct { bool valid; s64 size; s64 uid; s64 gid; } stat;
 } bc_write_finding_t;
+
+typedef struct {
+  u64 done;
+} bc_write_progress_t;
 
 typedef struct {
   bc_write_kind_t kind;
   union {
-    bc_write_file_t    file;
-    bc_write_finding_t finding;
+    bc_write_file_t     file;
+    bc_write_finding_t  finding;
+    bc_write_progress_t progress;
   };
 } bc_write_t;
 
@@ -202,6 +216,18 @@ struct bc_t {
   sp_prompt_ctx_t* prompt;
   sp_atomic_s32_t files_scanned;
   sp_atomic_s32_t cancel;
+
+  bool ndjson;
+  s32  ndjson_fd;
+
+  struct {
+    sp_da(sp_str_t) prunes;
+  } ignores;
+
+  struct {
+    bc_claim_set_t  exact;
+    sp_da(sp_str_t) prefixes;
+  } claims;
 
   struct {
     u64 mtree;

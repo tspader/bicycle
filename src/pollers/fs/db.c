@@ -2,6 +2,7 @@
 #include "sql.h"
 #include "schema.h"
 #include "queue.h"
+#include "emit.h"
 
 bc_err_t bc_db_open_conn(sp_str_t path, sqlite3** out) {
   sp_mem_arena_marker_t scratch = sp_mem_begin_scratch();
@@ -84,12 +85,10 @@ s32 bc_writer_fn(void* userdata) {
 
   struct {
     sqlite3_stmt* file;
-    sqlite3_stmt* finding;
   } s = sp_zero;
   u32 in_batch = 0;
 
   bc_writer_try(bc_sql_prepare(w->sql, bc_db_upsert_file_metadata, -1, &s.file));
-  bc_writer_try(bc_sql_prepare(w->sql, bc_db_insert_finding, -1, &s.finding));
   bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
 
   bc_write_t item;
@@ -108,35 +107,28 @@ s32 bc_writer_fn(void* userdata) {
         bc_sql_bind_str(s.file, 9, item.file.path);
         bc_sql_bind_u64(s.file, 10, bc->run_id);
         bc_writer_try(bc_sql_step(w->sql, s.file));
+
+        w->writes++;
+        in_batch++;
+        if (in_batch >= BC_WRITE_BATCH) {
+          bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
+          bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
+          in_batch = 0;
+        }
         break;
       }
       case BC_WRITE_FINDING: {
-        sqlite3_reset(s.finding);
-        bc_sql_bind_u64(s.finding, 1, bc->run_id);
-        sqlite3_bind_int(s.finding, 2, item.finding.kind);
-        bc_sql_bind_str(s.finding, 3, bc_finding_detail_label(item.finding.detail));
-        bc_sql_bind_str(s.finding, 4, item.finding.path);
-        if (!sp_str_empty(item.finding.pkg)) {
-          bc_sql_bind_str(s.finding, 5, item.finding.pkg);
-        } else {
-          sqlite3_bind_null(s.finding, 5);
-        }
-        sqlite3_bind_int64(s.finding, 6, item.finding.created_at);
-        bc_writer_try(bc_sql_step(w->sql, s.finding));
+        bc_emit_finding(bc, &item.finding);
+        break;
+      }
+      case BC_WRITE_PROGRESS: {
+        bc_emit_progress(bc, item.progress.done);
         break;
       }
     }
-
-    w->writes++;
-    in_batch++;
-    if (in_batch >= BC_WRITE_BATCH) {
-      bc_writer_try(bc_sql_exec(w->sql, "COMMIT;"));
-      bc_writer_try(bc_sql_exec(w->sql, "BEGIN;"));
-      in_batch = 0;
-    }
   }
 
-  {
+  if (!sp_atomic_s32_get(&bc->cancel)) {
     sqlite3_stmt* prune = SP_NULLPTR;
     bc_writer_try(bc_sql_prepare(w->sql, bc_db_prune_file_metadata, -1, &prune));
     bc_sql_bind_u64(prune, 1, bc->run_id);
@@ -149,7 +141,6 @@ s32 bc_writer_fn(void* userdata) {
 
 done:
   sqlite3_finalize(s.file);
-  sqlite3_finalize(s.finding);
 
   if (w->err) {
     bc_sql_exec(w->sql, "ROLLBACK;");
@@ -158,59 +149,4 @@ done:
   }
 
   return w->err;
-}
-
-sp_str_t bc_finding_kind_label(bc_finding_kind_t k) {
-  switch (k) {
-    case BC_FINDING_MODIFIED_META:    return sp_str_lit("modified-meta");
-    case BC_FINDING_MODIFIED_CONTENT: return sp_str_lit("modified-content");
-    case BC_FINDING_MISSING:          return sp_str_lit("missing");
-    case BC_FINDING_UNTRACKED:        return sp_str_lit("untracked");
-    case BC_FINDING_STRAY:            return sp_str_lit("stray");
-  }
-  return sp_str_lit("?");
-}
-
-sp_str_t bc_finding_detail_label(bc_finding_detail_t d) {
-  switch (d) {
-    case BC_FINDING_DETAIL_NONE:   return sp_str_lit("none");
-    case BC_FINDING_DETAIL_KIND:   return sp_str_lit("kind");
-    case BC_FINDING_DETAIL_MODE:   return sp_str_lit("mode");
-    case BC_FINDING_DETAIL_UID:    return sp_str_lit("uid");
-    case BC_FINDING_DETAIL_GID:    return sp_str_lit("gid");
-    case BC_FINDING_DETAIL_SIZE:   return sp_str_lit("size");
-    case BC_FINDING_DETAIL_TARGET: return sp_str_lit("target");
-  }
-  return sp_str_lit("?");
-}
-
-void bc_print_findings_for_run(bc_t* bc) {
-  sqlite3_stmt* stmt = SP_NULLPTR;
-  if (bc_sql_prepare(bc->sql, bc_db_select_findings_for_run, -1, &stmt)) return;
-  bc_sql_bind_u64(stmt, 1, bc->run_id);
-
-  s32 rc;
-  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-    bc_finding_kind_t kind = (bc_finding_kind_t)sqlite3_column_int(stmt, 0);
-    sp_str_t detail = {
-      .data = (const c8*)sqlite3_column_text (stmt, 1),
-      .len  = (u32)      sqlite3_column_bytes(stmt, 1),
-    };
-    sp_str_t path = {
-      .data = (const c8*)sqlite3_column_text(stmt, 2),
-      .len  = (u32)sqlite3_column_bytes(stmt, 2),
-    };
-    sp_str_t pkg = sp_zero;
-    if (sqlite3_column_type(stmt, 3) != SQLITE_NULL) {
-      pkg.data = (const c8*)sqlite3_column_text (stmt, 3);
-      pkg.len  = (u32)      sqlite3_column_bytes(stmt, 3);
-    }
-
-    sp_log("{.yellow} {} {} {.cyan}",
-      sp_fmt_str(bc_finding_kind_label(kind)),
-      sp_fmt_str(detail),
-      sp_fmt_str(path),
-      sp_fmt_str(pkg.len ? pkg : sp_str_lit("-")));
-  }
-  sqlite3_finalize(stmt);
 }

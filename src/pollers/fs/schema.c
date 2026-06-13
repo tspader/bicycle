@@ -46,16 +46,7 @@ const char* bc_db_schema =
   "  action     TEXT    NOT NULL,"
   "  db_mtime   INTEGER,"
   "  elapsed    REAL"
-  ");"
-  "CREATE TABLE IF NOT EXISTS findings ("
-  "  run_id     INTEGER NOT NULL,"
-  "  kind       INTEGER NOT NULL,"
-  "  detail     TEXT    NOT NULL,"
-  "  path       TEXT    NOT NULL,"
-  "  pkg        TEXT,"
-  "  created_at INTEGER NOT NULL"
-  ");"
-  "CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id);";
+  ");";
 
 const char* bc_db_select_file_metadata =
   "SELECT dev, ino, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec, size, sha256 "
@@ -74,13 +65,6 @@ const char* bc_db_upsert_file_metadata =
   "  sha256 = excluded.sha256, "
   "  path = excluded.path, "
   "  last_seen_run = excluded.last_seen_run;";
-
-const char* bc_db_insert_finding =
-  "INSERT INTO findings (run_id, kind, detail, path, pkg, created_at) "
-  "VALUES (?, ?, ?, ?, ?, ?);";
-
-const char* bc_db_select_findings_for_run =
-  "SELECT kind, detail, path, pkg FROM findings WHERE run_id = ? ORDER BY rowid;";
 
 const char* bc_db_prune_file_metadata =
   "DELETE FROM file_metadata WHERE last_seen_run < ?;";

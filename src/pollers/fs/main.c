@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define SP_IMPLEMENTATION
 #include "bc.h"
 
@@ -5,11 +6,62 @@
 #include "db.h"
 
 #include <alpm.h>
+#include <errno.h>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include "emit.h"
 #include "mtree.h"
 #include "prompt.h"
 #include "queue.h"
 #include "walk.h"
 #include "worker.h"
+
+#define BC_IOPRIO_WHO_PROCESS 1
+#define BC_IOPRIO_CLASS_IDLE  3
+#define BC_IOPRIO_CLASS_SHIFT 13
+
+static bc_t* bc_signal_target;
+
+SP_PRIVATE void bc_on_sigterm(s32 sig) {
+  (void)sig;
+  if (bc_signal_target) sp_atomic_s32_set(&bc_signal_target->cancel, 1);
+}
+
+SP_PRIVATE void bc_signal_init(bc_t* bc) {
+  bc_signal_target = bc;
+  struct sigaction sa = sp_zero;
+  sa.sa_handler = bc_on_sigterm;
+  sa.sa_flags = SA_RESTART;
+  sigaction(SIGTERM, &sa, SP_NULLPTR);
+}
+
+SP_PRIVATE void bc_background_init(void) {
+  sp_str_t bg = sp_os_env_get(sp_str_lit("BICYCLE_BACKGROUND"));
+  if (!sp_str_equal(bg, sp_str_lit("1"))) return;
+  errno = 0;
+  if (nice(19) == -1 && errno) {
+    sp_log_err("nice(19) failed: {.red}", sp_fmt_int(errno));
+  }
+  if (syscall(SYS_ioprio_set, BC_IOPRIO_WHO_PROCESS, 0, BC_IOPRIO_CLASS_IDLE << BC_IOPRIO_CLASS_SHIFT) != 0) {
+    sp_log_err("ioprio_set failed: {.red}", sp_fmt_int(errno));
+  }
+}
+
+SP_PRIVATE sp_str_t bc_cache_path(sp_mem_t mem) {
+  sp_str_t path = sp_os_env_get(sp_str_lit("BC_DB"));
+  if (!sp_str_empty(path)) return path;
+
+  sp_str_t cache_dir = sp_os_env_get(sp_str_lit("BICYCLE_CACHE_DIR"));
+  if (!sp_str_empty(cache_dir)) {
+    sp_fs_create_dir(cache_dir);
+    return sp_fs_join_path(mem, cache_dir, sp_str_lit("cache.db"));
+  }
+
+  cache_dir = sp_fs_join_path(mem, sp_fs_get_cwd(mem), sp_str_lit(".cache"));
+  sp_fs_create_dir(cache_dir);
+  return sp_fs_join_path(mem, cache_dir, sp_str_lit("bicycle.db"));
+}
 
 s32 main(s32 num_args, const c8** args) {
   (void)num_args; (void)args;
@@ -17,14 +69,17 @@ s32 main(s32 num_args, const c8** args) {
 
   bc_t bc = sp_zero;
   bc.mem = mem;
+  bc.ndjson = !(sp_os_is_tty(sp_sys_stdout) && sp_os_is_tty(sp_sys_stdin));
+  if (bc.ndjson) bc_emit_open(&bc);
+  bc_signal_init(&bc);
+  bc_background_init();
+
   bc.paths.root = sp_str_lit("/");
   bc.paths.db = sp_str_lit("/var/lib/pacman");
-  bc.paths.cache = sp_os_env_get(sp_str_lit("BC_DB"));
-  if (sp_str_empty(bc.paths.cache)) {
-    sp_str_t cache_dir = sp_fs_join_path(mem, sp_fs_get_cwd(mem), sp_str_lit(".cache"));
-    sp_fs_create_dir(cache_dir);
-    bc.paths.cache = sp_fs_join_path(mem, cache_dir, sp_str_lit("bicycle.db"));
-  }
+  bc.paths.cache = bc_cache_path(mem);
+
+  bc_try(bc_ignores_load(&bc));
+  bc_try(bc_claims_load(&bc));
 
   bc_try(bc_db_open(&bc));
   bc_try(bc_alpm_open(&bc));
@@ -68,7 +123,7 @@ s32 main(s32 num_args, const c8** args) {
   bc_try(bc_db_open_conn(bc.paths.cache, &bc.writer.sql));
   sp_thread_init(&bc.writer.thread, bc_writer_fn, &bc.writer);
 
-  if (!sp_os_is_tty(sp_sys_stdin)) {
+  if (bc.ndjson) {
     bc_files_driver_fn(&bc);
     bc_walk_strays(&bc);
     goto done;
@@ -134,8 +189,6 @@ done:
   sp_log("{:<12}: {.cyan .duration}", sp_fmt_cstr("t_strays"), sp_fmt_uint(bc.timings.strays));
   sp_log("{:<12}: {.cyan .duration}", sp_fmt_cstr("t_total"), sp_fmt_uint(bc.timings.total));
 
-  //bc_print_findings_for_run(&bc);
-
   sp_for(it, BC_NUM_WORKERS) {
     EVP_MD_CTX_free(bc.workers[it].md_ctx);
     sp_mem_arena_destroy(bc.workers[it].arena);
@@ -145,5 +198,5 @@ done:
   alpm_release(bc.alpm);
   sqlite3_close(bc.writer.sql);
   sqlite3_close(bc.sql);
-  return BC_OK;
+  return sp_atomic_s32_get(&bc.cancel) ? BC_ERR : BC_OK;
 }

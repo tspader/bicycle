@@ -11,6 +11,8 @@ export type Sandbox = {
   etc: string;
   host: string;
   state: string;
+  bin: string;
+  fixtures: string;
   recipient: string;
   etcPath: (rel: string) => string;
   hostPath: (rel: string) => string;
@@ -22,6 +24,8 @@ export const useSandbox = (): Sandbox => {
     etc: "",
     host: "",
     state: "",
+    bin: "",
+    fixtures: "",
     recipient: "",
     etcPath: (rel) => path.join(sb.etc, rel),
     hostPath: (rel) => path.join(sb.host, rel),
@@ -37,8 +41,13 @@ export const useSandbox = (): Sandbox => {
     sb.etc = path.join(sb.root, "etc");
     sb.host = path.join(sb.root, "host");
     sb.state = path.join(sb.root, "var");
+    sb.bin = path.join(sb.root, "bin");
+    sb.fixtures = path.join(sb.root, "fixtures");
     fs.mkdirSync(sb.etc, { recursive: true });
     fs.mkdirSync(sb.host, { recursive: true });
+    fs.mkdirSync(sb.bin, { recursive: true });
+    fs.mkdirSync(sb.fixtures, { recursive: true });
+    defaultShims(sb);
 
     const identity = await generateIdentity();
     sb.recipient = await identityToRecipient(identity);
@@ -49,6 +58,7 @@ export const useSandbox = (): Sandbox => {
     set("BICYCLE_HOST_ROOT", sb.host);
     set("BICYCLE_VAR", sb.state);
     set("AGE_KEY", keyPath);
+    set("PATH", `${sb.bin}:${process.env.PATH ?? ""}`);
   });
 
   afterEach(() => {
@@ -89,6 +99,78 @@ export const writeSecret = async (
   writeEtc(sb, path.join("secrets", `${addr}.age`), ct);
 };
 
+export const writeShim = (sb: Sandbox, name: string, script: string): void => {
+  fs.writeFileSync(path.join(sb.bin, name), script, { mode: 0o755 });
+};
+
+const defaultShims = (sb: Sandbox): void => {
+  const fx = sb.fixtures;
+  writeShim(
+    sb,
+    "pacman",
+    `#!/bin/sh
+case "$1" in
+  -Qq) cat "${fx}/pacman.installed" 2>/dev/null; exit 0;;
+  -Qen) cat "${fx}/pacman.explicit" 2>/dev/null; exit 0;;
+  -Qem) cat "${fx}/pacman.foreign" 2>/dev/null; exit 0;;
+  -Qi) grep -qxF -- "$2" "${fx}/pacman.installed" 2>/dev/null && exit 0; exit 1;;
+  *) exit 1;;
+esac
+`,
+  );
+  writeShim(
+    sb,
+    "systemctl",
+    `#!/bin/sh
+case "$1" in
+  is-enabled) grep -qxF -- "$2" "${fx}/systemd.enabled" 2>/dev/null && exit 0; exit 1;;
+  is-active) grep -qxF -- "$2" "${fx}/systemd.active" 2>/dev/null && exit 0; exit 1;;
+  list-unit-files) cat "${fx}/systemd.unit-files.json" 2>/dev/null || echo "[]"; exit 0;;
+  *) exit 1;;
+esac
+`,
+  );
+  writeShim(
+    sb,
+    "getent",
+    `#!/bin/sh
+case "$1" in
+  passwd|group)
+    if [ "$#" -eq 1 ]; then cat "${fx}/$1" 2>/dev/null; exit 0; fi
+    line=$(grep -m1 "^$2:" "${fx}/$1" 2>/dev/null) && { echo "$line"; exit 0; }
+    ;;
+esac
+exec /usr/bin/getent "$@"
+`,
+  );
+};
+
+export type SystemState = {
+  installed?: string[];
+  explicit?: string[];
+  foreign?: string[];
+  enabled?: string[];
+  active?: string[];
+  unitFiles?: { unit_file: string; state: string; preset: string | null }[];
+  users?: { name: string; uid: number }[];
+  groups?: { name: string; gid: number }[];
+};
+
+export const writeSystem = (sb: Sandbox, sys: SystemState): void => {
+  const write = (name: string, lines: string[]) =>
+    fs.writeFileSync(path.join(sb.fixtures, name), lines.map((l) => `${l}\n`).join(""));
+  if (sys.installed) write("pacman.installed", sys.installed);
+  if (sys.explicit) write("pacman.explicit", sys.explicit.map((p) => `${p} 1.0-1`));
+  if (sys.foreign) write("pacman.foreign", sys.foreign.map((p) => `${p} 1.0-1`));
+  if (sys.enabled) write("systemd.enabled", sys.enabled);
+  if (sys.active) write("systemd.active", sys.active);
+  if (sys.unitFiles) write("systemd.unit-files.json", [JSON.stringify(sys.unitFiles)]);
+  if (sys.users) {
+    write("passwd", sys.users.map((u) => `${u.name}:x:${u.uid}:${u.uid}::/home/${u.name}:/bin/bash`));
+  }
+  if (sys.groups) write("group", sys.groups.map((g) => `${g.name}:x:${g.gid}:`));
+};
+
 export type Action =
   | { do: "config"; config: unknown }
   | { do: "file"; rel: string; contents: string; mode?: number }
@@ -98,6 +180,8 @@ export type Action =
   | { do: "hostDir"; rel: string; mode?: number }
   | { do: "chmodHost"; rel: string; mode: number }
   | { do: "rm"; rel: string }
+  | { do: "shim"; name: string; script: string }
+  | { do: "system"; system: SystemState }
   | { do: "sweep" };
 
 export const runActions = async (
@@ -138,6 +222,12 @@ export const runActions = async (
         break;
       case "rm":
         fs.rmSync(sb.etcPath(path.join("files", a.rel)));
+        break;
+      case "shim":
+        writeShim(sb, a.name, a.script);
+        break;
+      case "system":
+        writeSystem(sb, a.system);
         break;
       case "sweep":
         await sweep();
@@ -199,6 +289,7 @@ export const backdate = (p: string): number => {
 export type PlanCase = {
   name: string;
   config?: unknown;
+  system?: SystemState;
   sweep?: boolean;
   plan: readonly Partial<Diff>[];
 };
@@ -208,6 +299,7 @@ export const runPlanCase = async (
   mod: { all: () => Promise<void>; plan: () => Promise<Diff[]> },
   c: PlanCase,
 ): Promise<void> => {
+  if (c.system !== undefined) writeSystem(sb, c.system);
   if (c.config !== undefined) writeConfig(sb, c.config);
   if (c.sweep) await mod.all();
   expectDiffs(await mod.plan(), c.plan);

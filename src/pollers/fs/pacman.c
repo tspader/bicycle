@@ -29,6 +29,7 @@ void bc_enqueue_owned_files(bc_t* bc) {
   bc_alpm_for(it, cache) {
     if (sp_atomic_s32_get(&bc->cancel)) return;
     alpm_pkg_t* pkg = it->data;
+    sp_str_t pkg_name = sp_cstr_as_str(alpm_pkg_get_name(pkg));
     alpm_filelist_t* files = alpm_pkg_get_files(pkg);
     if (!files) continue;
     for (u64 i = 0; i < files->count; i++) {
@@ -42,7 +43,8 @@ void bc_enqueue_owned_files(bc_t* bc) {
       if (sp_str_empty(abs)) continue;
 
       bc->num_files++;
-      bc_queue_push(&bc->work.queue, abs);
+      bc_work_t work = { .path = abs, .pkg = pkg_name };
+      bc_queue_push(&bc->work.queue, work);
     }
   }
 }

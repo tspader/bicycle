@@ -8,6 +8,7 @@ export const paths = {
     return {
       root: etc,
       bicycleYaml: path.join(etc, "bicycle.yml"),
+      ignoreYaml: path.join(etc, "ignore.yml"),
       ageKey: path.join(etc, "age.key"),
       recipients: path.join(etc, "recipients"),
       files: path.join(etc, "files"),
@@ -38,6 +39,9 @@ export const paths = {
     return {
       root: run,
       reconcileLock: path.join(run, "reconcile.lock"),
+      scanLock: path.join(run, "scan.lock"),
+      scanIgnores: path.join(run, "scan-ignores.txt"),
+      claims: path.join(run, "claims.txt"),
     };
   },
   get state() {
@@ -45,6 +49,9 @@ export const paths = {
     return {
       root: state,
       filesManifest: path.join(state, "files-manifest.json"),
+      scans: path.join(state, "scan"),
+      scan: (detector: string) => path.join(state, "scan", `${detector}.json`),
+      detectorCache: (detector: string) => path.join(state, "cache", "detect", detector),
       cache: {
         catalog: (app: string, ref: string) => {
           const root = path.join(state, "cache", "catalog", app, ref);

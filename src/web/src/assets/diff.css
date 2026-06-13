@@ -181,7 +181,13 @@
 
 /* ── content / groups ──────────────────────────────────────────────── */
 
-.content { padding: var(--s-6) var(--s-7) 96px; display: grid; gap: var(--s-6); align-content: start; }
+.content {
+  padding: var(--s-6) var(--s-7) 96px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-6);
+  align-content: start;
+}
 
 /* ── page header ───────────────────────────────────────────────────── */
 
@@ -203,12 +209,24 @@
   scroll-margin-top: calc(var(--topbar-h) + var(--s-4));
 }
 
-/* One column grid for every row on the page — group boundaries included —
-   so identifiers, fields, and values align vertically everywhere. */
+.rows {
+  display: grid;
+  grid-template-columns: var(
+    --cols,
+    36px 96px minmax(240px, max-content) 80px minmax(80px, max-content)
+      minmax(80px, max-content) 1fr 96px
+  );
+  column-gap: var(--s-4);
+}
+
+.roww,
 .rowgrid {
   display: grid;
-  grid-template-columns: 36px 104px minmax(240px, 1fr) 96px minmax(220px, 340px) 28px 96px;
-  gap: 0 var(--s-4);
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.rowgrid {
   align-items: center;
   padding: 0 var(--s-5);
 }
@@ -217,30 +235,45 @@
   position: sticky;
   top: var(--topbar-h);
   z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: 0 var(--s-5);
   background: var(--bg-card);
   border-bottom: 1px solid var(--border-1);
   height: 44px;
   /* Cover the row sliver that otherwise peeks above while scrolling. */
   box-shadow: 0 -8px 0 var(--bg-app);
 }
+.group-head { padding-left: 0; }
+.group-head .cell-check { width: 52px; flex-shrink: 0; }
 
 .group-name {
   font-family: var(--font-mono);
   font-size: var(--text-md);
   color: var(--fg-strong);
   font-weight: 600;
-  grid-column: 2 / 3;
 }
-/* Pinned to the ident column so the header lines up with or without the
-   group name (kind pages put the name in the page header instead). */
-.group-count { font-size: var(--text-xs); color: var(--fg-muted); font-family: var(--font-mono); grid-column: 3 / 4; }
+.group-count { font-size: var(--text-xs); color: var(--fg-muted); font-family: var(--font-mono); }
 .group-stale { color: var(--fg-faint); }
-.group-actions { text-align: right; grid-column: 7 / 8; }
+.group-actions { margin-left: auto; }
 .group-empty { padding: var(--s-4) var(--s-5); color: var(--fg-faint); font-size: var(--text-sm); }
+
+.rows { overflow-x: auto; }
+
+.collabels {
+  height: 28px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--label-tracking);
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--border-1);
+  user-select: none;
+}
 
 /* ── rows ──────────────────────────────────────────────────────────── */
 
-.roww:nth-child(odd) .row { background: var(--row-stripe); }
+.roww:nth-child(even) .row { background: var(--row-stripe); }
 
 .row {
   height: 36px;
@@ -276,6 +309,7 @@
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--fg-strong);
+  max-width: 560px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -283,58 +317,33 @@
 .ident-dir { color: var(--fg-muted); }
 
 .field { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-2); }
-.field-dim { color: var(--fg-faint); }
 
 .values {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .val { color: var(--fg-2); }
-/* Drift reads was → will-be: the declared destination carries the weight. */
-.val-was { color: var(--fg-muted); }
-.val-target { color: var(--warn-fg); }
 .val-dim { color: var(--fg-faint); }
-.arrow { color: var(--fg-faint); }
 .redacted { color: var(--fg-faint); font-style: italic; font-size: var(--text-xs); }
 
-.cell-chevron { display: flex; justify-content: center; }
-.chevron {
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  line-height: 1;
-  padding: var(--s-2);
-  transition: color var(--transition-fast), transform var(--transition-fast);
+.metacell {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.chevron:hover { color: var(--fg-strong); }
-.chevron-open { transform: rotate(90deg); color: var(--fg-1); }
+.metacell-dim { color: var(--fg-faint); }
 
 /* Hover-revealed row actions: ~500 resting button outlines was most of the
    old page's noise. */
 .rowactions { text-align: right; visibility: hidden; }
 .row:hover .rowactions, .roww.is-selected .rowactions { visibility: visible; }
-
-.rowdetail {
-  background: var(--bg-input);
-  border-top: 1px solid var(--border-1);
-  border-bottom: 1px solid var(--border-1);
-  padding: var(--s-4) var(--s-5) var(--s-4) calc(36px + var(--s-4) + var(--s-5));
-  user-select: text;
-}
-.rowdetail dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--s-1) var(--s-5);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-.rowdetail dt { color: var(--fg-faint); text-transform: uppercase; letter-spacing: var(--label-tracking); }
-.rowdetail dd { color: var(--fg-2); word-break: break-all; }
 
 /* ── bulk bar ──────────────────────────────────────────────────────── */
 

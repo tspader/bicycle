@@ -12,6 +12,7 @@
     "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "yaml": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -11,16 +11,22 @@
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",
+    "@clack/prompts": "catalog:",
     "@spader/zargs": "catalog:",
     "age-encryption": "catalog:",
     "hono": "catalog:",
     "liquidjs": "^10.27.0",
     "pino": "catalog:",
     "pino-pretty": "catalog:",
-    "yargs": "catalog:"
+    "yaml": "catalog:",
+    "yargs": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
     "typescript": "catalog:"
+  },
+  "exports": {
+    ".": "./src/exports.ts"
   }
 }

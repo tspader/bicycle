@@ -29,7 +29,6 @@ export const routes = {
   filter: route('post', '/filter'),
   dir: route('post', '/dir', { dir: z.enum(['drift', 'missing', 'undeclared']) }),
   select: route('post', '/select', { id: z.string().min(1) }),
-  expand: route('post', '/expand', { id: z.string().min(1) }),
   selectGroup: route('post', '/select-group', { kind: z.string().min(1) }),
   clearSelection: route('post', '/clear-selection'),
   bulkIgnore: route('post', '/bulk-ignore'),
@@ -121,6 +120,7 @@ const SHA256_HEX = /^[0-9a-f]{64}$/
 
 const fmtValue = (v: Diff['expected']): string => {
   if (v === null) return '—'
+  if (typeof v === 'boolean') return v ? 'yes' : 'no'
   if (Array.isArray(v)) return v.join(', ')
   if (typeof v === 'string' && SHA256_HEX.test(v)) return v.slice(0, 10)
   return String(v)
@@ -153,37 +153,102 @@ const Ident = ({ id }: { id: string }) => {
   )
 }
 
-const Detail = ({ d, open }: { d: Diff; open: boolean }) => (
-  <div class="rowdetail" hidden={!open}>
-    <dl>
-      <dt>actual</dt>
-      <dd>{d.actual === null ? '—' : String(d.actual)}</dd>
-      <dt>expected</dt>
-      <dd>{d.expected === null ? '—' : String(d.expected)}</dd>
-      {Object.entries(d.meta ?? {}).map(([k, v]) => (
-        <>
-          <dt>{k}</dt>
-          <dd>{typeof v === 'string' ? v : JSON.stringify(v)}</dd>
-        </>
-      ))}
-    </dl>
+const rowClick = (action: Code): Code =>
+  when(expr`!evt.target.closest('button, input, a')`, action)
+
+type Col = { label: string; width: string; cell: (r: Row) => Child }
+
+const fmtBytes = (n: number): string => {
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+const metaCol = (key: string, width: string, fmt?: (v: unknown) => string): Col => ({
+  label: key,
+  width,
+  cell: (r) => {
+    const v = r.diff.meta?.[key]
+    if (v === undefined) return <span class="metacell metacell-dim">—</span>
+    return <span class="metacell">{fmt ? fmt(v) : String(v)}</span>
+  },
+})
+
+const EXTRA_COLS: Record<string, Col[]> = {
+  fs: [
+    metaCol('size', '72px', (v) => (typeof v === 'number' ? fmtBytes(v) : String(v))),
+    metaCol('uid', '56px'),
+    metaCol('gid', '56px'),
+    metaCol('pkg', 'minmax(96px, 160px)'),
+  ],
+  users: [metaCol('uid', '56px')],
+  groups: [metaCol('gid', '56px')],
+  systemd: [metaCol('preset', '88px')],
+  packages: [
+    {
+      label: 'origin',
+      width: '56px',
+      cell: (r) =>
+        r.diff.meta?.foreign === true ? (
+          <span class="metacell">aur</span>
+        ) : (
+          <span class="metacell metacell-dim">—</span>
+        ),
+    },
+  ],
+}
+
+const gridCols = (kind: string): string =>
+  [
+    '36px',
+    '96px',
+    'minmax(240px, max-content)',
+    '80px',
+    'minmax(80px, max-content)',
+    'minmax(80px, max-content)',
+    ...(EXTRA_COLS[kind] ?? []).map((c) => c.width),
+    '1fr',
+    '96px',
+  ].join(' ')
+
+const PATH_KINDS = new Set(['fs', 'files', 'dirs', 'sudoers'])
+
+const ColLabels = ({ kind }: { kind: string }) => (
+  <div class="collabels rowgrid">
+    <span />
+    <span>status</span>
+    <span>{PATH_KINDS.has(kind) ? 'path' : 'name'}</span>
+    <span>field</span>
+    <span>desired</span>
+    <span>actual</span>
+    {(EXTRA_COLS[kind] ?? []).map((c) => (
+      <span>{c.label}</span>
+    ))}
+    <span />
+    <span />
   </div>
 )
 
-const rowClick = (action: Code): Code =>
-  when(expr`!evt.target.closest('button, input, a, .rowdetail')`, action)
+const fullValue = (v: Diff['expected']): string | undefined => {
+  if (v === null || typeof v === 'boolean') return undefined
+  return Array.isArray(v) ? v.join(', ') : String(v)
+}
 
-// Per-kind custom renderers plug in here (m2 §8): key is the registry kind
-// name, the generic row covers every kind today.
-const renderers: Record<string, (r: Row) => Child> = {}
+const Value = ({ v }: { v: Diff['expected'] }) =>
+  v === null ? (
+    <span class="val val-dim">—</span>
+  ) : (
+    <span class="val" title={fullValue(v)}>{fmtValue(v)}</span>
+  )
 
 const DefaultRow = ({ r }: { r: Row }) => {
   const d = r.diff
-  const hasDetail = d.meta !== undefined || typeof d.expected === 'string' || typeof d.actual === 'string'
-  const open = state.expanded.has(r.id)
-  const tautological =
-    (r.dir === 'undeclared' || r.dir === 'missing') &&
-    (d.field === 'exists' || d.field === 'installed' || d.field === 'enabled')
   return (
     <div class={`roww${r.selected ? ' is-selected' : ''}`} id={r.id}>
       <div
@@ -198,45 +263,16 @@ const DefaultRow = ({ r }: { r: Row }) => {
         </span>
         <span class={`badge badge-${r.dir}`}>{BADGE[r.dir]}</span>
         <Ident id={d.id} />
-        <span class={`field${tautological ? ' field-dim' : ''}`}>{d.field}</span>
+        <span class="field">{d.field}</span>
         <span class="values">
-          {r.dir === 'undeclared' ? (
-            // A bare presence boolean restates the badge; show it as a dash.
-            typeof d.actual === 'boolean' ? (
-              <span class="val val-dim">—</span>
-            ) : (
-              <span class="val">{fmtValue(d.actual)}</span>
-            )
-          ) : r.dir === 'missing' ? (
-            // What the repo declares and the machine lacks.
-            typeof d.expected === 'boolean' ? (
-              <span class="val val-dim">—</span>
-            ) : (
-              <span class="val val-dim">expected {fmtValue(d.expected)}</span>
-            )
-          ) : (
-            // Destination (declared value) carries the emphasis.
-            <>
-              <span class="val val-was">{fmtValue(d.actual)}</span>
-              <span class="arrow"> → </span>
-              <span class="val val-target">{fmtValue(d.expected)}</span>
-            </>
-          )}
+          <Value v={d.expected} />
+        </span>
+        <span class="values">
+          <Value v={d.actual} />
           {d.redacted ? <span class="redacted"> redacted</span> : null}
         </span>
-        <span class="cell-chevron">
-          {hasDetail ? (
-            <button
-              type="button"
-              class={`chevron${open ? ' chevron-open' : ''}`}
-              aria-label="details"
-              aria-expanded={open}
-              {...on('click', routes.expand.action({ id: r.id }), { stop: true })}
-            >
-              ▸
-            </button>
-          ) : null}
-        </span>
+        {(EXTRA_COLS[r.kind] ?? []).map((col) => col.cell(r))}
+        <span />
         <span class="rowactions">
           <button
             type="button"
@@ -250,12 +286,9 @@ const DefaultRow = ({ r }: { r: Row }) => {
           </button>
         </span>
       </div>
-      {hasDetail ? <Detail d={d} open={open} /> : null}
     </div>
   )
 }
-
-const row = (r: Row): Child => (renderers[r.kind] ?? ((x: Row) => <DefaultRow r={x} />))(r)
 
 // ── groups ───────────────────────────────────────────────────────────
 
@@ -287,8 +320,8 @@ const GroupCard = ({ g }: { g: GroupVM }) => {
   // On a kind page the name and staleness live in the page header above.
   const titled = state.nav.page === null
   return (
-    <section class="group" id={`kind-${g.kind}`}>
-      <header class="group-head rowgrid">
+    <section class="group" id={`kind-${g.kind}`} style={`--cols: ${gridCols(g.kind)}`}>
+      <header class="group-head">
         <span class="cell-check">
           <input
             type="checkbox"
@@ -307,8 +340,6 @@ const GroupCard = ({ g }: { g: GroupVM }) => {
             </span>
           ) : null}
         </span>
-        <span />
-        <span />
         <span class="group-actions">
           {g.applicable > 0 ? (
             <button
@@ -337,7 +368,12 @@ const GroupCard = ({ g }: { g: GroupVM }) => {
               : 'nothing matches the filter'}
         </p>
       ) : (
-        <div class="rows">{g.rows.map(row)}</div>
+        <div class="rows">
+          <ColLabels kind={g.kind} />
+          {g.rows.map((r) => (
+            <DefaultRow r={r} />
+          ))}
+        </div>
       )}
     </section>
   )

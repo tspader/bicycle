@@ -14,3 +14,4 @@ node_modules
 /example/user_configuration.json
 /example/user_credentials.json
 /src/installer/tsconfig.tsbuildinfo
+.bicycle/

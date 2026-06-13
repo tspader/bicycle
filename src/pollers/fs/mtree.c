@@ -181,6 +181,10 @@ bc_err_t bc_mtree_load(bc_t* bc) {
   alpm_list_t* cache = alpm_db_get_pkgcache(local);
 
   bc_alpm_for(it, cache) {
+    if (sp_atomic_s32_get(&bc->cancel)) {
+      err = BC_ERR;
+      goto done;
+    }
     alpm_pkg_t* pkg_h = it->data;
     sp_str_t pkg     = sp_str_copy(arena_mem, sp_cstr_as_str(alpm_pkg_get_name(pkg_h)));
     sp_str_t version = sp_str_copy(arena_mem, sp_cstr_as_str(alpm_pkg_get_version(pkg_h)));

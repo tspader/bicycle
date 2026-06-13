@@ -90,12 +90,6 @@ app[routes.select.method](routes.select.path, (c: AppContext) => {
   return patched()
 })
 
-app[routes.expand.method](routes.expand.path, (c: AppContext) => {
-  const { id } = routes.expand.params(c)
-  state.toggleExpanded(id)
-  return patched()
-})
-
 app[routes.selectGroup.method](routes.selectGroup.path, (c: AppContext) => {
   const { kind } = routes.selectGroup.params(c)
   state.toggleGroup(kind)
