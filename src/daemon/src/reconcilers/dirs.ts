@@ -3,35 +3,43 @@ import path from "path";
 import type { Diff } from "@bicycle/shared";
 import * as config from "../config";
 import { env } from "../env";
-import { paths } from "../paths";
-import { chmodExact } from "../fs";
+import { chmodExact, octal } from "../fs";
 import { lookupUid, lookupGid } from "../nss";
 import { log } from "../logger";
+import type { Claims } from "../detect/claims";
 
-const resolve = (rel: string): string => {
-  const hostRoot = env.HOST_ROOT;
-  return path.join(hostRoot, rel);
+type Dir = NonNullable<config.BicycleConfig["dirs"]>[number];
+
+type Fix = {
+  owner?: { want: number; have: number };
+  group?: { want: number; have: number };
+  mode?: { have: number };
 };
 
-const octal = (mode: number): string => `0${mode.toString(8)}`;
+type Action =
+  | { do: "create"; dir: Dir }
+  | { do: "fix"; dir: Dir; fix: Fix };
 
-export const plan = async (): Promise<Diff[]> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
-  const wanted = config.bicycle().dirs ?? [];
-  const diffs: Diff[] = [];
-  for (const d of wanted) {
+const resolve = (rel: string): string => path.join(env.HOST_ROOT, rel);
+
+const actions = async (): Promise<Action[]> => {
+  const cfg = config.maybe();
+  if (!cfg) return [];
+  const out: Action[] = [];
+  for (const d of cfg.dirs ?? []) {
     const dest = resolve(d.path);
     if (!fs.existsSync(dest)) {
-      diffs.push({ type: "dir", id: d.path, field: "exists", expected: true, actual: false });
+      out.push({ do: "create", dir: d });
       continue;
     }
     const st = fs.statSync(dest);
+    const fix: Fix = {};
     if (d.owner) {
       const wantUid = await lookupUid(d.owner);
       if (wantUid === null) {
         log.warn({ path: d.path, owner: d.owner }, "dirs: owner unknown; skipping chown");
       } else if (wantUid !== st.uid) {
-        diffs.push({ type: "dir", id: d.path, field: "owner", expected: wantUid, actual: st.uid });
+        fix.owner = { want: wantUid, have: st.uid };
       }
     }
     if (d.group) {
@@ -39,75 +47,99 @@ export const plan = async (): Promise<Diff[]> => {
       if (wantGid === null) {
         log.warn({ path: d.path, group: d.group }, "dirs: group unknown; skipping chgrp");
       } else if (wantGid !== st.gid) {
-        diffs.push({ type: "dir", id: d.path, field: "group", expected: wantGid, actual: st.gid });
+        fix.group = { want: wantGid, have: st.gid };
       }
     }
     if (d.mode !== undefined) {
       const wantMode = parseInt(d.mode, 8);
       const haveMode = st.mode & 0o7777;
-      if (haveMode !== wantMode) {
-        diffs.push({ type: "dir", id: d.path, field: "mode", expected: d.mode, actual: octal(haveMode) });
-      }
+      if (haveMode !== wantMode) fix.mode = { have: haveMode };
     }
+    if (fix.owner || fix.group || fix.mode) out.push({ do: "fix", dir: d, fix });
+  }
+  return out;
+};
+
+const toDiffs = (a: Action): Diff[] => {
+  if (a.do === "create") {
+    return [{ type: "dir", id: a.dir.path, field: "exists", expected: true, actual: false }];
+  }
+  const diffs: Diff[] = [];
+  if (a.fix.owner) {
+    diffs.push({ type: "dir", id: a.dir.path, field: "owner", expected: a.fix.owner.want, actual: a.fix.owner.have });
+  }
+  if (a.fix.group) {
+    diffs.push({ type: "dir", id: a.dir.path, field: "group", expected: a.fix.group.want, actual: a.fix.group.have });
+  }
+  if (a.fix.mode) {
+    diffs.push({ type: "dir", id: a.dir.path, field: "mode", expected: a.dir.mode!, actual: octal(a.fix.mode.have) });
   }
   return diffs;
 };
 
+export const plan = async (): Promise<Diff[]> => (await actions()).flatMap(toDiffs);
+
+const create = async (d: Dir): Promise<void> => {
+  const dest = resolve(d.path);
+  try {
+    fs.mkdirSync(dest, { recursive: true });
+    log.info({ path: d.path, dest }, "dirs: created");
+  } catch (e) {
+    log.error({ err: e, path: d.path, dest }, "dirs: mkdir failed");
+    return;
+  }
+  if (d.owner || d.group) {
+    const wantUid = d.owner ? await lookupUid(d.owner) : null;
+    const wantGid = d.group ? await lookupGid(d.group) : null;
+    if (d.owner && wantUid === null) {
+      log.warn({ path: d.path, owner: d.owner }, "dirs: owner unknown; skipping chown");
+    }
+    if (d.group && wantGid === null) {
+      log.warn({ path: d.path, group: d.group }, "dirs: group unknown; skipping chgrp");
+    }
+    if (wantUid !== null || wantGid !== null) {
+      const st = fs.statSync(dest);
+      chown(d, dest, wantUid ?? st.uid, wantGid ?? st.gid);
+    }
+  }
+  if (d.mode !== undefined) chmod(d, dest, parseInt(d.mode, 8));
+};
+
+const chown = (d: Dir, dest: string, uid: number, gid: number): void => {
+  try {
+    fs.chownSync(dest, uid, gid);
+    log.info({ path: d.path, uid, gid }, "dirs: chowned");
+  } catch (e) {
+    log.error({ err: e, path: d.path }, "dirs: chown failed");
+  }
+};
+
+const chmod = (d: Dir, dest: string, mode: number): void => {
+  try {
+    chmodExact(dest, mode);
+    log.info({ path: d.path, mode: d.mode }, "dirs: chmoded");
+  } catch (e) {
+    log.error({ err: e, path: d.path }, "dirs: chmod failed");
+  }
+};
+
+const apply = (a: Extract<Action, { do: "fix" }>): void => {
+  const dest = resolve(a.dir.path);
+  const st = fs.statSync(dest);
+  if (a.fix.owner || a.fix.group) {
+    chown(a.dir, dest, a.fix.owner?.want ?? st.uid, a.fix.group?.want ?? st.gid);
+  }
+  if (a.fix.mode) chmod(a.dir, dest, parseInt(a.dir.mode!, 8));
+};
+
 export const all = async (): Promise<void> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return;
-  const wanted = new Map((config.bicycle().dirs ?? []).map((d) => [d.path, d]));
-  const byDir = new Map<string, Set<string>>();
-  for (const diff of await plan()) {
-    const fields = byDir.get(diff.id) ?? new Set();
-    fields.add(diff.field);
-    byDir.set(diff.id, fields);
+  for (const a of await actions()) {
+    if (a.do === "create") await create(a.dir);
+    else apply(a);
   }
-  for (const [id, fields] of byDir) {
-    const d = wanted.get(id);
-    if (!d) continue;
-    const dest = resolve(d.path);
-    let created = false;
-    if (fields.has("exists")) {
-      try {
-        fs.mkdirSync(dest, { recursive: true });
-        created = true;
-        log.info({ path: d.path, dest }, "dirs: created");
-      } catch (e) {
-        log.error({ err: e, path: d.path, dest }, "dirs: mkdir failed");
-        continue;
-      }
-    }
+};
 
-    const st = fs.statSync(dest);
-    if (created || fields.has("owner") || fields.has("group")) {
-      const wantUid = d.owner ? await lookupUid(d.owner) : null;
-      const wantGid = d.group ? await lookupGid(d.group) : null;
-      if (created && d.owner && wantUid === null) {
-        log.warn({ path: d.path, owner: d.owner }, "dirs: owner unknown; skipping chown");
-      }
-      if (created && d.group && wantGid === null) {
-        log.warn({ path: d.path, group: d.group }, "dirs: group unknown; skipping chgrp");
-      }
-      const newUid = wantUid ?? st.uid;
-      const newGid = wantGid ?? st.gid;
-      if (newUid !== st.uid || newGid !== st.gid) {
-        try {
-          fs.chownSync(dest, newUid, newGid);
-          log.info({ path: d.path, uid: newUid, gid: newGid }, "dirs: chowned");
-        } catch (e) {
-          log.error({ err: e, path: d.path }, "dirs: chown failed");
-        }
-      }
-    }
-
-    if (d.mode !== undefined && (created || fields.has("mode"))) {
-      const wantMode = parseInt(d.mode, 8);
-      try {
-        chmodExact(dest, wantMode);
-        log.info({ path: d.path, mode: d.mode }, "dirs: chmoded");
-      } catch (e) {
-        log.error({ err: e, path: d.path }, "dirs: chmod failed");
-      }
-    }
-  }
+export const claims = (): Claims => {
+  const cfg = config.maybe();
+  return { exact: [], prefixes: (cfg?.dirs ?? []).map((d) => d.path) };
 };

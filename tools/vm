@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Single entrypoint for the dev VM lifecycle.
+#
+# One persistent libvirt domain ("bicycle-vm") with the installer ISO and the
+# target disk both attached. Boot order is disk-first, ISO-second, so:
+#   - empty/unbootable disk  -> firmware falls through to the ISO -> installer
+#   - installed disk         -> boots the installed system
+# The domain is never undefined, so NVRAM/virt-manager entry stay put.
+#
+# Commands:
+#   vm install        (re)install: wipe the disk + boot the installer ISO
+#   vm boot           boot the installed system (no installer)
+#   vm down           graceful shutdown (domain stays defined)
+#   vm ssh [args...]  ssh into the installed system (spum-cannon.local)
+#   vm console        attach to the serial console (virsh console)
+#   vm sync [args]    push local source into the running VM (tools/src/sync.ts)
+#   vm status         show domain state
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+CACHE="$REPO/.cache"
+NAME="${VM_NAME:-bicycle-vm}"
+BRIDGE="${BRIDGE:-br0}"
+URI="${LIBVIRT_URI:-qemu:///system}"
+MEMORY="${VM_MEMORY:-4096}"
+VCPUS="${VM_VCPUS:-4}"
+DISK_SIZE="${VM_DISK_SIZE:-30}"
+
+ISO="$CACHE/installer.iso"
+TARGET="$CACHE/target.qcow2"
+
+# Installed-system mDNS name (core.hostname in the machine config). Override
+# with VM_HOST=... vm ssh if your config uses a different hostname.
+VM_HOST="${VM_HOST:-spum-cannon.local}"
+VM_USER="${VM_USER:-root}"
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+
+v() { virsh -c "$URI" "$@"; }
+defined() { v dominfo "$NAME" >/dev/null 2>&1; }
+running() { [ "$(v domstate "$NAME" 2>/dev/null)" = "running" ]; }
+
+make_disk() {
+  rm -f "$TARGET"
+  qemu-img create -f qcow2 "$TARGET" "${DISK_SIZE}G" >/dev/null
+}
+
+# Define (persistent) + start the domain. Disk boots first; ISO is attached as
+# a fallback boot device when present.
+define_and_start() {
+  local args=(
+    --connect "$URI" --name "$NAME"
+    --memory "$MEMORY" --vcpus "$VCPUS"
+    --boot uefi --osinfo archlinux --import
+    --disk "path=$TARGET,bus=virtio,format=qcow2,boot.order=1"
+    --network "bridge=$BRIDGE,model=virtio"
+    --graphics spice --console pty,target_type=serial --noautoconsole
+  )
+  [ -f "$ISO" ] && args+=(--disk "path=$ISO,device=cdrom,boot.order=2")
+  virt-install "${args[@]}"
+}
+
+cmd_install() {
+  [ -f "$ISO" ] || { echo "missing $ISO — run 'make iso' first" >&2; exit 1; }
+  if defined; then
+    running && v destroy "$NAME" >/dev/null
+    make_disk
+    v start "$NAME"
+  else
+    make_disk
+    define_and_start
+  fi
+  echo "installer booting on $NAME — open the web UI (or virt-manager for the console)"
+}
+
+cmd_boot() {
+  if defined; then
+    if running; then echo "$NAME already running"; exit 0; fi
+    v start "$NAME"
+  else
+    [ -f "$TARGET" ] || { echo "no disk at $TARGET — run 'vm install' first" >&2; exit 1; }
+    define_and_start
+  fi
+  echo "booted $NAME — ssh in with: $0 ssh"
+}
+
+cmd_down() {
+  defined || { echo "$NAME not defined"; exit 0; }
+  running || { echo "$NAME not running"; exit 0; }
+  v shutdown "$NAME"
+  echo "shutdown signal sent to $NAME"
+}
+
+cmd_ssh()     { exec ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_HOST" "$@"; }
+cmd_console() { exec v console "$NAME"; }
+cmd_sync()    { exec bun "$REPO/tools/src/sync.ts" "$@"; }
+cmd_status()  { v list --all; }
+
+case "${1:-}" in
+  install) shift; cmd_install "$@" ;;
+  boot)    shift; cmd_boot "$@" ;;
+  down)    shift; cmd_down "$@" ;;
+  ssh)     shift; cmd_ssh "$@" ;;
+  console) shift; cmd_console "$@" ;;
+  sync)    shift; cmd_sync "$@" ;;
+  status)  shift; cmd_status "$@" ;;
+  *) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 1 ;;
+esac

@@ -133,10 +133,10 @@ exit 3
   },
   {
     name: "contract env vars reach the detector",
-    script: `echo "{\\"t\\":\\"diff\\",\\"type\\":\\"env\\",\\"id\\":\\"$BICYCLE_IGNORES\\",\\"field\\":\\"claims\\",\\"expected\\":null,\\"actual\\":\\"$BICYCLE_CLAIMS\\"}"`,
-    env: { BICYCLE_IGNORES: "/run/x/ignores.txt", BICYCLE_CLAIMS: "/run/x/claims.txt" },
+    script: `echo "{\\"t\\":\\"diff\\",\\"type\\":\\"env\\",\\"id\\":\\"$BICYCLE_PRUNES\\",\\"field\\":\\"claims\\",\\"expected\\":null,\\"actual\\":\\"$BICYCLE_CLAIMS\\"}"`,
+    env: { BICYCLE_PRUNES: "/run/x/prunes.txt", BICYCLE_CLAIMS: "/run/x/claims.txt" },
     expect: {
-      diffs: [{ type: "env", id: "/run/x/ignores.txt", actual: "/run/x/claims.txt" }],
+      diffs: [{ type: "env", id: "/run/x/prunes.txt", actual: "/run/x/claims.txt" }],
     },
   },
 ];
@@ -145,24 +145,17 @@ for (const c of EXEC_CASES) {
   test(`exec: ${c.name}`, () => runExecCase(c));
 }
 
-type IgnoresRenderCase = {
+type PrunesRenderCase = {
   name: string;
   files: string[];
   expect: { lines: string[] };
 };
 
-const IGNORES_RENDER_CASES: IgnoresRenderCase[] = [
+const PRUNES_RENDER_CASES: PrunesRenderCase[] = [
   {
-    name: "prunes first, then globs, all patterns retained",
-    files: ["/var/**", "*.pacnew", "/usr/share/icons/*/icon-theme.cache"],
-    expect: {
-      lines: [
-        "P /var",
-        "G /var/**",
-        "G *.pacnew",
-        "G /usr/share/icons/*/icon-theme.cache",
-      ],
-    },
+    name: "plain paths render one per line; globs stay plan-side",
+    files: ["/var", "**/*.pacnew", "/usr/share/icons/*/icon-theme.cache", "/etc/machine-id"],
+    expect: { lines: ["/etc/machine-id", "/var"] },
   },
   {
     name: "empty config renders empty",
@@ -171,33 +164,23 @@ const IGNORES_RENDER_CASES: IgnoresRenderCase[] = [
   },
 ];
 
-for (const c of IGNORES_RENDER_CASES) {
-  test(`ignores: ${c.name}`, () => {
+for (const c of PRUNES_RENDER_CASES) {
+  test(`prunes: ${c.name}`, () => {
     const cfg = ignore.IgnoreConfig.parse({ files: c.files });
-    const text = detect.renderIgnores(cfg);
+    const text = detect.renderPrunes(cfg);
     expect(text.split("\n").filter((l) => l !== "")).toEqual(c.expect.lines);
   });
 }
 
-const sb = useSandbox();
-
-test("claims: manifest targets, sudoers, dirs, and bicycle's own trees", () => {
-  writeConfig(sb, { dirs: [{ path: "/media" }] });
-  fs.mkdirSync(paths.state.root, { recursive: true });
-  fs.writeFileSync(paths.state.filesManifest, JSON.stringify(["etc/motd", "etc/profile.d/x.sh"]));
-
-  const c = detect.claims.gather();
-  expect(c.prefixes).toContain(paths.etc.root);
-  expect(c.prefixes).toContain(paths.state.root);
-  expect(c.prefixes).toContain("/media");
-  expect(c.exact).toContain("/etc/motd");
-  expect(c.exact).toContain("/etc/profile.d/x.sh");
-  expect(c.exact).toContain("/etc/sudoers.d/bicycle");
-
-  const rendered = detect.claims.render(c);
-  expect(rendered).toContain("P /media\n");
-  expect(rendered).toContain("E /etc/motd\n");
+test("claims: render emits prefixes then exacts", () => {
+  const rendered = detect.claims.render({
+    exact: ["/etc/motd"],
+    prefixes: ["/media"],
+  });
+  expect(rendered).toBe("P /media\nE /etc/motd\n");
 });
+
+const sb = useSandbox();
 
 test("scanstore: round-trips and survives garbage", () => {
   const record: detect.scanstore.ScanRecord = {

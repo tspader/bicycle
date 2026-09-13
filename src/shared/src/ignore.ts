@@ -1,7 +1,21 @@
 import { z } from "zod";
 import type { Diff } from "./diff";
 
-declare const Bun: { YAML: { parse: (text: string) => unknown } };
+declare const Bun: {
+  YAML: { parse: (text: string) => unknown };
+  Glob: new (pattern: string) => { match: (path: string) => boolean };
+};
+
+const GLOB_CHARS = /[*?[\]{}]/;
+
+export const isGlob = (s: string): boolean => GLOB_CHARS.test(s);
+
+const FilePattern = z
+  .string()
+  .min(1)
+  .refine((p) => p.startsWith("/") || p.startsWith("**/"), {
+    message: 'file pattern must start with "/" or "**/"',
+  });
 
 export const IgnoreRule = z
   .object({
@@ -14,7 +28,7 @@ export type IgnoreRule = z.infer<typeof IgnoreRule>;
 
 export const IgnoreConfig = z
   .object({
-    files: z.array(z.string().min(1)).default([]),
+    files: z.array(FilePattern).default([]),
     packages: z.array(z.string().min(1)).default([]),
     units: z.array(z.string().min(1)).default([]),
     diffs: z.array(IgnoreRule).default([]),
@@ -40,105 +54,83 @@ export const merge = (...cfgs: IgnoreConfig[]): IgnoreConfig =>
     diffs: cfgs.flatMap((c) => c.diffs),
   });
 
-const ESCAPE = /[.+^${}()|[\]\\]/;
-
-export const globToRegExp = (pattern: string): RegExp => {
-  let norm = pattern.endsWith("/") ? `${pattern}**` : pattern;
-  let re = "";
-  if (!norm.startsWith("/")) {
-    norm = norm.replace(/^\*\*\//, "");
-    re += "(?:.*/)?";
-  }
-  for (let i = 0; i < norm.length; i++) {
-    const ch = norm[i]!;
-    if (ch === "*") {
-      if (norm[i + 1] === "*") {
-        if (norm[i + 2] === "/") {
-          re += "(?:[^/]+/)*";
-          i += 2;
-        } else if (i + 2 === norm.length && norm[i - 1] === "/") {
-          re = `${re.slice(0, -1)}(?:/.*)?`;
-          i += 1;
-        } else {
-          re += ".*";
-          i += 1;
-        }
-      } else {
-        re += "[^/]*";
-      }
-    } else if (ch === "?") {
-      re += "[^/]";
-    } else {
-      re += ESCAPE.test(ch) ? `\\${ch}` : ch;
-    }
-  }
-  return new RegExp(`^${re}$`);
-};
-
-const PRUNE = /^(\/[^*?]+?)\/\*\*$/;
+const stripSlash = (p: string): string =>
+  p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
 
 export const prunesOf = (files: readonly string[]): string[] => {
   const out = new Set<string>();
   for (const p of files) {
-    const m = (p.endsWith("/") ? `${p}**` : p).match(PRUNE);
-    if (m) out.add(m[1]!);
+    const norm = stripSlash(p);
+    if (!isGlob(norm) && norm.startsWith("/")) out.add(norm);
   }
   return [...out].sort();
 };
+
+type Match = (id: string) => boolean;
+
+const subtree = (prefix: string): Match => (id) =>
+  id === prefix || id.startsWith(`${prefix}/`);
+
+const exact = (value: string): Match => (id) => id === value;
+
+const glob = (pattern: string): Match => {
+  const g = new Bun.Glob(pattern);
+  return (id) => g.match(id);
+};
+
+const anyOf = (matchers: Match[]): Match => (id) => matchers.some((m) => m(id));
+
+const fileMatcher = (patterns: readonly string[]): Match =>
+  anyOf(patterns.map((p) => (isGlob(p) ? glob(p) : subtree(stripSlash(p)))));
+
+const nameMatcher = (patterns: readonly string[]): Match =>
+  anyOf(patterns.map((p) => (isGlob(p) ? glob(p) : exact(p))));
 
 const DETECTED_FILE_TYPES = new Set(["stray", "pacman-file"]);
 
 export type IgnoreMatcher = {
   ignores: (d: Diff) => boolean;
   prunes: string[];
-  patterns: string[];
 };
 
 export const compile = (cfg: IgnoreConfig): IgnoreMatcher => {
-  const files = cfg.files.map(globToRegExp);
-  const packages = cfg.packages.map(globToRegExp);
-  const units = cfg.units.map(globToRegExp);
-  const rules = cfg.diffs.map((r) => ({ ...r, idRe: globToRegExp(r.id) }));
+  const files = fileMatcher(cfg.files);
+  const packages = nameMatcher(cfg.packages);
+  const units = nameMatcher(cfg.units);
+  const rules = cfg.diffs.map((r) => ({
+    ...r,
+    matches: isGlob(r.id) ? glob(r.id) : exact(r.id),
+  }));
 
   const ignores = (d: Diff): boolean => {
-    if (DETECTED_FILE_TYPES.has(d.type) && files.some((re) => re.test(d.id))) {
-      return true;
-    }
-    if (d.type === "package" && d.expected === null && packages.some((re) => re.test(d.id))) {
-      return true;
-    }
-    if (d.type === "unit" && d.expected === null && units.some((re) => re.test(d.id))) {
-      return true;
-    }
+    if (DETECTED_FILE_TYPES.has(d.type) && files(d.id)) return true;
+    if (d.type === "package" && d.expected === null && packages(d.id)) return true;
+    if (d.type === "unit" && d.expected === null && units(d.id)) return true;
     return rules.some(
-      (r) => r.type === d.type && r.idRe.test(d.id) && (!r.field || r.field === d.field),
+      (r) => r.type === d.type && r.matches(d.id) && (!r.field || r.field === d.field),
     );
   };
 
-  return { ignores, prunes: prunesOf(cfg.files), patterns: [...cfg.files] };
+  return { ignores, prunes: prunesOf(cfg.files) };
 };
 
 export const DEFAULTS: IgnoreConfig = IgnoreConfig.parse({
   files: [
-    "/dev/**",
-    "/proc/**",
-    "/sys/**",
-    "/run/**",
-    "/tmp/**",
-    "/home/**",
-    "/root/**",
-    "/media/**",
-    "/mnt/**",
-    "/lost+found/**",
-    "/var/cache/**",
-    "/var/log/**",
-    "/var/tmp/**",
-    "/var/spool/**",
-    "/var/lib/pacman/**",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/run",
+    "/tmp",
+    "/home",
+    "/root",
+    "/media",
+    "/mnt",
+    "/lost+found",
+    "/var",
     "/etc/machine-id",
     "/etc/ssh/ssh_host_*",
     "/etc/ssh/moduli",
-    "/etc/pacman.d/gnupg/**",
+    "/etc/pacman.d/gnupg",
     "/etc/passwd",
     "/etc/passwd-",
     "/etc/group",
@@ -156,7 +148,7 @@ export const DEFAULTS: IgnoreConfig = IgnoreConfig.parse({
     "/etc/.pwd.lock",
     "/etc/adjtime",
     "/boot/loader/random-seed",
-    "/usr/share/mime/**",
+    "/usr/share/mime",
     "/usr/share/applications/mimeinfo.cache",
     "/usr/share/icons/*/icon-theme.cache",
     "/usr/share/info/dir",
@@ -167,7 +159,7 @@ export const DEFAULTS: IgnoreConfig = IgnoreConfig.parse({
     "/usr/lib/gdk-pixbuf-2.0/*/loaders.cache",
     "/usr/lib/gio/modules/giomodule.cache",
     "/usr/lib/gtk-3.0/*/immodules.cache",
-    "*.pacnew",
-    "*.pacsave",
+    "**/*.pacnew",
+    "**/*.pacsave",
   ],
 });

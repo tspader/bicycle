@@ -51,7 +51,7 @@ build:
 CACHE_DIR := .cache
 ISO       := $(CACHE_DIR)/installer.iso
 
-.PHONY: iso pkg vm vm-stop vm-ssh vm-sync vm-console installer-help installer-clean
+.PHONY: iso pkg installer-help installer-clean
 
 installer-help:
 	@echo "make iso         - build the custom Arch live ISO"

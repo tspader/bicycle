@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@bicycle/shared": "workspace:*",
-    "@clack/prompts": "catalog:",
     "@spader/zargs": "catalog:",
     "age-encryption": "catalog:",
     "hono": "catalog:",

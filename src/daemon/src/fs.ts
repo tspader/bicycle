@@ -2,6 +2,8 @@ import fs from "fs";
 import path from "path";
 import { spawnSync } from "child_process";
 
+export const octal = (mode: number): string => `0${mode.toString(8)}`;
+
 export const chmodExact = (target: string, mode: number): void => {
   fs.chmodSync(target, mode);
   if ((mode & 0o7000) === 0) return;

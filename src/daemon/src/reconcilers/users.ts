@@ -1,13 +1,19 @@
 import { $ } from "bun";
-import fs from "fs";
 import type { Diff, SudoMode } from "@bicycle/shared";
 import * as config from "../config";
-import { paths } from "../paths";
 import { log } from "../logger";
 import { interpolate } from "../interpolate";
 import { bin } from "./bin";
 
+type User = NonNullable<config.BicycleConfig["users"]>[number];
+
 type Existing = { name: string; uid: number; gid: number; groups: string[] };
+
+type Action =
+  | { do: "create"; user: User; groups: string[] }
+  | { do: "uid-mismatch"; user: User; have: number }
+  | { do: "add-groups"; user: User; want: string[]; have: string[] }
+  | { do: "undeclared"; name: string; uid: number };
 
 const passwd = async (name: string): Promise<Existing | null> => {
   const r = await $`${bin("getent")} passwd ${name}`.quiet().nothrow();
@@ -43,6 +49,49 @@ const supplementary = async (name: string): Promise<string[]> => {
 
 const wantedGroups = (u: { sudo: SudoMode; groups: string[] }): string[] =>
   [...new Set(u.sudo !== "none" ? [...u.groups, "wheel"] : u.groups)];
+
+const actions = async (): Promise<Action[]> => {
+  const cfg = config.maybe();
+  if (!cfg) return [];
+  const wanted = cfg.users ?? [];
+  const out: Action[] = [];
+  for (const u of wanted) {
+    const existing = await passwd(u.name);
+    if (!existing) {
+      out.push({ do: "create", user: u, groups: wantedGroups(u) });
+      continue;
+    }
+    if (u.uid !== undefined && existing.uid !== u.uid) {
+      out.push({ do: "uid-mismatch", user: u, have: existing.uid });
+    }
+    const want = wantedGroups(u);
+    const have = new Set(existing.groups);
+    if (want.some((g) => !have.has(g))) {
+      out.push({ do: "add-groups", user: u, want, have: existing.groups });
+    }
+  }
+  const declared = new Set(wanted.map((u) => u.name));
+  for (const e of await allPasswd()) {
+    if (e.uid < HUMAN_ID_MIN || e.uid >= HUMAN_ID_MAX || declared.has(e.name)) continue;
+    out.push({ do: "undeclared", name: e.name, uid: e.uid });
+  }
+  return out;
+};
+
+const toDiff = (a: Action): Diff => {
+  switch (a.do) {
+    case "create":
+      return { type: "user", id: a.user.name, field: "exists", expected: true, actual: false };
+    case "uid-mismatch":
+      return { type: "user", id: a.user.name, field: "uid", expected: a.user.uid!, actual: a.have };
+    case "add-groups":
+      return { type: "user", id: a.user.name, field: "groups", expected: a.want, actual: a.have };
+    case "undeclared":
+      return { type: "user", id: a.name, field: "exists", expected: null, actual: true, meta: { uid: a.uid } };
+  }
+};
+
+export const plan = async (): Promise<Diff[]> => (await actions()).map(toDiff);
 
 const createUser = async (
   name: string,
@@ -114,61 +163,29 @@ const addToGroups = async (name: string, missing: string[]): Promise<void> => {
   }
 };
 
-export const plan = async (): Promise<Diff[]> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
-  const wanted = config.bicycle().users ?? [];
-  const diffs: Diff[] = [];
-  for (const u of wanted) {
-    const existing = await passwd(u.name);
-    if (!existing) {
-      diffs.push({ type: "user", id: u.name, field: "exists", expected: true, actual: false });
-      continue;
-    }
-    if (u.uid !== undefined && existing.uid !== u.uid) {
-      diffs.push({ type: "user", id: u.name, field: "uid", expected: u.uid, actual: existing.uid });
-    }
-    const want = wantedGroups(u);
-    const have = new Set(existing.groups);
-    if (want.some((g) => !have.has(g))) {
-      diffs.push({ type: "user", id: u.name, field: "groups", expected: want, actual: existing.groups });
-    }
-  }
-  const declared = new Set(wanted.map((u) => u.name));
-  for (const e of await allPasswd()) {
-    if (e.uid < HUMAN_ID_MIN || e.uid >= HUMAN_ID_MAX || declared.has(e.name)) continue;
-    diffs.push({
-      type: "user",
-      id: e.name,
-      field: "exists",
-      expected: null,
-      actual: true,
-      meta: { uid: e.uid },
-    });
-  }
-  return diffs;
-};
-
 export const all = async (): Promise<void> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return;
-  const cfg = config.bicycle();
-  const wanted = new Map((cfg.users ?? []).map((u) => [u.name, u]));
-  for (const d of await plan()) {
-    if (d.expected === null) continue;
-    const u = wanted.get(d.id);
-    if (!u) continue;
-    if (d.field === "exists") {
-      const created = await createUser(u.name, u.uid, wantedGroups(u));
-      // Set the password only on first creation. If creation failed, skip.
-      if (created && u.password) await setPassword(u.name, u.password, cfg.vars);
-    } else if (d.field === "uid") {
-      log.warn(
-        { user: u.name, wantUid: d.expected, haveUid: d.actual },
-        "users: uid mismatch; refusing to modify live user, run 'usermod -u <uid> <name>' manually",
-      );
-    } else if (d.field === "groups") {
-      const have = new Set(d.actual as string[]);
-      const missing = (d.expected as string[]).filter((g) => !have.has(g));
-      await addToGroups(u.name, missing);
+  const vars = config.maybe()?.vars;
+  for (const a of await actions()) {
+    switch (a.do) {
+      case "create": {
+        const created = await createUser(a.user.name, a.user.uid, a.groups);
+        // Set the password only on first creation. If creation failed, skip.
+        if (created && a.user.password) await setPassword(a.user.name, a.user.password, vars);
+        break;
+      }
+      case "uid-mismatch":
+        log.warn(
+          { user: a.user.name, wantUid: a.user.uid, haveUid: a.have },
+          "users: uid mismatch; refusing to modify live user, run 'usermod -u <uid> <name>' manually",
+        );
+        break;
+      case "add-groups": {
+        const have = new Set(a.have);
+        await addToGroups(a.user.name, a.want.filter((g) => !have.has(g)));
+        break;
+      }
+      case "undeclared":
+        break;
     }
   }
 };

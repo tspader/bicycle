@@ -1,8 +1,6 @@
 import { $ } from "bun";
-import fs from "fs";
 import type { Diff } from "@bicycle/shared";
 import * as config from "../config";
-import { paths } from "../paths";
 import { log } from "../logger";
 import { bin } from "./bin";
 
@@ -17,8 +15,9 @@ const query = async (flag: string): Promise<string[]> => {
 };
 
 export const plan = async (): Promise<Diff[]> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
-  const sets = config.bicycle().packages ?? {};
+  const cfg = config.maybe();
+  if (!cfg) return [];
+  const sets = cfg.packages ?? {};
   const wanted = sets.extra ?? [];
   const installed = new Set(await query("-Qq"));
   const diffs: Diff[] = [];

@@ -66,3 +66,4 @@ systemd:
     - docker.service
     - sshd.service
     - cockpit.socket
+    - avahi-daemon.service

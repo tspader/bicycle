@@ -6,11 +6,13 @@ import { env } from "../env";
 import { paths } from "../paths";
 import * as age from "../age";
 import * as config from "../config";
+import * as manifest from "../files-manifest";
 import * as nss from "../nss";
 import * as secrets from "../secrets";
 import * as template from "../template";
-import { chmodExact, chownIgnoreEperm } from "../fs";
+import { chmodExact, chownIgnoreEperm, octal } from "../fs";
 import { log } from "../logger";
+import type { Claims } from "../detect/claims";
 
 // One deployable unit. `target` is the host path relative to HOST_ROOT (also
 // the manifest key). A content file under files/ claims its own suffix-stripped
@@ -56,8 +58,6 @@ const walk = (root: string): string[] => {
 
 const sha = (b: Uint8Array): string =>
   crypto.createHash("sha256").update(b).digest("hex");
-
-const octal = (mode: number): string => `0${mode.toString(8)}`;
 
 // Suffixes compose outside-in: `.age` (decrypt) must be outermost, then `.tpl`
 // (render). `x.tpl.age` is an encrypted template; `x.age.tpl` would mean
@@ -179,11 +179,11 @@ const planDescriptor = (
 const buildPlan = (): Plan => {
   const srcRoot = paths.etc.files;
   let errored = false;
-  const claims = new Map<string, { entry: Entry; src: string }[]>();
+  const claimed = new Map<string, { entry: Entry; src: string }[]>();
   const claim = (entry: Entry, src: string): void => {
-    const list = claims.get(entry.target) ?? [];
+    const list = claimed.get(entry.target) ?? [];
     list.push({ entry, src });
-    claims.set(entry.target, list);
+    claimed.set(entry.target, list);
   };
 
   // Descriptors first: a descriptor that sources its sibling CONSUMES it (the
@@ -222,7 +222,7 @@ const buildPlan = (): Plan => {
   }
 
   const entries: Entry[] = [];
-  for (const [target, list] of claims) {
+  for (const [target, list] of claimed) {
     if (list.length > 1) {
       log.error(
         { target, sources: list.map((c) => c.src) },
@@ -351,51 +351,78 @@ const desiredFile = async (entry: FileEntry, vars: unknown): Promise<DesiredFile
   };
 };
 
+type Delta<T> = { want: T; have: T };
+
+type FileCmp =
+  | { state: "missing" }
+  | { state: "wrong-kind"; actual: string }
+  | {
+      state: "present";
+      st: fs.Stats;
+      content: Delta<string> | null;
+      mode: Delta<number> | null;
+      owner: Delta<number> | null;
+      group: Delta<number> | null;
+    };
+
 // lstat, not stat: a dest that is currently a symlink (e.g. an entry that
 // switched kinds) must surface as a kind diff and fall through to writeAtomic,
 // which renames over the link itself rather than writing through it.
-const diffFile = (entry: FileEntry, desired: DesiredFile): Diff[] => {
+const compareFile = (entry: FileEntry, desired: DesiredFile): FileCmp => {
   const dest = path.join(env.HOST_ROOT, entry.target);
   let st: fs.Stats | null = null;
   try { st = fs.lstatSync(dest); } catch {}
-  if (!st) {
-    return [{ type: "file", id: entry.target, field: "exists", expected: true, actual: false }];
-  }
+  if (!st) return { state: "missing" };
   if (!st.isFile()) {
     const actual = st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "dir" : "special";
-    return [{ type: "file", id: entry.target, field: "kind", expected: "file", actual }];
+    return { state: "wrong-kind", actual };
   }
-  const diffs: Diff[] = [];
   const want = sha(desired.bytes);
   const have = sha(new Uint8Array(fs.readFileSync(dest)));
-  if (want !== have) {
+  const haveMode = st.mode & 0o7777;
+  const own = desired.own;
+  return {
+    state: "present",
+    st,
+    content: want !== have ? { want, have } : null,
+    mode: haveMode !== desired.mode ? { want: desired.mode, have: haveMode } : null,
+    owner: own && own.uid !== -1 && own.uid !== st.uid ? { want: own.uid, have: st.uid } : null,
+    group: own && own.gid !== -1 && own.gid !== st.gid ? { want: own.gid, have: st.gid } : null,
+  };
+};
+
+const fileDiffs = (entry: FileEntry, desired: DesiredFile, cmp: FileCmp): Diff[] => {
+  if (cmp.state === "missing") {
+    return [{ type: "file", id: entry.target, field: "exists", expected: true, actual: false }];
+  }
+  if (cmp.state === "wrong-kind") {
+    return [{ type: "file", id: entry.target, field: "kind", expected: "file", actual: cmp.actual }];
+  }
+  const diffs: Diff[] = [];
+  if (cmp.content) {
     diffs.push({
       type: "file",
       id: entry.target,
       field: "content",
-      expected: want,
-      actual: have,
+      expected: cmp.content.want,
+      actual: cmp.content.have,
       ...(desired.redacted ? { redacted: true } : {}),
     });
   }
-  if ((st.mode & 0o7777) !== desired.mode) {
+  if (cmp.mode) {
     diffs.push({
       type: "file",
       id: entry.target,
       field: "mode",
-      expected: octal(desired.mode),
-      actual: octal(st.mode & 0o7777),
+      expected: octal(cmp.mode.want),
+      actual: octal(cmp.mode.have),
     });
   }
-  if (desired.own) {
-    const wantUid = desired.own.uid === -1 ? st.uid : desired.own.uid;
-    const wantGid = desired.own.gid === -1 ? st.gid : desired.own.gid;
-    if (wantUid !== st.uid) {
-      diffs.push({ type: "file", id: entry.target, field: "owner", expected: wantUid, actual: st.uid });
-    }
-    if (wantGid !== st.gid) {
-      diffs.push({ type: "file", id: entry.target, field: "group", expected: wantGid, actual: st.gid });
-    }
+  if (cmp.owner) {
+    diffs.push({ type: "file", id: entry.target, field: "owner", expected: cmp.owner.want, actual: cmp.owner.have });
+  }
+  if (cmp.group) {
+    diffs.push({ type: "file", id: entry.target, field: "group", expected: cmp.group.want, actual: cmp.group.have });
   }
   return diffs;
 };
@@ -403,68 +430,89 @@ const diffFile = (entry: FileEntry, desired: DesiredFile): Diff[] => {
 const applyFile = async (entry: FileEntry, vars: unknown): Promise<void> => {
   const dest = path.join(env.HOST_ROOT, entry.target);
   const desired = await desiredFile(entry, vars);
-  const fields = new Set(diffFile(entry, desired).map((d) => d.field));
-  if (fields.size === 0) return;
+  const cmp = compareFile(entry, desired);
   const own = desired.own;
-  if (fields.has("exists") || fields.has("kind") || fields.has("content")) {
+  if (cmp.state !== "present" || cmp.content) {
     writeAtomic(dest, desired.bytes, desired.mode, own && own.uid !== -1 && own.gid !== -1 ? own : null);
     if (own) fixOwnership(dest, fs.lstatSync(dest), own);
     log.info({ src: entry.source, dest }, "files: wrote");
     return;
   }
-  const st = fs.lstatSync(dest);
-  if (fields.has("mode")) {
+  if (cmp.mode) {
     chmodExact(dest, desired.mode);
     log.info({ dest, mode: desired.mode.toString(8) }, "files: fixed mode");
   }
-  if (own && (fields.has("owner") || fields.has("group"))) {
-    fixOwnership(dest, st, own);
+  if (own && (cmp.owner || cmp.group)) {
+    fixOwnership(dest, cmp.st, own);
   }
 };
 
-const diffSymlink = (
+type LinkCmp =
+  | { state: "missing" }
+  | { state: "wrong-kind"; actual: string }
+  | {
+      state: "present";
+      st: fs.Stats;
+      target: Delta<string> | null;
+      owner: Delta<number> | null;
+      group: Delta<number> | null;
+    };
+
+const compareSymlink = (
   entry: SymlinkEntry,
   own: { uid: number; gid: number } | null,
-): Diff[] => {
+): LinkCmp => {
   const dest = path.join(env.HOST_ROOT, entry.target);
   let st: fs.Stats | null = null;
   try { st = fs.lstatSync(dest); } catch {}
-  if (!st) {
-    return [{ type: "symlink", id: entry.target, field: "exists", expected: true, actual: false }];
-  }
+  if (!st) return { state: "missing" };
   if (!st.isSymbolicLink()) {
     const actual = st.isDirectory() ? "dir" : st.isFile() ? "file" : "special";
-    return [{ type: "symlink", id: entry.target, field: "kind", expected: "symlink", actual }];
+    return { state: "wrong-kind", actual };
+  }
+  const have = fs.readlinkSync(dest);
+  return {
+    state: "present",
+    st,
+    target: have !== entry.to ? { want: entry.to, have } : null,
+    owner: own && own.uid !== -1 && own.uid !== st.uid ? { want: own.uid, have: st.uid } : null,
+    group: own && own.gid !== -1 && own.gid !== st.gid ? { want: own.gid, have: st.gid } : null,
+  };
+};
+
+const linkDiffs = (entry: SymlinkEntry, cmp: LinkCmp): Diff[] => {
+  if (cmp.state === "missing") {
+    return [{ type: "symlink", id: entry.target, field: "exists", expected: true, actual: false }];
+  }
+  if (cmp.state === "wrong-kind") {
+    return [{ type: "symlink", id: entry.target, field: "kind", expected: "symlink", actual: cmp.actual }];
   }
   const diffs: Diff[] = [];
-  const have = fs.readlinkSync(dest);
-  if (have !== entry.to) {
-    diffs.push({ type: "symlink", id: entry.target, field: "target", expected: entry.to, actual: have });
+  if (cmp.target) {
+    diffs.push({ type: "symlink", id: entry.target, field: "target", expected: cmp.target.want, actual: cmp.target.have });
   }
-  if (own) {
-    const wantUid = own.uid === -1 ? st.uid : own.uid;
-    const wantGid = own.gid === -1 ? st.gid : own.gid;
-    if (wantUid !== st.uid) {
-      diffs.push({ type: "symlink", id: entry.target, field: "owner", expected: wantUid, actual: st.uid });
-    }
-    if (wantGid !== st.gid) {
-      diffs.push({ type: "symlink", id: entry.target, field: "group", expected: wantGid, actual: st.gid });
-    }
+  if (cmp.owner) {
+    diffs.push({ type: "symlink", id: entry.target, field: "owner", expected: cmp.owner.want, actual: cmp.owner.have });
+  }
+  if (cmp.group) {
+    diffs.push({ type: "symlink", id: entry.target, field: "group", expected: cmp.group.want, actual: cmp.group.have });
   }
   return diffs;
+};
+
+const lchownIgnoreEperm = (dest: string, uid: number, gid: number): void => {
+  try { fs.lchownSync(dest, uid, gid); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
+  }
 };
 
 const applySymlink = async (entry: SymlinkEntry): Promise<void> => {
   const dest = path.join(env.HOST_ROOT, entry.target);
   const own = await resolveOwnership(entry);
-  const fields = new Set(diffSymlink(entry, own).map((d) => d.field));
-  if (fields.size === 0) return;
-  if (!fields.has("exists") && !fields.has("kind") && !fields.has("target")) {
-    const st = fs.lstatSync(dest);
-    const wantUid = own!.uid === -1 ? st.uid : own!.uid;
-    const wantGid = own!.gid === -1 ? st.gid : own!.gid;
-    try { fs.lchownSync(dest, wantUid, wantGid); } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
+  const cmp = compareSymlink(entry, own);
+  if (cmp.state === "present" && !cmp.target) {
+    if (cmp.owner || cmp.group) {
+      lchownIgnoreEperm(dest, cmp.owner?.want ?? cmp.st.uid, cmp.group?.want ?? cmp.st.gid);
     }
     return;
   }
@@ -473,36 +521,13 @@ const applySymlink = async (entry: SymlinkEntry): Promise<void> => {
   fs.rmSync(tmp, { force: true });
   fs.symlinkSync(entry.to, tmp);
   try {
-    if (own) {
-      try { fs.lchownSync(tmp, own.uid, own.gid); } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
-      }
-    }
+    if (own) lchownIgnoreEperm(tmp, own.uid, own.gid);
     fs.renameSync(tmp, dest);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch {}
     throw e;
   }
   log.info({ dest, to: entry.to }, "files: linked");
-};
-
-const readManifest = (): string[] => {
-  const file = paths.state.filesManifest;
-  if (!fs.existsSync(file)) return [];
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (Array.isArray(parsed) && parsed.every((t) => typeof t === "string")) return parsed;
-  } catch {}
-  log.warn({ file }, "files: unreadable manifest; previously managed targets forgotten");
-  return [];
-};
-
-const writeManifest = (targets: string[]): void => {
-  const file = paths.state.filesManifest;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify([...targets].sort(), null, 2) + "\n");
-  fs.renameSync(tmp, file);
 };
 
 const removeTarget = (target: string): void => {
@@ -526,16 +551,16 @@ const removeTarget = (target: string): void => {
 // manifest instead grows by union so nothing is forgotten while the repo is
 // broken, and the next clean sweep reconciles it.
 const reconcileManifest = (plan: Plan): void => {
-  const prev = readManifest();
+  const prev = manifest.read();
   const current = new Set(plan.entries.map((e) => e.target));
   if (plan.errored) {
-    writeManifest([...new Set([...prev, ...current])]);
+    manifest.write([...new Set([...prev, ...current])]);
     return;
   }
   for (const t of prev) {
     if (!current.has(t)) removeTarget(t);
   }
-  writeManifest([...current]);
+  manifest.write([...current]);
 };
 
 const loadPlan = (): { plan: Plan; vars: unknown } => {
@@ -560,9 +585,11 @@ export const plan = async (): Promise<Diff[]> => {
   for (const entry of p.entries) {
     try {
       if (entry.kind === "file") {
-        diffs.push(...diffFile(entry, await desiredFile(entry, vars)));
+        const desired = await desiredFile(entry, vars);
+        diffs.push(...fileDiffs(entry, desired, compareFile(entry, desired)));
       } else {
-        diffs.push(...diffSymlink(entry, await resolveOwnership(entry)));
+        const own = await resolveOwnership(entry);
+        diffs.push(...linkDiffs(entry, compareSymlink(entry, own)));
       }
     } catch (e) {
       log.error({ err: e, target: entry.target }, "files: failed");
@@ -570,7 +597,7 @@ export const plan = async (): Promise<Diff[]> => {
   }
   if (!p.errored) {
     const current = new Set(p.entries.map((e) => e.target));
-    for (const t of readManifest()) {
+    for (const t of manifest.read()) {
       if (current.has(t)) continue;
       const dest = path.join(env.HOST_ROOT, t);
       let st: fs.Stats | null = null;
@@ -602,3 +629,8 @@ export const all = async (): Promise<void> => {
 
   reconcileManifest(p);
 };
+
+export const claims = (): Claims => ({
+  exact: manifest.read().map((t) => path.join("/", t)),
+  prefixes: [],
+});

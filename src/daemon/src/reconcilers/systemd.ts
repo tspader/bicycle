@@ -1,8 +1,6 @@
 import { $ } from "bun";
-import fs from "fs";
 import type { Diff } from "@bicycle/shared";
 import * as config from "../config";
-import { paths } from "../paths";
 import { log } from "../logger";
 import { bin } from "./bin";
 
@@ -25,8 +23,9 @@ const enabledUnitFiles = async (): Promise<UnitFile[]> => {
 };
 
 export const plan = async (): Promise<Diff[]> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
-  const units = config.bicycle().systemd?.enable ?? [];
+  const cfg = config.maybe();
+  if (!cfg) return [];
+  const units = cfg.systemd?.enable ?? [];
   const diffs: Diff[] = [];
   for (const unit of units) {
     if (!(await isEnabled(unit))) {

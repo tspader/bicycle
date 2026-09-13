@@ -1,18 +1,9 @@
 import type { Command } from "@spader/zargs";
 import * as detect from "../detect";
 import * as ignorefile from "../ignorefile";
+import * as kinds from "../kinds";
 import { paths } from "../paths";
 import { log } from "../logger";
-
-const parseOnly = (raw: unknown): { dets: detect.Detector[]; bad: string[] } => {
-  const list = (Array.isArray(raw) ? raw : [raw]).filter((v) => v != null).map(String);
-  const all = detect.detectors();
-  if (list.length === 0) return { dets: all, bad: [] };
-  const known = new Map(all.map((d) => [d.name, d]));
-  const bad = list.filter((n) => !known.has(n));
-  if (bad.length > 0) return { dets: [], bad };
-  return { dets: list.map((n) => known.get(n)!), bad: [] };
-};
 
 export const command: Command = {
   description:
@@ -37,17 +28,20 @@ export const command: Command = {
     },
   },
   handler: async (argv) => {
-    const { dets, bad } = parseOnly(argv.only);
+    const dets = detect.detectors();
+    const { names, bad } = kinds.parseNames(argv.only, dets.map((d) => d.name));
     if (bad.length > 0) {
-      log.error({ bad, valid: detect.detectors().map((d) => d.name) }, "scan: unknown detector(s)");
+      log.error({ bad, valid: dets.map((d) => d.name) }, "scan: unknown detector(s)");
       process.exitCode = 2;
       return;
     }
+    const byName = new Map(dets.map((d) => [d.name, d]));
 
     const tty = process.stderr.isTTY;
     const outcomes = await detect.scan({
-      dets,
+      dets: names.map((n) => byName.get(n)!),
       ignores: ignorefile.effective(),
+      claims: kinds.claims(),
       foreground: Boolean(argv.foreground),
       timeoutMs: Number(argv["timeout-mins"]) * 60_000,
       onProgress: (name, p) => {

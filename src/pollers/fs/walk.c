@@ -5,6 +5,7 @@
 static const c8* bc_stray_ignore_prefixes [] = {
   "/dev",
   "/home",
+  "/lost+found",
   "/media",
   "/mnt",
   "/proc",
@@ -14,6 +15,9 @@ static const c8* bc_stray_ignore_prefixes [] = {
   "/tmp",
   "/var/cache",
   "/var/lib/pacman",
+  "/var/log",
+  "/var/spool",
+  "/var/tmp",
 };
 
 SP_PRIVATE bool bc_prefix_match(sp_str_t path, sp_str_t pref) {
@@ -39,7 +43,7 @@ SP_PRIVATE sp_str_t bc_env_line_value(sp_str_t line) {
 bc_err_t bc_ignores_load(bc_t* bc) {
   sp_da_init(bc->mem, bc->ignores.prunes);
 
-  sp_str_t path = sp_os_env_get(sp_str_lit("BICYCLE_IGNORES"));
+  sp_str_t path = sp_os_env_get(sp_str_lit("BICYCLE_PRUNES"));
   if (sp_str_empty(path)) {
     sp_carr_for(bc_stray_ignore_prefixes, it) {
       sp_da_push(bc->ignores.prunes, sp_cstr_as_str(bc_stray_ignore_prefixes[it]));
@@ -50,11 +54,9 @@ bc_err_t bc_ignores_load(bc_t* bc) {
   sp_da(sp_str_t) lines = bc_env_file_lines(bc, path);
   if (!lines) return BC_ERR;
   sp_da_for(lines, it) {
-    sp_str_t line = sp_str_trim(lines[it]);
-    if (line.len < 3) continue;
-    if (sp_str_starts_with(line, sp_str_lit("P "))) {
-      sp_da_push(bc->ignores.prunes, bc_env_line_value(line));
-    }
+    sp_str_t line = sp_str_strip_right(sp_str_trim(lines[it]), sp_str_lit("/"));
+    if (sp_str_empty(line)) continue;
+    sp_da_push(bc->ignores.prunes, line);
   }
   return BC_OK;
 }

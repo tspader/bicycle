@@ -26,6 +26,8 @@ for cmd in mkarchiso bun rsync makepkg; do
 done
 [ -d "$REPO/src/installer" ] || { echo "missing $REPO/src/installer"; exit 1; }
 [ -d "$REPO/src/shared" ]    || { echo "missing $REPO/src/shared"; exit 1; }
+[ -d "$REPO/src/ui" ]        || { echo "missing $REPO/src/ui"; exit 1; }
+[ -d "$REPO/src/datastar" ]  || { echo "missing $REPO/src/datastar"; exit 1; }
 [ -d "$REPO/src/pacman" ]    || { echo "missing $REPO/src/pacman"; exit 1; }
 [ -d "$OVERLAY" ]            || { echo "missing $OVERLAY"; exit 1; }
 [ -d /usr/share/archiso/configs/releng ] || {
@@ -51,8 +53,9 @@ printf '%s\n' "${EXTRA_PACKAGES[@]}" >> "$WORK/packages.x86_64"
 rsync -a "$OVERLAY"/ "$WORK"/airootfs/
 
 # Drop the bicycle workspace under /root/bicycle. Include root package.json,
-# bun.lock, tsconfig, and the shared + installer packages with their
-# node_modules. Skip everything else (poller C code, daemon, tests, etc.).
+# bun.lock, tsconfig, and the installer plus its workspace deps (shared, ui,
+# datastar) with their node_modules. Skip everything else (poller C code,
+# daemon, tests, etc.).
 mkdir -p "$WORK"/airootfs/root/bicycle
 rsync -a \
   --include='/package.json' \
@@ -61,6 +64,8 @@ rsync -a \
   --include='/node_modules/***' \
   --include='/src/' \
   --include='/src/shared/***' \
+  --include='/src/ui/***' \
+  --include='/src/datastar/***' \
   --include='/src/installer/***' \
   --exclude='*' \
   --exclude='.playwright-cli' \

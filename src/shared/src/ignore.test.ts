@@ -28,25 +28,25 @@ const runMatchCase = (c: MatchCase) => {
 
 const MATCH_CASES: MatchCase[] = [
   {
-    name: "anchored subtree pattern matches deep paths",
-    cfg: { files: ["/var/**"] },
+    name: "plain path matches deep descendants",
+    cfg: { files: ["/var"] },
     diff: { id: "/var/lib/docker/overlay2/x" },
     expect: { ignored: true },
   },
   {
-    name: "subtree pattern matches the directory node itself (prune parity)",
-    cfg: { files: ["/var/**"] },
+    name: "plain path matches the node itself",
+    cfg: { files: ["/var"] },
     diff: { id: "/var" },
     expect: { ignored: true },
   },
   {
-    name: "subtree pattern does not match siblings sharing the prefix",
-    cfg: { files: ["/var/**"] },
+    name: "plain path does not match siblings sharing the prefix",
+    cfg: { files: ["/var"] },
     diff: { id: "/var2" },
     expect: { ignored: false },
   },
   {
-    name: "trailing slash is shorthand for subtree",
+    name: "trailing slash normalizes to the same subtree",
     cfg: { files: ["/var/"] },
     diff: { id: "/var/lib/x" },
     expect: { ignored: true },
@@ -64,20 +64,20 @@ const MATCH_CASES: MatchCase[] = [
     expect: { ignored: true },
   },
   {
-    name: "bare pattern matches any basename",
-    cfg: { files: ["*.pacnew"] },
+    name: "globstar-prefixed pattern matches any depth",
+    cfg: { files: ["**/*.pacnew"] },
     diff: { id: "/etc/pacman.d/mirrorlist.pacnew" },
     expect: { ignored: true },
   },
   {
-    name: "bare pattern does not match a suffix inside a segment",
-    cfg: { files: ["*.pacnew"] },
+    name: "globstar suffix pattern does not match inside a segment",
+    cfg: { files: ["**/*.pacnew"] },
     diff: { id: "/etc/x.pacnew/keep" },
     expect: { ignored: false },
   },
   {
-    name: "unanchored segment pair matches at any boundary",
-    cfg: { files: ["conf.d/*"] },
+    name: "globstar-anchored directory pattern matches at any boundary",
+    cfg: { files: ["**/conf.d/*"] },
     diff: { id: "/etc/fonts/conf.d/10-hinting.conf" },
     expect: { ignored: true },
   },
@@ -88,25 +88,19 @@ const MATCH_CASES: MatchCase[] = [
     expect: { ignored: true },
   },
   {
+    name: "trailing globstar does not match the directory node itself",
+    cfg: { files: ["/opt/foo/**"] },
+    diff: { id: "/opt/foo" },
+    expect: { ignored: false },
+  },
+  {
     name: "question mark matches one non-slash char",
     cfg: { files: ["/etc/rc?.d/**"] },
     diff: { id: "/etc/rc3.d/S99local" },
     expect: { ignored: true },
   },
   {
-    name: "exact pattern matches only itself",
-    cfg: { files: ["/etc/machine-id"] },
-    diff: { id: "/etc/machine-id" },
-    expect: { ignored: true },
-  },
-  {
-    name: "exact pattern does not match children",
-    cfg: { files: ["/etc/machine-id"] },
-    diff: { id: "/etc/machine-id/x" },
-    expect: { ignored: false },
-  },
-  {
-    name: "regex metacharacters in paths are literal",
+    name: "glob metacharacters never match literally-different paths",
     cfg: { files: ["/usr/lib/libfoo.so"] },
     diff: { id: "/usr/lib/libfooXso" },
     expect: { ignored: false },
@@ -119,7 +113,7 @@ const MATCH_CASES: MatchCase[] = [
   },
   {
     name: "files section never touches the declared file kind",
-    cfg: { files: ["/home/**"] },
+    cfg: { files: ["/home"] },
     diff: { type: "file", id: "/home/spader/.zshrc", field: "content", expected: "a", actual: "b" },
     expect: { ignored: false },
   },
@@ -128,6 +122,12 @@ const MATCH_CASES: MatchCase[] = [
     cfg: { packages: ["neofetch"] },
     diff: { type: "package", id: "neofetch", field: "installed", actual: true },
     expect: { ignored: true },
+  },
+  {
+    name: "plain package name is exact, not a prefix",
+    cfg: { packages: ["linux"] },
+    diff: { type: "package", id: "linux-firmware", field: "installed", actual: true },
+    expect: { ignored: false },
   },
   {
     name: "package glob covers debug variants",
@@ -145,6 +145,12 @@ const MATCH_CASES: MatchCase[] = [
     name: "unit ignored when undeclared",
     cfg: { units: ["display-manager.service"] },
     diff: { type: "unit", id: "display-manager.service", field: "enabled", actual: true },
+    expect: { ignored: true },
+  },
+  {
+    name: "unit glob matches",
+    cfg: { units: ["*.timer"] },
+    diff: { type: "unit", id: "fwupd-refresh.timer", field: "enabled", actual: true },
     expect: { ignored: true },
   },
   {
@@ -172,10 +178,16 @@ const MATCH_CASES: MatchCase[] = [
     expect: { ignored: true },
   },
   {
-    name: "diff rule id is a glob",
+    name: "diff rule id may be a glob",
     cfg: { diffs: [{ type: "stray", id: "/opt/containerd/**" }] },
     diff: { type: "stray", id: "/opt/containerd/bin/ctr" },
     expect: { ignored: true },
+  },
+  {
+    name: "plain diff rule id is exact, not a subtree",
+    cfg: { diffs: [{ type: "stray", id: "/opt/x" }] },
+    diff: { type: "stray", id: "/opt/x/y" },
+    expect: { ignored: false },
   },
   {
     name: "diff rule applies even to declared drift",
@@ -209,28 +221,23 @@ type PruneCase = {
 
 const PRUNE_CASES: PruneCase[] = [
   {
-    name: "subtree patterns become prunes",
-    files: ["/var/cache/**", "/proc/**"],
-    expect: { prunes: ["/proc", "/var/cache"] },
+    name: "plain paths become prunes",
+    files: ["/var/cache", "/proc", "/etc/machine-id"],
+    expect: { prunes: ["/etc/machine-id", "/proc", "/var/cache"] },
   },
   {
-    name: "trailing slash normalizes to a prune",
+    name: "trailing slash normalizes",
     files: ["/home/"],
     expect: { prunes: ["/home"] },
   },
   {
-    name: "wildcards in the prefix stay post-filter",
-    files: ["/usr/lib/ghc-*/lib/**", "/usr/share/icons/*/icon-theme.cache"],
-    expect: { prunes: [] },
-  },
-  {
-    name: "exact and bare patterns are not prunes",
-    files: ["/etc/machine-id", "*.pacnew"],
+    name: "globs are plan-time only",
+    files: ["/usr/lib/ghc-*/lib/**", "/usr/share/icons/*/icon-theme.cache", "**/*.pacnew"],
     expect: { prunes: [] },
   },
   {
     name: "duplicates collapse",
-    files: ["/var/**", "/var/**"],
+    files: ["/var", "/var/"],
     expect: { prunes: ["/var"] },
   },
 ];
@@ -255,8 +262,8 @@ const PARSE_CASES: ParseCase[] = [
   },
   {
     name: "sections parse and default",
-    yml: "files: [/var/**]\npackages: [neofetch]\n",
-    expect: { cfg: { files: ["/var/**"], packages: ["neofetch"], units: [], diffs: [] } },
+    yml: "files: [/var]\npackages: [neofetch]\n",
+    expect: { cfg: { files: ["/var"], packages: ["neofetch"], units: [], diffs: [] } },
   },
   {
     name: "diff rules parse",
@@ -264,13 +271,23 @@ const PARSE_CASES: ParseCase[] = [
     expect: { cfg: { diffs: [{ type: "stray", id: "/opt/x", field: "exists" }] } },
   },
   {
+    name: "unanchored file patterns are rejected",
+    yml: "files: ['*.pacnew']\n",
+    expect: { throws: /must start with/ },
+  },
+  {
+    name: "relative plain file patterns are rejected",
+    yml: "files: [etc/motd]\n",
+    expect: { throws: /must start with/ },
+  },
+  {
     name: "unknown keys are rejected",
-    yml: "fils: [/var/**]\n",
+    yml: "fils: [/var]\n",
     expect: { throws: /fils|unrecognized/i },
   },
   {
     name: "non-object top level is rejected",
-    yml: "- /var/**\n",
+    yml: "- /var\n",
     expect: { throws: /top level/ },
   },
 ];
@@ -298,5 +315,6 @@ test("defaults: merge keeps user entries alongside the baseline", () => {
   const stray = (id: string): Diff => ({ type: "stray", id, field: "exists", expected: null, actual: true });
   expect(matcher.ignores(stray("/swapfile"))).toBe(true);
   expect(matcher.ignores(stray("/etc/machine-id"))).toBe(true);
+  expect(matcher.ignores(stray("/etc/foo.pacnew"))).toBe(true);
   expect(matcher.ignores(stray("/etc/motd"))).toBe(false);
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { build, type Cli } from "@spader/zargs";
-import { daemon, diff, ignore, reconcile, reconcileOnce, scan, secret } from "./commands/index";
+import { daemon, diff, reconcile, reconcileOnce, scan, secret } from "./commands/index";
 import pkg from "../package.json" with { type: "json" };
 
 const pkgVersion = (pkg as unknown as { version?: unknown }).version;
@@ -14,7 +14,6 @@ const def: Cli = {
   commands: {
     daemon,
     diff,
-    ignore,
     reconcile,
     "reconcile-once": reconcileOnce,
     scan,

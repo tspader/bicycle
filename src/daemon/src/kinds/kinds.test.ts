@@ -176,6 +176,27 @@ for (const c of RESOLVE_CASES) {
   test(`resolve: ${c.name}`, () => runResolveCase(sb, c));
 }
 
+test("claims: aggregates per-kind claims with bicycle's own trees", () => {
+  writeConfig(sb, { dirs: [{ path: "/media" }] });
+  fs.mkdirSync(paths.state.root, { recursive: true });
+  fs.writeFileSync(paths.state.filesManifest, JSON.stringify(["etc/motd", "etc/profile.d/x.sh"]));
+
+  const c = kinds.claims();
+  expect(c.prefixes).toContain(paths.etc.root);
+  expect(c.prefixes).toContain(paths.state.root);
+  expect(c.prefixes).toContain("/media");
+  expect(c.exact).toContain("/etc/motd");
+  expect(c.exact).toContain("/etc/profile.d/x.sh");
+  expect(c.exact).toContain("/etc/sudoers.d/bicycle");
+});
+
+test("claims: a broken config drops dir claims but keeps the rest", () => {
+  writeConfig(sb, "dirs: [\n");
+  const c = kinds.claims();
+  expect(c.exact).toContain("/etc/sudoers.d/bicycle");
+  expect(c.prefixes).toContain(paths.etc.root);
+});
+
 test("resolve(ignore) round-trips through plan", async () => {
   writeConfig(sb, { packages: { extra: [MISSING_PKG] } });
   const before = await kinds.plan(["packages"]);

@@ -22,10 +22,10 @@ const builtin = (): Detector[] => [
 ];
 
 const fromConfig = (): Detector[] => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
   try {
-    return config.bicycle().detectors ?? [];
-  } catch {
+    return config.maybe()?.detectors ?? [];
+  } catch (e) {
+    log.error({ err: e }, "detect: cannot read detectors from bicycle.yml; skipping configured detectors");
     return [];
   }
 };
@@ -44,28 +44,20 @@ export const detectors = (): Detector[] => {
   return out;
 };
 
-export const byName = (name: string): Detector | undefined =>
-  detectors().find((d) => d.name === name);
+export const renderPrunes = (cfg: ignore.IgnoreConfig): string =>
+  ignore.prunesOf(cfg.files).map((p) => `${p}\n`).join("");
 
-export const renderIgnores = (cfg: ignore.IgnoreConfig): string => {
-  const matcher = ignore.compile(cfg);
-  return [
-    ...matcher.prunes.map((p) => `P ${p}`),
-    ...matcher.patterns.map((p) => `G ${p}`),
-    "",
-  ].join("\n");
-};
-
-export const writeIgnores = (cfg: ignore.IgnoreConfig): string => {
-  const file = paths.run.scanIgnores;
+export const writePrunes = (cfg: ignore.IgnoreConfig): string => {
+  const file = paths.run.scanPrunes;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, renderIgnores(cfg));
+  fs.writeFileSync(file, renderPrunes(cfg));
   return file;
 };
 
 export type ScanOpts = {
   dets: Detector[];
   ignores: ignore.IgnoreConfig;
+  claims: claims.Claims;
   foreground?: boolean;
   timeoutMs?: number;
   onProgress?: (detector: string, p: exec.Progress) => void;
@@ -79,15 +71,15 @@ export type ScanOutcome = {
 
 export const scan = async (opts: ScanOpts): Promise<ScanOutcome[] | null> =>
   lock.withLock(paths.run.scanLock, async () => {
-    const ignoresFile = writeIgnores(opts.ignores);
-    const claimsFile = claims.write();
+    const prunesFile = writePrunes(opts.ignores);
+    const claimsFile = claims.write(opts.claims);
     const outcomes: ScanOutcome[] = [];
 
     for (const det of opts.dets) {
       const cacheDir = paths.state.detectorCache(det.name);
       fs.mkdirSync(cacheDir, { recursive: true });
       const env: Record<string, string> = {
-        BICYCLE_IGNORES: ignoresFile,
+        BICYCLE_PRUNES: prunesFile,
         BICYCLE_CLAIMS: claimsFile,
         BICYCLE_CACHE_DIR: cacheDir,
         ...(opts.foreground ? {} : { BICYCLE_BACKGROUND: "1" }),

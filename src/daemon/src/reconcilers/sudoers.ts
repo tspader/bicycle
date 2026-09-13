@@ -5,8 +5,8 @@ import path from "path";
 import type { Diff, SudoMode } from "@bicycle/shared";
 import * as config from "../config";
 import { env } from "../env";
-import { paths } from "../paths";
 import { log } from "../logger";
+import type { Claims } from "../detect/claims";
 
 type SudoUser = { name: string; sudo: SudoMode };
 
@@ -32,9 +32,10 @@ const sha = (s: string): string =>
   crypto.createHash("sha256").update(s).digest("hex");
 
 export const plan = async (): Promise<Diff[]> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return [];
+  const cfg = config.maybe();
+  if (!cfg) return [];
   const dest = dropInPath();
-  const lines = rulesFor(config.bicycle().users ?? []);
+  const lines = rulesFor(cfg.users ?? []);
   const current = fs.existsSync(dest) ? fs.readFileSync(dest, "utf8") : null;
   if (lines.length === 0) {
     if (current === null) return [];
@@ -52,10 +53,11 @@ export const plan = async (): Promise<Diff[]> => {
 };
 
 export const all = async (): Promise<void> => {
-  if (!fs.existsSync(paths.etc.bicycleYaml)) return;
+  const cfg = config.maybe();
+  if (!cfg) return;
   if ((await plan()).length === 0) return;
   const dest = dropInPath();
-  const lines = rulesFor(config.bicycle().users ?? []);
+  const lines = rulesFor(cfg.users ?? []);
 
   // No sudo users: ensure our drop-in is gone rather than leaving a stale grant.
   if (lines.length === 0) {
@@ -87,3 +89,8 @@ export const all = async (): Promise<void> => {
   fs.renameSync(tmp, dest);
   log.info({ dest, users: lines.length }, "sudoers: wrote");
 };
+
+export const claims = (): Claims => ({
+  exact: [path.join("/", TARGET)],
+  prefixes: [],
+});

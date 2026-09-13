@@ -2,6 +2,8 @@ import { ignore, type Detector, type Diff } from "@bicycle/shared";
 import * as reconcilers from "../reconcilers";
 import * as detect from "../detect";
 import * as ignorefile from "../ignorefile";
+import { paths } from "../paths";
+import { log } from "../logger";
 import * as render from "./render";
 
 export type Cost = "cheap" | "expensive";
@@ -16,31 +18,43 @@ export type Kind = {
   cost: Cost;
   plan: (ctx: PlanCtx) => Promise<Diff[]>;
   apply?: () => Promise<void>;
+  claims?: () => detect.claims.Claims;
+  scannedAt?: () => string | null;
   render: { line: (d: Diff) => string };
   resolutions: (d: Diff) => ResolutionId[];
 };
 
 const fromReconciler = (
   name: reconcilers.ReconcilerName,
-  mod: { plan: () => Promise<Diff[]>; all: () => Promise<void> },
+  mod: {
+    plan: () => Promise<Diff[]>;
+    all: () => Promise<void>;
+    claims?: () => detect.claims.Claims;
+  },
 ): Kind => ({
   name,
   cost: "cheap",
   plan: () => mod.plan(),
   apply: () => mod.all(),
+  claims: mod.claims,
   render: { line: render.line },
   resolutions: (d) => (d.expected === null ? ["adopt", "ignore"] : ["apply", "ignore"]),
 });
 
-const fromDetector = (det: Detector): Kind => ({
-  name: det.name,
-  cost: "expensive",
-  plan: async () => detect.scanstore.read(det.name)?.diffs ?? [],
-  render: { line: render.line },
-  resolutions: () => ["adopt", "ignore"],
-});
+const fromDetector = (det: Detector): Kind => {
+  let record: detect.scanstore.ScanRecord | null | undefined;
+  const scan = () => (record === undefined ? (record = detect.scanstore.read(det.name)) : record);
+  return {
+    name: det.name,
+    cost: "expensive",
+    plan: async () => scan()?.diffs ?? [],
+    scannedAt: () => scan()?.finishedAt ?? null,
+    render: { line: render.line },
+    resolutions: () => ["adopt", "ignore"],
+  };
+};
 
-const BUILTIN: Kind[] = [
+const BUILTIN = (): Kind[] => [
   fromReconciler("groups", reconcilers.groups),
   fromReconciler("users", reconcilers.users),
   fromReconciler("sudoers", reconcilers.sudoers),
@@ -51,7 +65,7 @@ const BUILTIN: Kind[] = [
 ];
 
 export const all = (): Kind[] => {
-  const out = [...BUILTIN];
+  const out = BUILTIN();
   const seen = new Set(out.map((k) => k.name));
   for (const det of detect.detectors()) {
     if (!seen.has(det.name)) out.push(fromDetector(det));
@@ -63,13 +77,35 @@ export const names = (): string[] => all().map((k) => k.name);
 
 export const byName = (name: string): Kind | undefined => all().find((k) => k.name === name);
 
-export const parseOnly = (raw: unknown): { names: string[]; bad: string[] } => {
+export const claims = (): detect.claims.Claims => {
+  const exact = new Set<string>();
+  const prefixes = new Set<string>([paths.etc.root, paths.state.root]);
+  for (const k of all()) {
+    if (!k.claims) continue;
+    try {
+      const c = k.claims();
+      for (const p of c.exact) exact.add(p);
+      for (const p of c.prefixes) prefixes.add(p);
+    } catch (e) {
+      log.warn({ err: e, kind: k.name }, "kinds: claims unavailable");
+    }
+  }
+  return { exact: [...exact].sort(), prefixes: [...prefixes].sort() };
+};
+
+export const parseNames = (
+  raw: unknown,
+  known: readonly string[],
+): { names: string[]; bad: string[] } => {
   const list = (Array.isArray(raw) ? raw : [raw]).filter((v) => v != null).map(String);
-  if (list.length === 0) return { names: names(), bad: [] };
-  const known = new Set(names());
-  const bad = list.filter((n) => !known.has(n));
+  if (list.length === 0) return { names: [...known], bad: [] };
+  const set = new Set(known);
+  const bad = list.filter((n) => !set.has(n));
   return bad.length > 0 ? { names: [], bad } : { names: list, bad: [] };
 };
+
+export const parseOnly = (raw: unknown): { names: string[]; bad: string[] } =>
+  parseNames(raw, names());
 
 export type KindPlan = {
   kind: string;
@@ -98,9 +134,7 @@ export const plan = async (only?: readonly string[]): Promise<PlanResult> => {
       else kept.push(d);
     }
     const entry: KindPlan = { kind: k.name, diffs: kept };
-    if (k.cost === "expensive") {
-      entry.scannedAt = detect.scanstore.read(k.name)?.finishedAt ?? null;
-    }
+    if (k.scannedAt) entry.scannedAt = k.scannedAt();
     kinds.push(entry);
   }
   return { kinds, diffs: kinds.flatMap((e) => e.diffs), ignored };

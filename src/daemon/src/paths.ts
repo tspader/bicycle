@@ -40,7 +40,7 @@ export const paths = {
       root: run,
       reconcileLock: path.join(run, "reconcile.lock"),
       scanLock: path.join(run, "scan.lock"),
-      scanIgnores: path.join(run, "scan-ignores.txt"),
+      scanPrunes: path.join(run, "scan-prunes.txt"),
       claims: path.join(run, "claims.txt"),
     };
   },

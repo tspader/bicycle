@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { paths } from "./paths.ts";
 
-const VM_HOST = process.env.BICYCLE_VM_IP ?? "arch-installer.local";
+const VM_HOST = process.env.VM_HOST ?? "arch-installer.local";
 const VM_PORT = '22'
 const VM_USER = 'root'
 

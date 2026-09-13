@@ -166,6 +166,7 @@ app[routes.scan.method](routes.scan.path, () =>
     const outcomes = await detect.scan({
       dets: detect.detectors(),
       ignores: ignorefile.effective(),
+      claims: kinds.claims(),
       onProgress: (det, p) => {
         const now = Date.now()
         if (now - last < 200) return
