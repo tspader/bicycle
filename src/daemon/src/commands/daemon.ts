@@ -83,6 +83,7 @@ const classify = (abs: string): { key: string; job: Job } | null => {
       job: async () => {
         log.info({ app: name, path: abs }, "daemon: app input changed");
         await reconcilers.app.one(name);
+        await reconcilers.ingress.all();
       },
     };
   }

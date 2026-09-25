@@ -9,6 +9,8 @@ export type EnsureArgs = {
   sparse?: string[];
 };
 
+const SAFE = ["-c", "safe.directory=*"];
+
 type ShellPromise = ReturnType<typeof $>;
 
 const run = async (label: string, p: ShellPromise): Promise<void> => {
@@ -26,18 +28,18 @@ export const ensure = async ({ repo, ref, dest, sparse }: EnsureArgs): Promise<v
 
   if (!fs.existsSync(gitDir)) {
     fs.mkdirSync(dest, { recursive: true });
-    await run("init", $`git -C ${dest} init -q`);
-    await run("remote add", $`git -C ${dest} remote add origin ${repo}`);
+    await run("init", $`git ${SAFE} -C ${dest} init -q`);
+    await run("remote add", $`git ${SAFE} -C ${dest} remote add origin ${repo}`);
     if (sparse && sparse.length > 0) {
-      await run("config sparseCheckout", $`git -C ${dest} config core.sparseCheckout true`);
-      await run("sparse-checkout init", $`git -C ${dest} sparse-checkout init --cone`);
+      await run("config sparseCheckout", $`git ${SAFE} -C ${dest} config core.sparseCheckout true`);
+      await run("sparse-checkout init", $`git ${SAFE} -C ${dest} sparse-checkout init --cone`);
     }
   }
 
   if (sparse && sparse.length > 0) {
-    await run("sparse-checkout set", $`git -C ${dest} sparse-checkout set ${sparse}`);
+    await run("sparse-checkout set", $`git ${SAFE} -C ${dest} sparse-checkout set ${sparse}`);
   }
 
-  await run(`fetch ${ref} from ${repo}`, $`git -C ${dest} fetch --depth 1 origin ${ref}`);
-  await run("checkout FETCH_HEAD", $`git -C ${dest} checkout -q FETCH_HEAD`);
+  await run(`fetch ${ref} from ${repo}`, $`git ${SAFE} -C ${dest} fetch --depth 1 origin ${ref}`);
+  await run("checkout FETCH_HEAD", $`git ${SAFE} -C ${dest} checkout -q FETCH_HEAD`);
 };

@@ -5,6 +5,7 @@ import path from "path";
 import { generateIdentity, identityToRecipient } from "age-encryption";
 import type { Diff } from "@bicycle/shared";
 import * as age from "./age";
+import * as ports from "./ports";
 
 export type Sandbox = {
   root: string;
@@ -122,12 +123,52 @@ esac
     sb,
     "systemctl",
     `#!/bin/sh
+scope=systemd
+if [ "$1" = "--user" ] && [ "$2" = "-M" ]; then scope="systemd.user.\${3%@}"; shift 3; fi
 case "$1" in
-  is-enabled) grep -qxF -- "$2" "${fx}/systemd.enabled" 2>/dev/null && exit 0; exit 1;;
-  is-active) grep -qxF -- "$2" "${fx}/systemd.active" 2>/dev/null && exit 0; exit 1;;
-  list-unit-files) cat "${fx}/systemd.unit-files.json" 2>/dev/null || echo "[]"; exit 0;;
+  is-enabled) grep -qxF -- "$2" "${fx}/\${scope}.enabled" 2>/dev/null && exit 0; exit 1;;
+  is-active) grep -qxF -- "$2" "${fx}/\${scope}.active" 2>/dev/null && exit 0; exit 1;;
+  list-unit-files) cat "${fx}/\${scope}.unit-files.json" 2>/dev/null || echo "[]"; exit 0;;
+  daemon-reload) exit 0;;
   *) exit 1;;
 esac
+`,
+  );
+  writeShim(
+    sb,
+    "docker",
+    `#!/bin/sh
+for a; do last=$a; done
+case "$1" in
+  inspect)
+    if [ "$last" = bicycle-ingress ]; then
+      if [ -f "${fx}/docker.status" ]; then cat "${fx}/docker.status"; exit 0; fi
+      echo "Error: No such object: bicycle-ingress" >&2; exit 1
+    fi;;
+  compose)
+    prev=
+    for a; do
+      if [ "$prev" = -p ]; then project=$a; fi
+      prev=$a
+    done
+    for a; do
+      if [ "$a" = up ]; then
+        touch "$BICYCLE_HOST_ROOT/docker-up"
+        echo running > "${fx}/docker.status"
+        exit 0
+      fi
+      if [ "$a" = down ]; then
+        touch "$BICYCLE_HOST_ROOT/docker-down-$project"
+        exit 0
+      fi
+    done;;
+  exec)
+    if [ "$2" = bicycle-ingress ] && [ "$3" = caddy ] && [ "$4" = reload ]; then
+      touch "$BICYCLE_HOST_ROOT/docker-reload"; exit 0
+    fi;;
+  network) exit 0;;
+esac
+exec /usr/bin/docker "$@"
 `,
   );
   writeShim(
@@ -152,8 +193,14 @@ export type SystemState = {
   enabled?: string[];
   active?: string[];
   unitFiles?: { unit_file: string; state: string; preset: string | null }[];
+  userManagers?: Record<string, {
+    enabled?: string[];
+    active?: string[];
+    unitFiles?: { unit_file: string; state: string; preset: string | null }[];
+  }>;
   users?: { name: string; uid: number }[];
   groups?: { name: string; gid: number }[];
+  ingress?: { status: string };
 };
 
 export const writeSystem = (sb: Sandbox, sys: SystemState): void => {
@@ -165,10 +212,16 @@ export const writeSystem = (sb: Sandbox, sys: SystemState): void => {
   if (sys.enabled) write("systemd.enabled", sys.enabled);
   if (sys.active) write("systemd.active", sys.active);
   if (sys.unitFiles) write("systemd.unit-files.json", [JSON.stringify(sys.unitFiles)]);
+  for (const [user, m] of Object.entries(sys.userManagers ?? {})) {
+    if (m.enabled) write(`systemd.user.${user}.enabled`, m.enabled);
+    if (m.active) write(`systemd.user.${user}.active`, m.active);
+    if (m.unitFiles) write(`systemd.user.${user}.unit-files.json`, [JSON.stringify(m.unitFiles)]);
+  }
   if (sys.users) {
     write("passwd", sys.users.map((u) => `${u.name}:x:${u.uid}:${u.uid}::/home/${u.name}:/bin/bash`));
   }
   if (sys.groups) write("group", sys.groups.map((g) => `${g.name}:x:${g.gid}:`));
+  if (sys.ingress) write("docker.status", [sys.ingress.status]);
 };
 
 export type Action =
@@ -182,6 +235,9 @@ export type Action =
   | { do: "rm"; rel: string }
   | { do: "shim"; name: string; script: string }
   | { do: "system"; system: SystemState }
+  | { do: "app"; name: string; config: unknown }
+  | { do: "ports"; store: ports.Store }
+  | { do: "state"; rel: string; contents: string }
   | { do: "sweep" };
 
 export const runActions = async (
@@ -229,6 +285,22 @@ export const runActions = async (
       case "system":
         writeSystem(sb, a.system);
         break;
+      case "app":
+        writeEtc(
+          sb,
+          path.join("apps", a.name, "config.yml"),
+          typeof a.config === "string" ? a.config : Bun.YAML.stringify(a.config),
+        );
+        break;
+      case "ports":
+        ports.write(a.store);
+        break;
+      case "state": {
+        const p = path.join(sb.state, a.rel);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, a.contents);
+        break;
+      }
       case "sweep":
         await sweep();
         break;
@@ -245,9 +317,9 @@ export type FsCheck = {
   absent?: boolean;
 };
 
-export const checkFs = (sb: Sandbox, checks: readonly FsCheck[]): void => {
+export const checkFs = (base: string, checks: readonly FsCheck[]): void => {
   for (const c of checks) {
-    const dest = sb.hostPath(c.path);
+    const dest = path.join(base, c.path);
     let st: fs.Stats | null = null;
     try { st = fs.lstatSync(dest); } catch {}
     if (c.absent) {
@@ -312,6 +384,8 @@ export type ReconcilerCase = {
   actions: readonly Action[];
   rejects?: RegExp | true;
   fs?: readonly FsCheck[];
+  state?: readonly FsCheck[];
+  ports?: ports.Store;
   plan?: readonly Partial<Diff>[];
 };
 
@@ -327,6 +401,8 @@ export const runReconcilerCase = async (
     return;
   }
   await runActions(sb, c.actions, sweep);
-  if (c.fs) checkFs(sb, c.fs);
+  if (c.fs) checkFs(sb.host, c.fs);
+  if (c.state) checkFs(sb.state, c.state);
+  if (c.ports) expect(ports.read()).toEqual(c.ports);
   if (c.plan) expectDiffs(await mod.plan(), c.plan);
 };

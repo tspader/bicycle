@@ -107,6 +107,50 @@ const CASES: PlanCase[] = [
       },
     ],
   },
+  {
+    name: "declared user unit that is not enabled yields user-unit diffs",
+    config: { systemd: { users: { spader: { enable: ["foo.service"] } } } },
+    plan: [
+      { type: "user-unit", id: "spader/foo.service", field: "enabled", expected: true, actual: false },
+      { type: "user-unit", id: "spader/foo.service", field: "active", expected: true, actual: false },
+    ],
+  },
+  {
+    name: "declared user unit that is enabled and active is clean",
+    config: { systemd: { users: { spader: { enable: ["foo.service"] } } } },
+    system: { userManagers: { spader: { enabled: ["foo.service"], active: ["foo.service"] } } },
+    plan: [],
+  },
+  {
+    name: "user managers are not planned without a systemd.users entry",
+    config: { systemd: { enable: [] } },
+    system: { userManagers: { spader: { unitFiles: [{ unit_file: "foo.service", state: "enabled", preset: "disabled" }] } } },
+    plan: [],
+  },
+  {
+    name: "undeclared enabled user unit with non-enabled preset is reported",
+    config: { systemd: { users: { spader: { enable: [] } } } },
+    system: { userManagers: { spader: { unitFiles: [{ unit_file: "foo.service", state: "enabled", preset: "disabled" }] } } },
+    plan: [
+      {
+        type: "user-unit",
+        id: "spader/foo.service",
+        field: "enabled",
+        expected: null,
+        actual: true,
+        meta: { preset: "disabled" },
+      },
+    ],
+  },
+  {
+    name: "system and user scopes plan independently",
+    config: { systemd: { enable: ["a.service"], users: { spader: { enable: ["b.service"] } } } },
+    system: { enabled: ["a.service"], active: ["a.service"], userManagers: { spader: { enabled: ["a.service"] } } },
+    plan: [
+      { type: "user-unit", id: "spader/b.service", field: "enabled", expected: true, actual: false },
+      { type: "user-unit", id: "spader/b.service", field: "active", expected: true, actual: false },
+    ],
+  },
 ];
 
 for (const c of CASES) {
@@ -143,6 +187,34 @@ const SWEEP_CASES: ReconcilerCase[] = [
         actual: true,
         meta: { preset: "disabled" },
       },
+    ],
+  },
+  {
+    name: "all() reloads and enables declared user units through the user manager",
+    actions: [
+      { do: "config", config: { systemd: { users: { spader: { enable: ["foo.service"] } } } } },
+      {
+        do: "shim",
+        name: "systemctl",
+        script: [
+          "#!/bin/sh",
+          "scope=system",
+          'if [ "$1" = "--user" ] && [ "$2" = "-M" ]; then scope="user-${3%@}"; shift 3; fi',
+          'case "$1" in',
+          '  daemon-reload) touch "$BICYCLE_HOST_ROOT/reload-$scope"; exit 0;;',
+          '  enable) touch "$BICYCLE_HOST_ROOT/enable-$scope-$3"; exit 0;;',
+          "  list-unit-files) echo '[]'; exit 0;;",
+          "  *) exit 1;;",
+          "esac",
+          "",
+        ].join("\n"),
+      },
+      { do: "sweep" },
+    ],
+    fs: [
+      { path: "reload-user-spader" },
+      { path: "enable-user-spader-foo.service" },
+      { path: "reload-system", absent: true },
     ],
   },
 ];

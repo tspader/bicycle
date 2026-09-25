@@ -4,6 +4,12 @@ import { spawnSync } from "child_process";
 
 export const octal = (mode: number): string => `0${mode.toString(8)}`;
 
+export const writeAtomic = (dest: string, text: string): void => {
+  const tmp = `${dest}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, dest);
+};
+
 export const chmodExact = (target: string, mode: number): void => {
   fs.chmodSync(target, mode);
   if ((mode & 0o7000) === 0) return;

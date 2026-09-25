@@ -17,7 +17,7 @@ const tryFileStream = (): pino.DestinationStream | null => {
   } catch {
     return null;
   }
-  return pino.destination({ dest, sync: false });
+  return pino.destination({ dest, sync: true });
 };
 
 const build = (): pino.Logger => {

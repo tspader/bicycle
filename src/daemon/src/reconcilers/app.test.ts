@@ -2,7 +2,15 @@ import { test, expect } from "bun:test";
 import { $ } from "bun";
 import fs from "fs";
 import path from "path";
-import { useSandbox, writeSecret, backdate } from "../testing";
+import {
+  useSandbox,
+  writeSecret,
+  backdate,
+  runActions,
+  checkFs,
+  type ReconcilerCase,
+} from "../testing";
+import * as ports from "../ports";
 import * as app from "./app";
 
 const sb = useSandbox();
@@ -131,12 +139,16 @@ type PlanCase = {
   env?: Record<string, string>;
   userOverride?: string;
   secrets?: Record<string, string>;
+  ports?: Record<string, number>;
+  plans?: number;
   nullPlan?: boolean;
   throws?: RegExp;
   expect?: {
     env?: Record<string, string>;
     mounts?: { hostRel: string; owner?: { uid: number; gid: number } }[];
-    overrideVolumes?: Record<string, number>;
+    override?: { volumes?: Record<string, number>; ports?: Record<string, string[]> };
+    http?: { service: string; hostPort: number; containerPort: number } | null;
+    ports?: Record<string, number>;
   };
 };
 
@@ -182,7 +194,7 @@ const PLAN_CASES: PlanCase[] = [
         { hostRel: "apps/caddy/caddy/data", owner: { uid: 0, gid: 0 } },
         { hostRel: "apps/caddy/caddy/config" },
       ],
-      overrideVolumes: { caddy: 2 },
+      override: { volumes: { caddy: 2 } },
     },
   },
   {
@@ -216,6 +228,55 @@ const PLAN_CASES: PlanCase[] = [
     userOverride: "services:\n  myapp:\n    environment: {}\n",
     expect: {},
   },
+  {
+    name: "http.service absent from compose throws naming app and services",
+    catalog: {
+      web: {
+        compose: "services:\n  web:\n    image: x\n",
+        bicycle: "http:\n  service: nope\n  port: 80\n",
+      },
+    },
+    app: "web",
+    throws: /app "web": http\.service "nope" is not a service in compose\.yml \(services: web\)/,
+  },
+  {
+    name: "http binds the first free loopback port and records it",
+    catalog: {
+      web: {
+        compose: "services:\n  web:\n    image: x\n",
+        bicycle: "http:\n  service: web\n  port: 80\n",
+      },
+    },
+    app: "web",
+    expect: {
+      http: { service: "web", hostPort: 20000, containerPort: 80 },
+      override: { ports: { web: ["127.0.0.1:20000:80"] } },
+      ports: { web: 20000 },
+    },
+  },
+  {
+    name: "planning the same app twice keeps its port",
+    catalog: {
+      web: {
+        compose: "services:\n  web:\n    image: x\n",
+        bicycle: "http:\n  service: web\n  port: 80\n",
+      },
+    },
+    app: "web",
+    plans: 2,
+    expect: {
+      http: { service: "web", hostPort: 20000, containerPort: 80 },
+      override: { ports: { web: ["127.0.0.1:20000:80"] } },
+      ports: { web: 20000 },
+    },
+  },
+  {
+    name: "app without http releases the port the store held for it",
+    catalog: { myapp: { compose: "services:\n  myapp:\n    image: x\n" } },
+    app: "myapp",
+    ports: { myapp: 20003, other: 20000 },
+    expect: { http: null, ports: { other: 20000 } },
+  },
 ];
 
 for (const c of PLAN_CASES) {
@@ -236,12 +297,14 @@ for (const c of PLAN_CASES) {
     }
     const overridePath = path.join(appDir, "compose.yml");
     if (c.userOverride !== undefined) fs.writeFileSync(overridePath, c.userOverride);
+    if (c.ports) ports.write(c.ports);
 
     if (c.throws) {
       await expect(app.plan(c.app, url)).rejects.toThrow(c.throws);
       return;
     }
-    const p = await app.plan(c.app, url);
+    let p: app.AppPlan | null = null;
+    for (let i = 0; i < (c.plans ?? 1); i++) p = await app.plan(c.app, url);
     if (c.nullPlan) {
       expect(p).toBeNull();
       return;
@@ -262,15 +325,20 @@ for (const c of PLAN_CASES) {
       }));
       expect(actual).toEqual(c.expect.mounts);
     }
-    if (c.expect?.overrideVolumes) {
+    if (c.expect?.override) {
       expect(p!.overrideContent).not.toBeNull();
       const parsed = Bun.YAML.parse(p!.overrideContent!) as any;
-      for (const [service, count] of Object.entries(c.expect.overrideVolumes)) {
+      for (const [service, count] of Object.entries(c.expect.override.volumes ?? {})) {
         expect(parsed.services[service].volumes).toHaveLength(count);
+      }
+      for (const [service, list] of Object.entries(c.expect.override.ports ?? {})) {
+        expect(parsed.services[service].ports).toEqual(list);
       }
     } else {
       expect(p!.overrideContent).toBeNull();
     }
+    if (c.expect?.http !== undefined) expect(p!.http).toEqual(c.expect.http);
+    if (c.expect?.ports) expect(ports.read()).toEqual(c.expect.ports);
   });
 }
 
@@ -353,5 +421,96 @@ for (const c of MOUNT_CASES) {
 
     if (c.expect.dir) expect(fs.statSync(target).isDirectory()).toBe(true);
     if (stablePath) expect(fs.statSync(stablePath).mtimeMs).toBe(stamp);
+  });
+}
+
+type RemovalCase = ReconcilerCase & { sweep: () => Promise<void> };
+
+const REMOVAL_CASES: RemovalCase[] = [
+  {
+    name: "all removes a deployed app that is no longer declared",
+    sweep: app.all,
+    actions: [
+      { do: "state", rel: "apps/old/compose.yml", contents: "services: {}\n" },
+      { do: "state", rel: "apps/old/override.yml", contents: "services: {}\n" },
+      { do: "state", rel: "apps/old/svc/data/keep.txt", contents: "keep\n" },
+      { do: "ports", store: { old: 20000, other: 20001 } },
+      { do: "config", config: {} },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "docker-down-old" }],
+    state: [
+      { path: "apps/old/compose.yml", absent: true },
+      { path: "apps/old/override.yml", absent: true },
+      { path: "apps/old/svc/data/keep.txt", contents: "keep\n" },
+    ],
+    ports: { other: 20001 },
+  },
+  {
+    name: "all removes a deployed app that has no override",
+    sweep: app.all,
+    actions: [
+      { do: "state", rel: "apps/old/compose.yml", contents: "services: {}\n" },
+      { do: "state", rel: "apps/old/svc/data/keep.txt", contents: "keep\n" },
+      { do: "ports", store: { old: 20000, other: 20001 } },
+      { do: "config", config: {} },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "docker-down-old" }],
+    state: [
+      { path: "apps/old/compose.yml", absent: true },
+      { path: "apps/old/svc/data/keep.txt", contents: "keep\n" },
+    ],
+    ports: { other: 20001 },
+  },
+  {
+    name: "all without a bicycle.yml leaves deployed apps alone",
+    sweep: app.all,
+    actions: [
+      { do: "state", rel: "apps/old/compose.yml", contents: "services: {}\n" },
+      { do: "ports", store: { old: 20000 } },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "docker-down-old", absent: true }],
+    state: [{ path: "apps/old/compose.yml", contents: "services: {}\n" }],
+    ports: { old: 20000 },
+  },
+  {
+    name: "all leaves a state dir without a compose alone",
+    sweep: app.all,
+    actions: [
+      { do: "state", rel: "apps/gone/svc/data/keep.txt", contents: "keep\n" },
+      { do: "config", config: {} },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "docker-down-gone", absent: true }],
+    state: [{ path: "apps/gone/svc/data/keep.txt", contents: "keep\n" }],
+  },
+  {
+    name: "one removes a deployed app whose etc config is gone",
+    sweep: () => app.one("old"),
+    actions: [
+      { do: "state", rel: "apps/old/compose.yml", contents: "services: {}\n" },
+      { do: "ports", store: { old: 20000 } },
+      { do: "sweep" },
+    ],
+    fs: [{ path: "docker-down-old" }],
+    state: [{ path: "apps/old/compose.yml", absent: true }],
+    ports: {},
+  },
+  {
+    name: "one with neither etc config nor state compose is a no-op",
+    sweep: () => app.one("ghost"),
+    actions: [{ do: "sweep" }],
+    fs: [{ path: "docker-down-ghost", absent: true }],
+  },
+];
+
+for (const c of REMOVAL_CASES) {
+  test(`removal: ${c.name}`, async () => {
+    await runActions(sb, c.actions, c.sweep);
+    if (c.fs) checkFs(sb.host, c.fs);
+    if (c.state) checkFs(sb.state, c.state);
+    if (c.ports) expect(ports.read()).toEqual(c.ports);
   });
 }

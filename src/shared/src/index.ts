@@ -141,6 +141,34 @@ export const Detector = z.object({
 }).strict()
 export type Detector = z.infer<typeof Detector>
 
+const LABEL = '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?'
+
+export const HostLabel = z.string().regex(
+  new RegExp(`^${LABEL}$`),
+  'host label must be lowercase [a-z0-9-] with no leading or trailing hyphen',
+)
+export type HostLabel = z.infer<typeof HostLabel>
+
+export const Port = z.number().int().min(1).max(65535)
+export type Port = z.infer<typeof Port>
+
+export const Ingress = z.object({
+  domain: z.string().regex(
+    new RegExp(`^${LABEL}(?:\\.${LABEL})*$`),
+    'domain must be dot-separated lowercase [a-z0-9-] labels with no leading or trailing hyphen',
+  ),
+  routes: z.record(HostLabel, Port).optional(),
+}).strict()
+export type Ingress = z.infer<typeof Ingress>
+
+export const AppConfig = z.object({
+  ref: z.string().min(1),
+  env: z.record(z.string(), z.string()).optional(),
+  host: HostLabel.optional(),
+  expose: z.boolean().optional(),
+}).strict()
+export type AppConfig = z.infer<typeof AppConfig>
+
 export const BicycleConfig = z.object({
   vars: Vars.optional(),
   core: z.object({
@@ -187,7 +215,11 @@ export const BicycleConfig = z.object({
   }).strict().optional(),
   systemd: z.object({
     enable: z.array(z.string().min(1)).optional(),
+    users: z.record(z.string().min(1), z.object({
+      enable: z.array(z.string().min(1)).optional(),
+    }).strict()).optional(),
   }).strict().optional(),
   detectors: z.array(Detector).optional(),
+  ingress: Ingress.optional(),
 }).strict()
 export type BicycleConfig = z.infer<typeof BicycleConfig>

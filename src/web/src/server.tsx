@@ -195,5 +195,7 @@ app[routes.scan.method](routes.scan.path, () =>
   }),
 )
 
-Bun.serve({ port: Number(Bun.env.PORT ?? 8081), fetch: app.fetch })
-console.log(`bicycle web on :${Bun.env.PORT ?? 8081}`)
+const hostname = Bun.env.HOST ?? '127.0.0.1'
+const port = Number(Bun.env.PORT ?? 8081)
+Bun.serve({ hostname, port, fetch: app.fetch })
+console.log(`bicycle web on ${hostname}:${port}`)

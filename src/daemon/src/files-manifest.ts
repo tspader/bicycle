@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { writeAtomic } from "./fs";
 import { paths } from "./paths";
 import { log } from "./logger";
 
@@ -17,7 +18,5 @@ export const read = (): string[] => {
 export const write = (targets: string[]): void => {
   const file = paths.state.filesManifest;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify([...targets].sort(), null, 2) + "\n");
-  fs.renameSync(tmp, file);
+  writeAtomic(file, JSON.stringify([...targets].sort(), null, 2) + "\n");
 };

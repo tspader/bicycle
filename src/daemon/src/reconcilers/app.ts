@@ -3,9 +3,11 @@ import fs from "fs";
 import { paths } from "../paths";
 import * as config from "../config";
 import { interpolate } from "../interpolate";
+import { bin } from "./bin";
 import { ensure as ensureRepo } from "./git";
 import * as manifest from "./manifest";
 import * as network from "./network";
+import * as ports from "../ports";
 import { chownRecursiveIfNeeded } from "../fs";
 import { log } from "../logger";
 
@@ -18,6 +20,7 @@ export type AppPlan = {
   stateOverride: string;
   overrideContent: string | null;
   mounts: manifest.Mount[];
+  http: manifest.HttpBinding | null;
   userOverride: string | null;
   projectDir: string;
   env: Record<string, string>;
@@ -81,8 +84,25 @@ export const plan = async (
   const env = await resolveAppEnv(cfg.env, vars);
   manifest.validateEnv(m.env, env, name);
 
+  const store = ports.read();
+  let http: manifest.HttpBinding | null = null;
+  if (m.http) {
+    const compose = Bun.YAML.parse(fs.readFileSync(cache.compose, "utf8")) as {
+      services?: manifest.ComposeServices;
+    };
+    manifest.validateHttp(m.http, compose.services ?? {}, name);
+    http = {
+      service: m.http.service,
+      hostPort: ports.allocate(store, name),
+      containerPort: m.http.port,
+    };
+  } else {
+    ports.release(store, name);
+  }
+  ports.write(store);
+
   const mounts = manifest.planMounts(m, name);
-  const overrideContent = manifest.generateOverride(mounts);
+  const overrideContent = manifest.generateOverride(mounts, http);
 
   const stateApp = paths.state.app(name);
   const userOverride = fs.existsSync(etcApp.compose) ? etcApp.compose : null;
@@ -96,6 +116,7 @@ export const plan = async (
     stateOverride: stateApp.override,
     overrideContent,
     mounts,
+    http,
     userOverride,
     projectDir: etcApp.root,
     env,
@@ -127,18 +148,32 @@ export const execute = async (p: AppPlan): Promise<void> => {
   log.info({ app: p.name, ref: p.ref }, "app: reconciled");
 };
 
-const loadBicycle = (): { url: string; vars: unknown } => {
-  const cfg = config.bicycle();
+const catalog = (cfg: config.BicycleConfig): { url: string; vars: unknown } => {
   if (!cfg.catalog) throw new Error("bicycle.yml: missing `catalog.url`");
   return { url: cfg.catalog.url, vars: cfg.vars ?? {} };
 };
 
+const remove = async (name: string): Promise<void> => {
+  const stateApp = paths.state.app(name);
+  log.info({ app: name }, "app: removing");
+  await $`${bin("docker")} compose -p ${name} down`.quiet();
+  const store = ports.read();
+  ports.release(store, name);
+  ports.write(store);
+  fs.unlinkSync(stateApp.compose);
+  fs.rmSync(stateApp.override, { force: true });
+  log.info({ app: name }, "app: removed");
+};
+
 export const one = async (name: string): Promise<void> => {
   const etcApp = paths.etc.app(name);
-  if (!fs.existsSync(etcApp.config)) return;
+  if (!fs.existsSync(etcApp.config)) {
+    if (fs.existsSync(paths.state.app(name).compose)) await remove(name);
+    return;
+  }
   try {
     await network.ensure();
-    const { url, vars } = loadBicycle();
+    const { url, vars } = catalog(config.bicycle());
     const p = await plan(name, url, vars);
     if (p) await execute(p);
   } catch (e) {
@@ -147,22 +182,44 @@ export const one = async (name: string): Promise<void> => {
   }
 };
 
-export const all = async (): Promise<void> => {
-  if (!fs.existsSync(paths.etc.apps)) return;
-  const names = fs.readdirSync(paths.etc.apps).filter((name) => {
-    const app = paths.etc.app(name);
-    return fs.statSync(app.root).isDirectory() && fs.existsSync(app.config);
-  });
-  if (names.length === 0) return;
-  const { url, vars } = loadBicycle();
-  await network.ensure();
+export const names = (): string[] =>
+  fs.existsSync(paths.etc.apps)
+    ? fs.readdirSync(paths.etc.apps).filter((name) => {
+        const app = paths.etc.app(name);
+        return fs.statSync(app.root).isDirectory() && fs.existsSync(app.config);
+      })
+    : [];
 
-  for (const name of names) {
+export const all = async (): Promise<void> => {
+  const cfg = config.maybe();
+  if (!cfg) return;
+  const declared = names();
+  if (declared.length > 0) {
+    const { url, vars } = catalog(cfg);
+    await network.ensure();
+
+    for (const name of declared) {
+      try {
+        const p = await plan(name, url, vars);
+        if (p) await execute(p);
+      } catch (e) {
+        log.error({ err: e, app: name }, "app: reconcile failed");
+        throw e;
+      }
+    }
+  }
+
+  const orphans = fs.existsSync(paths.state.apps)
+    ? fs.readdirSync(paths.state.apps).filter(
+        (name) => !declared.includes(name) && fs.existsSync(paths.state.app(name).compose),
+      )
+    : [];
+
+  for (const name of orphans) {
     try {
-      const p = await plan(name, url, vars);
-      if (p) await execute(p);
+      await remove(name);
     } catch (e) {
-      log.error({ err: e, app: name }, "app: reconcile failed");
+      log.error({ err: e, app: name }, "app: remove failed");
       throw e;
     }
   }

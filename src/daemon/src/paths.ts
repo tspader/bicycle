@@ -49,6 +49,14 @@ export const paths = {
     return {
       root: state,
       filesManifest: path.join(state, "files-manifest.json"),
+      ports: path.join(state, "ports.json"),
+      ingress: {
+        root: path.join(state, "ingress"),
+        compose: path.join(state, "ingress", "compose.yml"),
+        caddyfile: path.join(state, "ingress", "Caddyfile"),
+        data: path.join(state, "ingress", "data"),
+        config: path.join(state, "ingress", "config"),
+      },
       scans: path.join(state, "scan"),
       scan: (detector: string) => path.join(state, "scan", `${detector}.json`),
       detectorCache: (detector: string) => path.join(state, "cache", "detect", detector),

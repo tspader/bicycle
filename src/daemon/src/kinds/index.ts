@@ -62,6 +62,7 @@ const BUILTIN = (): Kind[] => [
   fromReconciler("files", reconcilers.files),
   fromReconciler("packages", reconcilers.packages),
   fromReconciler("systemd", reconcilers.systemd),
+  fromReconciler("ingress", reconcilers.ingress),
 ];
 
 export const all = (): Kind[] => {

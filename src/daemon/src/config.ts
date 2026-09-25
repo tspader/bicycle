@@ -1,13 +1,8 @@
 import fs from "fs";
-import { BicycleConfig, loadBicycleDoc } from "@bicycle/shared";
+import { AppConfig, BicycleConfig, loadBicycleDoc } from "@bicycle/shared";
 import { paths } from "./paths";
 
-export type { BicycleConfig };
-
-export type AppConfig = {
-  ref: string;
-  env?: Record<string, string>;
-};
+export type { AppConfig, BicycleConfig };
 
 export const bicycle = (): BicycleConfig =>
   loadBicycleDoc(fs.readFileSync(paths.etc.bicycleYaml, "utf8")).resolved;
@@ -16,4 +11,4 @@ export const maybe = (): BicycleConfig | null =>
   fs.existsSync(paths.etc.bicycleYaml) ? bicycle() : null;
 
 export const app = (name: string): AppConfig =>
-  Bun.YAML.parse(fs.readFileSync(paths.etc.app(name).config, "utf8")) as AppConfig;
+  AppConfig.parse(Bun.YAML.parse(fs.readFileSync(paths.etc.app(name).config, "utf8")));

@@ -8,8 +8,9 @@ import * as groups from "./groups";
 import * as users from "./users";
 import * as sudoers from "./sudoers";
 import * as dirs from "./dirs";
+import * as ingress from "./ingress";
 
-export { network, app, git, files, systemd, packages, groups, users, sudoers, dirs };
+export { network, app, git, files, systemd, packages, groups, users, sudoers, dirs, ingress };
 
 // Canonical reconcile order. groups before users (so custom groups exist for
 // membership), users before dirs/files (so home dirs + owners exist), and the
@@ -25,6 +26,7 @@ export const ORDER = [
   "packages",
   "systemd",
   "app",
+  "ingress",
 ] as const;
 
 export type ReconcilerName = (typeof ORDER)[number];
@@ -38,6 +40,7 @@ const ALL: Record<ReconcilerName, { all: () => Promise<void> }> = {
   packages,
   systemd,
   app,
+  ingress,
 };
 
 export const isReconcilerName = (s: string): s is ReconcilerName =>

@@ -93,3 +93,93 @@ test("parses the checked-in example/machine/bicycle.yml", () => {
   const cfg = config.bicycle();
   expect(cfg.core?.hostname).toBeTruthy();
 });
+
+type IngressCase = {
+  name: string;
+  yml: string;
+  expect?: config.BicycleConfig["ingress"];
+  throws?: RegExp;
+};
+
+const INGRESS_CASES: IngressCase[] = [
+  {
+    name: "parses domain and routes",
+    yml: [
+      'ingress:',
+      '  domain: aral.lan',
+      '  routes:',
+      '    recall: 4321',
+      '    steve: 7777',
+      '',
+    ].join('\n'),
+    expect: { domain: 'aral.lan', routes: { recall: 4321, steve: 7777 } },
+  },
+  {
+    name: "rejects route port above 65535",
+    yml: ['ingress:', '  domain: aral.lan', '  routes:', '    recall: 70000', ''].join('\n'),
+    throws: /Too big/,
+  },
+  {
+    name: "rejects route label with uppercase and underscore",
+    yml: ['ingress:', '  domain: aral.lan', '  routes:', '    Foo_bar: 80', ''].join('\n'),
+    throws: /host label must be lowercase/,
+  },
+  {
+    name: "rejects domain with uppercase",
+    yml: ['ingress:', '  domain: Aral.lan', ''].join('\n'),
+    throws: /domain must be dot-separated lowercase/,
+  },
+];
+
+for (const c of INGRESS_CASES) {
+  test(`ingress: ${c.name}`, () => {
+    write(c.yml);
+    if (c.throws) expect(() => config.bicycle()).toThrow(c.throws);
+    else expect(config.bicycle().ingress).toEqual(c.expect!);
+  });
+}
+
+type AppCase = {
+  name: string;
+  yml: string;
+  expect?: config.AppConfig;
+  throws?: RegExp;
+};
+
+const APP_CASES: AppCase[] = [
+  {
+    name: "minimal ref",
+    yml: 'ref: abc123\n',
+    expect: { ref: 'abc123' },
+  },
+  {
+    name: "ref, env, host, expose",
+    yml: ['ref: abc123', 'env:', '  A: "1"', 'host: recall', 'expose: false', ''].join('\n'),
+    expect: { ref: 'abc123', env: { A: '1' }, host: 'recall', expose: false },
+  },
+  {
+    name: "rejects unknown key",
+    yml: ['ref: abc123', 'prot: 80', ''].join('\n'),
+    throws: /"code":\s*"unrecognized_keys"[\s\S]*"keys":\s*\[\s*"prot"\s*\]/,
+  },
+  {
+    name: "rejects missing ref",
+    yml: 'env: {}\n',
+    throws: /"path":\s*\[\s*"ref"\s*\]/,
+  },
+  {
+    name: "rejects host label with uppercase and underscore",
+    yml: ['ref: abc123', 'host: Foo_bar', ''].join('\n'),
+    throws: /host label must be lowercase/,
+  },
+];
+
+for (const c of APP_CASES) {
+  test(`app: ${c.name}`, () => {
+    const dir = path.join(tmp, 'apps', 'myapp');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.yml'), c.yml);
+    if (c.throws) expect(() => config.app('myapp')).toThrow(c.throws);
+    else expect(config.app('myapp')).toEqual(c.expect!);
+  });
+}

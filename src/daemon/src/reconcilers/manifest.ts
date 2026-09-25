@@ -16,9 +16,15 @@ export type EnvSpec = {
   optional?: string[];
 };
 
+export type HttpSpec = {
+  service: string;
+  port: number;
+};
+
 export type Manifest = {
   services?: Record<string, ServiceManifest>;
   env?: EnvSpec;
+  http?: HttpSpec;
 };
 
 export type Owner = { uid: number; gid: number };
@@ -30,10 +36,17 @@ export type Mount = {
   owner?: Owner;
 };
 
-const TOP_KEYS = new Set(["services", "env"]);
+export type HttpBinding = {
+  service: string;
+  hostPort: number;
+  containerPort: number;
+};
+
+const TOP_KEYS = new Set(["services", "env", "http"]);
 const SERVICE_KEYS = new Set(["data"]);
 const DATA_KEYS = new Set(["path", "owner"]);
 const ENV_KEYS = new Set(["required", "optional"]);
+const HTTP_KEYS = new Set(["service", "port"]);
 
 const checkKeys = (where: string, obj: object, allowed: Set<string>): void => {
   for (const k of Object.keys(obj)) {
@@ -58,6 +71,7 @@ export const load = (manifestPath: string): Manifest => {
   const m = parsed as Manifest;
 
   if (m.env) checkKeys(`${manifestPath}: env`, m.env, ENV_KEYS);
+  if (m.http) checkKeys(`${manifestPath}: http`, m.http, HTTP_KEYS);
 
   for (const [svcName, svc] of Object.entries(m.services ?? {})) {
     checkKeys(`${manifestPath}: services.${svcName}`, svc, SERVICE_KEYS);
@@ -105,23 +119,24 @@ export const planMounts = (
   return out;
 };
 
-export const generateOverride = (mounts: Mount[]): string | null => {
-  if (mounts.length === 0) return null;
+export const generateOverride = (
+  mounts: Mount[],
+  http: HttpBinding | null,
+): string | null => {
+  if (mounts.length === 0 && http === null) return null;
 
-  const byService: Record<string, Mount[]> = {};
+  const services: Record<string, { volumes?: object[]; ports?: string[] }> = {};
   for (const m of mounts) {
-    (byService[m.service] ??= []).push(m);
+    ((services[m.service] ??= {}).volumes ??= []).push({
+      type: "bind",
+      source: m.hostPath,
+      target: m.containerPath,
+    });
   }
-
-  const services: Record<string, { volumes: object[] }> = {};
-  for (const [service, ms] of Object.entries(byService)) {
-    services[service] = {
-      volumes: ms.map((m) => ({
-        type: "bind",
-        source: m.hostPath,
-        target: m.containerPath,
-      })),
-    };
+  if (http !== null) {
+    (services[http.service] ??= {}).ports = [
+      `127.0.0.1:${http.hostPort}:${http.containerPort}`,
+    ];
   }
 
   return JSON.stringify({ services }, null, 2) + "\n";
@@ -137,6 +152,49 @@ export const validateEnv = (
   if (missing.length > 0) {
     throw new Error(
       `app "${appName}" missing required env: ${missing.join(", ")}`,
+    );
+  }
+};
+
+export type ComposeService = { ports?: unknown };
+export type ComposeServices = Record<string, ComposeService | null | undefined>;
+
+const portRange = (spec: unknown): [number, number] | null => {
+  if (typeof spec === "number") return [spec, spec];
+  if (typeof spec !== "string") return null;
+  const bounds = spec.split("/")[0]!.split("-").map(Number);
+  const lo = bounds[0];
+  const hi = bounds[1] ?? lo;
+  if (lo === undefined || hi === undefined) return null;
+  if (!Number.isInteger(lo) || !Number.isInteger(hi)) return null;
+  return [lo, hi];
+};
+
+const publishedTarget = (entry: unknown): [number, number] | null => {
+  if (typeof entry === "number") return [entry, entry];
+  if (typeof entry === "string") return portRange(entry.split("/")[0]!.split(":").pop());
+  if (entry && typeof entry === "object" && "target" in entry) return portRange(entry.target);
+  return null;
+};
+
+export const validateHttp = (
+  http: HttpSpec,
+  services: ComposeServices,
+  appName: string,
+): void => {
+  const names = Object.keys(services);
+  if (!names.includes(http.service)) {
+    throw new Error(
+      `app "${appName}": http.service "${http.service}" is not a service in compose.yml (services: ${names.join(", ")})`,
+    );
+  }
+  const ports = services[http.service]?.ports;
+  if (!Array.isArray(ports)) return;
+  for (const entry of ports) {
+    const range = publishedTarget(entry);
+    if (!range || http.port < range[0] || http.port > range[1]) continue;
+    throw new Error(
+      `app "${appName}": service "${http.service}" publishes http.port ${http.port} in compose.yml ports (${JSON.stringify(entry)}); ingress owns that port, remove it`,
     );
   }
 };

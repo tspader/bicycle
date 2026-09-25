@@ -61,6 +61,8 @@ pacman:
     regions: [United States]
 catalog:
   url: "git://192.168.0.211/bikeshop"
+ingress:
+  domain: box.lan
 systemd:
   enable:
     - docker.service

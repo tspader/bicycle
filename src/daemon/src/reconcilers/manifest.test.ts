@@ -80,6 +80,16 @@ services:
     yml: "env:\n  requried: [X]\n",
     throws: /env: unknown key "requried"/,
   },
+  {
+    name: "parses http section",
+    yml: "http:\n  service: web\n  port: 8080\n",
+    expect: { http: { service: "web", port: 8080 } },
+  },
+  {
+    name: "rejects unknown key inside http",
+    yml: "http:\n  service: web\n  prot: 8080\n",
+    throws: /http: unknown key "prot"/,
+  },
 ];
 
 for (const c of LOAD_CASES) {
@@ -209,18 +219,21 @@ for (const c of MOUNTS_CASES) {
 type OverrideCase = {
   name: string;
   mounts: manifest.Mount[];
+  http: manifest.HttpBinding | null;
   expect: unknown;
 };
 
 const OVERRIDE_CASES: OverrideCase[] = [
   {
-    name: "returns null for empty mounts",
+    name: "returns null for empty mounts and no http",
     mounts: [],
+    http: null,
     expect: null,
   },
   {
     name: "single mount produces parseable yaml",
     mounts: [{ service: "app", hostPath: "/h/data", containerPath: "/app/data" }],
+    http: null,
     expect: {
       services: {
         app: { volumes: [{ type: "bind", source: "/h/data", target: "/app/data" }] },
@@ -233,6 +246,7 @@ const OVERRIDE_CASES: OverrideCase[] = [
       { service: "caddy", hostPath: "/h/data", containerPath: "/data" },
       { service: "caddy", hostPath: "/h/config", containerPath: "/config" },
     ],
+    http: null,
     expect: {
       services: {
         caddy: {
@@ -250,6 +264,7 @@ const OVERRIDE_CASES: OverrideCase[] = [
       { service: "web", hostPath: "/h/web", containerPath: "/srv" },
       { service: "db", hostPath: "/h/db", containerPath: "/var/lib/postgresql/data" },
     ],
+    http: null,
     expect: {
       services: {
         web: { volumes: [{ type: "bind", source: "/h/web", target: "/srv" }] },
@@ -257,11 +272,45 @@ const OVERRIDE_CASES: OverrideCase[] = [
       },
     },
   },
+  {
+    name: "http without mounts yields only a loopback ports binding",
+    mounts: [],
+    http: { service: "web", hostPort: 20000, containerPort: 8080 },
+    expect: {
+      services: {
+        web: { ports: ["127.0.0.1:20000:8080"] },
+      },
+    },
+  },
+  {
+    name: "mounts and http on the same service share one block",
+    mounts: [{ service: "web", hostPath: "/h/web", containerPath: "/srv" }],
+    http: { service: "web", hostPort: 20001, containerPort: 80 },
+    expect: {
+      services: {
+        web: {
+          volumes: [{ type: "bind", source: "/h/web", target: "/srv" }],
+          ports: ["127.0.0.1:20001:80"],
+        },
+      },
+    },
+  },
+  {
+    name: "http on a different service than the mounts yields two blocks",
+    mounts: [{ service: "db", hostPath: "/h/db", containerPath: "/var/lib/db" }],
+    http: { service: "web", hostPort: 20002, containerPort: 3000 },
+    expect: {
+      services: {
+        db: { volumes: [{ type: "bind", source: "/h/db", target: "/var/lib/db" }] },
+        web: { ports: ["127.0.0.1:20002:3000"] },
+      },
+    },
+  },
 ];
 
 for (const c of OVERRIDE_CASES) {
   test(`generateOverride: ${c.name}`, () => {
-    const out = manifest.generateOverride(c.mounts);
+    const out = manifest.generateOverride(c.mounts, c.http);
     if (c.expect === null) expect(out).toBeNull();
     else expect(Bun.YAML.parse(out!)).toEqual(c.expect);
   });
@@ -298,12 +347,93 @@ for (const c of ENV_CASES) {
   });
 }
 
+type HttpCase = {
+  name: string;
+  http: manifest.HttpSpec;
+  services: manifest.ComposeServices;
+  throws?: RegExp;
+};
+
+const HTTP_CASES: HttpCase[] = [
+  {
+    name: "service present passes",
+    http: { service: "web", port: 80 },
+    services: { web: {}, db: {} },
+  },
+  {
+    name: "service absent names app and lists services",
+    http: { service: "nope", port: 80 },
+    services: { web: {}, db: {} },
+    throws: /^app "myapp": http\.service "nope" is not a service in compose\.yml \(services: web, db\)$/,
+  },
+  {
+    name: "publishing an unrelated port passes",
+    http: { service: "web", port: 9091 },
+    services: { web: { ports: ["51413:51413/tcp", "51413:51413/udp"] } },
+  },
+  {
+    name: "publishing the http port on another service passes",
+    http: { service: "web", port: 80 },
+    services: { web: {}, db: { ports: ["80:80"] } },
+  },
+  {
+    name: "short syntax publishing the http port throws",
+    http: { service: "web", port: 8000 },
+    services: { web: { ports: ["8000:8000"] } },
+    throws: /^app "myapp": service "web" publishes http\.port 8000 in compose\.yml ports \("8000:8000"\); ingress owns that port, remove it$/,
+  },
+  {
+    name: "host ip and protocol suffix still resolve the container port",
+    http: { service: "web", port: 8000 },
+    services: { web: { ports: ["127.0.0.1:9000:8000/tcp"] } },
+    throws: /publishes http\.port 8000/,
+  },
+  {
+    name: "container-only short syntax throws",
+    http: { service: "web", port: 8000 },
+    services: { web: { ports: [8000] } },
+    throws: /publishes http\.port 8000/,
+  },
+  {
+    name: "range containing the http port throws",
+    http: { service: "web", port: 8005 },
+    services: { web: { ports: ["8000-8010:8000-8010"] } },
+    throws: /publishes http\.port 8005/,
+  },
+  {
+    name: "range excluding the http port passes",
+    http: { service: "web", port: 9000 },
+    services: { web: { ports: ["8000-8010:8000-8010"] } },
+  },
+  {
+    name: "long syntax target throws",
+    http: { service: "web", port: 8000 },
+    services: { web: { ports: [{ target: 8000, published: "8000" }] } },
+    throws: /publishes http\.port 8000/,
+  },
+  {
+    name: "long syntax other target passes",
+    http: { service: "web", port: 8000 },
+    services: { web: { ports: [{ target: 9000, published: "9000" }] } },
+  },
+];
+
+for (const c of HTTP_CASES) {
+  test(`validateHttp: ${c.name}`, () => {
+    const run = () => manifest.validateHttp(c.http, c.services, "myapp");
+    if (c.throws) expect(run).toThrow(c.throws);
+    else expect(run).not.toThrow();
+  });
+}
+
 type ComposeCase = {
   name: string;
   base: string;
   mounts: manifest.Mount[];
+  http: manifest.HttpBinding | null;
   expectTargets: Record<string, string[]>;
   expectBind?: { service: string; target: string; source: string };
+  expectPort?: { service: string; published: string; target: number; host_ip: string };
 };
 
 const COMPOSE_CASES: ComposeCase[] = [
@@ -321,6 +451,7 @@ services:
     mounts: [
       { service: "app", hostPath: "/tmp/bicycle-test-merge/data", containerPath: "/data" },
     ],
+    http: null,
     expectTargets: { app: ["/etc/hostname", "/data"] },
     expectBind: { service: "app", target: "/data", source: "/tmp/bicycle-test-merge/data" },
   },
@@ -340,7 +471,22 @@ services:
       { service: "web", hostPath: "/tmp/bicycle-test-multi/web", containerPath: "/srv" },
       { service: "db", hostPath: "/tmp/bicycle-test-multi/db", containerPath: "/var/lib/db" },
     ],
+    http: null,
     expectTargets: { web: ["/srv"], db: ["/var/lib/db"] },
+  },
+  {
+    name: "http binding publishes the container port on loopback",
+    base: `
+name: bicycle-test-http
+services:
+  web:
+    image: alpine:3
+    command: ["true"]
+`,
+    mounts: [],
+    http: { service: "web", hostPort: 20000, containerPort: 8080 },
+    expectTargets: {},
+    expectPort: { service: "web", published: "20000", target: 8080, host_ip: "127.0.0.1" },
   },
 ];
 
@@ -349,7 +495,7 @@ for (const c of COMPOSE_CASES) {
     const base = path.join(sb.root, "compose.yml");
     const override = path.join(sb.root, "override.yml");
     fs.writeFileSync(base, c.base);
-    fs.writeFileSync(override, manifest.generateOverride(c.mounts)!);
+    fs.writeFileSync(override, manifest.generateOverride(c.mounts, c.http)!);
 
     const r = await $`docker compose -f ${base} -f ${override} config --format json`.quiet().nothrow();
     if (r.exitCode !== 0) {
@@ -367,6 +513,10 @@ for (const c of COMPOSE_CASES) {
       );
       expect(vol.type).toBe("bind");
       expect(vol.source).toBe(c.expectBind.source);
+    }
+    if (c.expectPort) {
+      const { service, ...port } = c.expectPort;
+      expect(merged.services[service].ports).toContainEqual(expect.objectContaining(port));
     }
   });
 }

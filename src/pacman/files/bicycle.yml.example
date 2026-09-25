@@ -1,6 +1,9 @@
 catalog:
   url: "https://github.com/tspader/bikeshop"
 
+ingress:
+  domain: box.lan
+
 systemd:
   enable:
     - docker.service
