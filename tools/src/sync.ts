@@ -63,21 +63,13 @@ const targets: Record<string, Target> = {
     ],
   },
   daemon: {
-    label: "daemon source (src/daemon + src/shared)",
-    mappings: [
-      {
-        src: path.join(paths.root, "src", "daemon"),
-        dest: "/root/bicycle/src/daemon",
-        trailingSlash: true,
-        excludes: ["node_modules"],
-      },
-      {
-        src: path.join(paths.root, "src", "shared"),
-        dest: "/root/bicycle/src/shared",
-        trailingSlash: true,
-        excludes: ["node_modules"],
-      },
-    ],
+    label: "daemon source (src/cli + src/daemon + src/core and what they import)",
+    mappings: ["cli", "daemon", "core", "shared", "datastar", "ui"].map((name) => ({
+      src: path.join(paths.root, "src", name),
+      dest: `/root/bicycle/src/${name}`,
+      trailingSlash: true,
+      excludes: ["node_modules"],
+    })),
   },
 };
 

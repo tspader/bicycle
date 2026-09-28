@@ -4,8 +4,8 @@ const root = path.join(import.meta.dir, "..", "..");
 
 export const paths = {
   root,
-  daemon: {
-    entry: path.join(root, "src", "daemon", "src", "index.ts"),
+  cli: {
+    entry: path.join(root, "src", "cli", "src", "main.ts"),
   },
   pacman: {
     root: path.join(root, "src", "pacman"),
@@ -15,8 +15,8 @@ export const paths = {
   },
   cache: {
     root: path.join(root, ".cache"),
-    bin: path.join(root, ".cache", "daemon"),
-    binary: path.join(root, ".cache", "daemon", "bicycle"),
+    bin: path.join(root, ".cache", "bin"),
+    binary: path.join(root, ".cache", "bin", "bicycle"),
     work: path.join(root, ".cache", "pacman"),
     makepkg: {
       build: path.join(root, ".cache", "pacman", "build"),

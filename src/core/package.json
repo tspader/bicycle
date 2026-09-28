@@ -1,0 +1,38 @@
+{
+  "name": "@bicycle/core",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./age": "./src/age.ts",
+    "./clock": "./src/clock.ts",
+    "./detect": "./src/detect/index.ts",
+    "./disk": "./src/disk.ts",
+    "./host": "./src/host.ts",
+    "./ignores": "./src/ignores.ts",
+    "./kinds": "./src/kinds/index.ts",
+    "./kinds/render": "./src/kinds/render.ts",
+    "./log": "./src/log.ts",
+    "./paths": "./src/paths.ts",
+    "./reconcilers": "./src/reconcilers/index.ts",
+    "./reconcilers/ingress": "./src/reconcilers/ingress.ts",
+    "./secrets": "./src/secrets.ts",
+    "./tree": "./src/tree.ts",
+    "./testing": "./test/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@bicycle/shared": "workspace:*",
+    "age-encryption": "catalog:",
+    "liquidjs": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

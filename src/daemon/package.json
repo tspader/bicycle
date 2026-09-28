@@ -1,31 +1,33 @@
 {
   "name": "@bicycle/daemon",
+  "version": "0.1.0",
   "type": "module",
   "private": true,
-  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./config": "./src/config.ts",
+    "./jobs": "./src/jobs.ts",
+    "./net": "./src/net.ts",
+    "./testing": "./test/testing.ts"
+  },
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --hot run src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@bicycle/core": "workspace:*",
+    "@bicycle/datastar": "workspace:*",
     "@bicycle/shared": "workspace:*",
-    "@spader/zargs": "catalog:",
-    "age-encryption": "catalog:",
+    "@bicycle/ui": "workspace:*",
     "hono": "catalog:",
-    "liquidjs": "^10.27.0",
     "pino": "catalog:",
     "pino-pretty": "catalog:",
-    "yaml": "catalog:",
-    "yargs": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
     "typescript": "catalog:"
-  },
-  "exports": {
-    ".": "./src/exports.ts"
   }
 }

@@ -143,7 +143,7 @@ export const buildInstallSteps = (input: InstallStepInput): InstallStep[] => {
   steps.push({
     kind: 'shell',
     label: 'reconcile users/groups/dirs/files into target (chroot)',
-    argv: ['arch-chroot', mountRoot, 'bicycle', 'reconcile-once',
+    argv: ['arch-chroot', mountRoot, 'bicycle', 'daemon', 'once',
       '--only', 'groups', 'users', 'sudoers', 'dirs', 'files'],
   })
 

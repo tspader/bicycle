@@ -8,14 +8,14 @@
   "packageManager": "bun@1.3.8",
   "private": true,
   "bin": {
-    "bicycle": "src/daemon/src/index.ts"
+    "bicycle": "src/cli/src/main.ts"
   },
   "scripts": {
     "clean": "bun turbo run clean && rm -rf node_modules .turbo",
     "typecheck": "bun turbo run typecheck",
+    "test": "bun turbo run test",
     "build": "bun turbo run build",
-    "daemon:dev": "bun --cwd src/daemon dev",
-    "daemon:start": "bun --cwd src/daemon start",
+    "daemon": "bun src/cli/src/main.ts daemon run",
     "installer:dev": "bun --cwd src/installer dev",
     "installer:start": "bun --cwd src/installer start"
   },
@@ -25,8 +25,9 @@
       "src/ui",
       "src/datastar",
       "src/installer",
+      "src/core",
       "src/daemon",
-      "src/web",
+      "src/cli",
       "tools"
     ],
     "catalog": {
@@ -36,13 +37,15 @@
       "zod": "^4.4.3",
       "@hono/standard-validator": "^0.2.2",
       "yargs": "^18.0.0",
-      "@spader/zargs": "^1.2.0",
+      "@spader/zargs": "^1.3.0",
       "age-encryption": "^0.3.0",
       "yaml": "^2.6.0",
       "@clack/prompts": "^1.4.0",
       "pino": "^10.3.1",
       "pino-pretty": "^13.1.3",
-      "pino-roll": "^4.0.0"
+      "pino-roll": "^4.0.0",
+      "consola": "^3.4.2",
+      "liquidjs": "^10.27.0"
     }
   }
 }

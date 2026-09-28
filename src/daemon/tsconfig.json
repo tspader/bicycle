@@ -1,10 +1,14 @@
 {
   "compilerOptions": {
-    "lib": ["ESNext"],
+    "lib": [
+      "ESNext"
+    ],
+    "types": [
+      "bun"
+    ],
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
-    "allowJs": true,
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
@@ -13,7 +17,26 @@
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true
+    "noImplicitOverride": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx",
+    "paths": {
+      "@bicycle/daemon/testing": [
+        "./test/testing.ts"
+      ],
+      "@bicycle/daemon/*": [
+        "./src/*"
+      ],
+      "@bicycle/core/testing": [
+        "../core/test/testing.ts"
+      ],
+      "@bicycle/core/*": [
+        "../core/src/*"
+      ]
+    }
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "test"
+  ]
 }

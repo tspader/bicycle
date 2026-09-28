@@ -1,0 +1,26 @@
+{
+  "name": "@bicycle/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "bicycle": "src/main.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "clean": "rm -rf node_modules .turbo tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@bicycle/core": "workspace:*",
+    "@bicycle/daemon": "workspace:*",
+    "@bicycle/shared": "workspace:*",
+    "@spader/zargs": "catalog:",
+    "consola": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

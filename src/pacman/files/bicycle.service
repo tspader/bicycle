@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/bicycle daemon
+ExecStart=/usr/bin/bicycle daemon run
 Restart=on-failure
 RestartSec=5s
 
