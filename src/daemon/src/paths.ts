@@ -53,7 +53,8 @@ export const paths = {
       ingress: {
         root: path.join(state, "ingress"),
         compose: path.join(state, "ingress", "compose.yml"),
-        caddyfile: path.join(state, "ingress", "Caddyfile"),
+        caddy: path.join(state, "ingress", "caddy"),
+        caddyfile: path.join(state, "ingress", "caddy", "Caddyfile"),
         data: path.join(state, "ingress", "data"),
         config: path.join(state, "ingress", "config"),
       },

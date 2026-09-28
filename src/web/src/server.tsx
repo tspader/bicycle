@@ -10,6 +10,7 @@ import {
   DiffPage, DiffContent, Rail, BulkBar, DirChips, ScanArea, Toast,
   buildVM, ui, routes, type Notice,
 } from './views/diff'
+import * as hosts from './views/hosts'
 
 const app = new Hono<{ Variables: App }>()
 
@@ -22,7 +23,7 @@ app.get('/static/datastar.js', staticFile(datastarPath, 'application/javascript;
 app.get('/static/base.css', staticFile(baseCssPath, 'text/css; charset=utf-8'))
 app.get('/static/diff.css', staticFile(diffCssPath, 'text/css; charset=utf-8'))
 
-app.get('/', (c) => c.redirect(routes.diff.url()))
+app.get('/', (c) => c.html(<hosts.HostsPage vm={hosts.buildVM()} />))
 
 // Planning runs every detector read (pacman, systemctl, getent) — hundreds
 // of ms. Selection, filtering, and expansion don't change the diffs, so

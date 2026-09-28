@@ -49,7 +49,8 @@ const HOSTS = "etc/hosts";
 const CONTAINER = "bicycle-ingress";
 const PROJECT = "bicycle-ingress";
 const IMAGE = "caddy:2.10";
-const CADDYFILE = "/etc/caddy/Caddyfile";
+const CADDY_DIR = "/etc/caddy";
+const CADDYFILE = `${CADDY_DIR}/Caddyfile`;
 const STATUS_FORMAT = "{{.State.Status}}";
 
 type Observed = {
@@ -64,13 +65,17 @@ const sha = (s: string): string => crypto.createHash("sha256").update(s).digest(
 
 const read = (p: string): string | null => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
 
-const observe = async (ingress: Ingress): Promise<Observed> => {
+export const current = (ingress: Ingress): Route[] => {
   const store = ports.read();
   const apps = app.names().flatMap((name) => {
     const port = store[name];
     return port === undefined ? [] : [{ name, config: config.app(name), port }];
   });
-  const table = routes(ingress, apps);
+  return routes(ingress, apps);
+};
+
+const observe = async (ingress: Ingress): Promise<Observed> => {
+  const table = current(ingress);
 
   const state = paths.state.ingress;
   const compose =
@@ -83,7 +88,7 @@ const observe = async (ingress: Ingress): Promise<Observed> => {
             network_mode: "host",
             restart: "unless-stopped",
             volumes: [
-              `${state.caddyfile}:${CADDYFILE}:ro`,
+              `${state.caddy}:${CADDY_DIR}:ro`,
               `${state.data}:/data`,
               `${state.config}:/config`,
             ],
@@ -164,6 +169,7 @@ export const all = async (): Promise<void> => {
   const o = await observe(cfg.ingress);
   const state = paths.state.ingress;
   fs.mkdirSync(state.root, { recursive: true });
+  fs.mkdirSync(state.caddy, { recursive: true });
   fs.mkdirSync(state.data, { recursive: true });
   fs.mkdirSync(state.config, { recursive: true });
 

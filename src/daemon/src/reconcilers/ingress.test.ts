@@ -1,4 +1,6 @@
 import { test, expect } from "bun:test";
+import fs from "fs";
+import path from "path";
 import type { Ingress } from "@bicycle/shared";
 import { useSandbox, runReconcilerCase, type ReconcilerCase } from "../testing";
 import * as ingress from "./ingress";
@@ -174,8 +176,9 @@ const CASES: ReconcilerCase[] = [
     name: "sweep: two routes writes state, hosts, and brings caddy up",
     actions: [{ do: "config", config: TWO_ROUTES }, { do: "sweep" }],
     state: [
-      { path: "ingress/Caddyfile", contents: TWO_ROUTES_CADDYFILE },
+      { path: "ingress/caddy/Caddyfile", contents: TWO_ROUTES_CADDYFILE },
       { path: "ingress/compose.yml" },
+      { path: "ingress/caddy", dir: true },
       { path: "ingress/data", dir: true },
       { path: "ingress/config", dir: true },
     ],
@@ -190,11 +193,11 @@ const CASES: ReconcilerCase[] = [
     name: "running container with a stale Caddyfile is reloaded",
     actions: [
       { do: "system", system: { ingress: { status: "running" } } },
-      { do: "state", rel: "ingress/Caddyfile", contents: "stale\n" },
+      { do: "state", rel: "ingress/caddy/Caddyfile", contents: "stale\n" },
       { do: "config", config: TWO_ROUTES },
       { do: "sweep" },
     ],
-    state: [{ path: "ingress/Caddyfile", contents: TWO_ROUTES_CADDYFILE }],
+    state: [{ path: "ingress/caddy/Caddyfile", contents: TWO_ROUTES_CADDYFILE }],
     fs: [{ path: "docker-up" }, { path: "docker-reload" }],
     plan: [],
   },
@@ -212,7 +215,7 @@ const CASES: ReconcilerCase[] = [
       { do: "config", config: DOMAIN },
       { do: "sweep" },
     ],
-    state: [{ path: "ingress/Caddyfile", contents: DOCKGE_CADDYFILE }],
+    state: [{ path: "ingress/caddy/Caddyfile", contents: DOCKGE_CADDYFILE }],
     fs: [{ path: "etc/hosts", contents: DOCKGE_HOSTS }],
     plan: [],
   },
@@ -224,7 +227,7 @@ const CASES: ReconcilerCase[] = [
       { do: "config", config: DOMAIN },
       { do: "sweep" },
     ],
-    state: [{ path: "ingress/Caddyfile", contents: "" }],
+    state: [{ path: "ingress/caddy/Caddyfile", contents: "" }],
     fs: [{ path: "etc/hosts", absent: true }],
     plan: [],
   },
@@ -238,7 +241,7 @@ const CASES: ReconcilerCase[] = [
     ],
     state: [
       {
-        path: "ingress/Caddyfile",
+        path: "ingress/caddy/Caddyfile",
         contents: "http://docks.aral.lan {\n\treverse_proxy 127.0.0.1:20000\n}\n",
       },
     ],
@@ -252,7 +255,7 @@ const CASES: ReconcilerCase[] = [
       { do: "config", config: DOMAIN },
       { do: "sweep" },
     ],
-    state: [{ path: "ingress/Caddyfile", contents: "" }],
+    state: [{ path: "ingress/caddy/Caddyfile", contents: "" }],
     fs: [{ path: "etc/hosts", absent: true }],
     plan: [],
   },
@@ -292,3 +295,12 @@ const CASES: ReconcilerCase[] = [
 for (const c of CASES) {
   test.skipIf(c.skipIf === true)(c.name, () => runReconcilerCase(sb, ingress, ingress.all, c));
 }
+
+test("compose mounts the caddy directory so atomic Caddyfile writes reach the container", async () => {
+  await runReconcilerCase(sb, ingress, ingress.all, {
+    name: "compose mount",
+    actions: [{ do: "config", config: TWO_ROUTES }, { do: "sweep" }],
+  });
+  const compose = JSON.parse(fs.readFileSync(path.join(sb.state, "ingress", "compose.yml"), "utf8"));
+  expect(compose.services.caddy.volumes).toContain(`${path.join(sb.state, "ingress", "caddy")}:/etc/caddy:ro`);
+});

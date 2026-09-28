@@ -395,6 +395,9 @@ export const Rail = ({ vm }: { vm: VM }) => (
   <aside class="rail" id="rail">
     <div class="brand">&gt;&gt; bicycle</div>
     <nav class="rail-nav">
+      <a class="rail-link" href="/">
+        <span>hosts</span>
+      </a>
       <a
         class={`rail-link${state.nav.page === null ? ' rail-link-active' : ''}`}
         href={pageUrl(null)}
